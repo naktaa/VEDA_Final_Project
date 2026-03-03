@@ -1,0 +1,612 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1583</width>
+    <height>736</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>CCTV Monitoring System</string>
+  </property>
+  <widget class="QWidget" name="centralWidget">
+   <widget class="QWidget" name="horizontalLayoutWidget">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>0</y>
+      <width>1561</width>
+      <height>701</height>
+     </rect>
+    </property>
+    <layout class="QHBoxLayout" name="horizontalLayout_root">
+     <item>
+      <layout class="QGridLayout" name="splitterMain">
+       <item row="0" column="2" rowspan="2">
+        <widget class="QWidget" name="panelRight" native="true">
+         <property name="maximumSize">
+          <size>
+           <width>380</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <widget class="QWidget" name="verticalLayoutWidget">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>0</y>
+            <width>381</width>
+            <height>691</height>
+           </rect>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout_right">
+           <item>
+            <widget class="QGroupBox" name="groupMsg">
+             <property name="title">
+              <string/>
+             </property>
+             <widget class="QWidget" name="verticalLayoutWidget_5">
+              <property name="geometry">
+               <rect>
+                <x>10</x>
+                <y>20</y>
+                <width>361</width>
+                <height>661</height>
+               </rect>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_msg">
+               <item>
+                <widget class="QListWidget" name="listEvent"/>
+               </item>
+               <item>
+                <widget class="QPlainTextEdit" name="textMsgLog">
+                 <property name="maximumSize">
+                  <size>
+                   <width>16777215</width>
+                   <height>320</height>
+                  </size>
+                 </property>
+                 <property name="plainText">
+                  <string/>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+       <item row="0" column="0" rowspan="2">
+        <widget class="QWidget" name="panelCenter" native="true">
+         <widget class="QWidget" name="verticalLayoutWidget_2">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>0</y>
+            <width>811</width>
+            <height>691</height>
+           </rect>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout_center">
+           <item>
+            <widget class="QGroupBox" name="groupCentral">
+             <property name="baseSize">
+              <size>
+               <width>2</width>
+               <height>0</height>
+              </size>
+             </property>
+             <property name="title">
+              <string/>
+             </property>
+             <widget class="QWidget" name="verticalLayoutWidget_6">
+              <property name="geometry">
+               <rect>
+                <x>10</x>
+                <y>20</y>
+                <width>791</width>
+                <height>611</height>
+               </rect>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_central">
+               <item>
+                <widget class="QWidget" name="centralOverlayHost" native="true">
+                 <widget class="MiniMapWidget" name="labelCentralMap" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>0</x>
+                    <y>21</y>
+                    <width>789</width>
+                    <height>571</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <widget class="GstVideoWidget" name="labelCentralView" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>-2</x>
+                    <y>10</y>
+                    <width>789</width>
+                    <height>592</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <widget class="MiniMapWidget" name="labelCentralRC" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>0</x>
+                    <y>20</y>
+                    <width>789</width>
+                    <height>571</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <widget class="MiniMapWidget" name="labelCentralCapture" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>0</x>
+                    <y>20</y>
+                    <width>789</width>
+                    <height>571</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <zorder>labelCentralView</zorder>
+                 <zorder>labelCentralMap</zorder>
+                 <zorder>labelCentralRC</zorder>
+                 <zorder>labelCentralCapture</zorder>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="widgetCentralChBar" native="true">
+              <property name="geometry">
+               <rect>
+                <x>260</x>
+                <y>640</y>
+                <width>291</width>
+                <height>41</height>
+               </rect>
+              </property>
+              <widget class="QWidget" name="horizontalLayoutWidget_3">
+               <property name="geometry">
+                <rect>
+                 <x>7</x>
+                 <y>0</y>
+                 <width>280</width>
+                 <height>41</height>
+                </rect>
+               </property>
+               <layout class="QHBoxLayout" name="horizontalLayout_allcctv">
+                <item>
+                 <widget class="QPushButton" name="btnCapture">
+                  <property name="maximumSize">
+                   <size>
+                    <width>70</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>캡쳐</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnMap">
+                  <property name="maximumSize">
+                   <size>
+                    <width>50</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>맵</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnRC">
+                  <property name="maximumSize">
+                   <size>
+                    <width>60</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>노드</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="patrolstartbtn">
+                  <property name="maximumSize">
+                   <size>
+                    <width>60000</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>정찰 시작</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+             <widget class="QWidget" name="horizontalLayoutWidget_4">
+              <property name="geometry">
+               <rect>
+                <x>720</x>
+                <y>640</y>
+                <width>82</width>
+                <height>41</height>
+               </rect>
+              </property>
+              <layout class="QHBoxLayout" name="horizontalLayout_allcctv_2">
+               <item>
+                <widget class="QPushButton" name="btnOpenAllCctv">
+                 <property name="maximumSize">
+                  <size>
+                   <width>150</width>
+                   <height>25</height>
+                  </size>
+                 </property>
+                 <property name="baseSize">
+                  <size>
+                   <width>2</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="text">
+                  <string>전체 CCTV</string>
+                 </property>
+                 <property name="checkable">
+                  <bool>true</bool>
+                 </property>
+                 <property name="checked">
+                  <bool>false</bool>
+                 </property>
+                 <property name="autoExclusive">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+       <item row="0" column="1" rowspan="2">
+        <widget class="QWidget" name="paneDetailed" native="true">
+         <property name="maximumSize">
+          <size>
+           <width>355</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <widget class="QWidget" name="paneTop" native="true">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>0</y>
+            <width>350</width>
+            <height>191</height>
+           </rect>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>350</width>
+            <height>360</height>
+           </size>
+          </property>
+          <widget class="QWidget" name="verticalLayoutWidget_3">
+           <property name="geometry">
+            <rect>
+             <x>0</x>
+             <y>0</y>
+             <width>351</width>
+             <height>191</height>
+            </rect>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayout_top">
+            <item>
+             <widget class="QGroupBox" name="groupWard">
+              <property name="title">
+               <string/>
+              </property>
+              <widget class="QWidget" name="verticalLayoutWidget_4">
+               <property name="geometry">
+                <rect>
+                 <x>10</x>
+                 <y>20</y>
+                 <width>331</width>
+                 <height>161</height>
+                </rect>
+               </property>
+               <layout class="QVBoxLayout" name="verticalLayout_WardList">
+                <item>
+                 <widget class="QTreeWidget" name="listWardCctv">
+                  <property name="rootIsDecorated">
+                   <bool>false</bool>
+                  </property>
+                  <property name="columnCount">
+                   <number>3</number>
+                  </property>
+                  <attribute name="headerVisible">
+                   <bool>true</bool>
+                  </attribute>
+                  <column>
+                   <property name="text">
+                    <string>Restricted Zone</string>
+                   </property>
+                  </column>
+                  <column>
+                   <property name="text">
+                    <string>Tank Unit</string>
+                   </property>
+                  </column>
+                  <column>
+                   <property name="text">
+                    <string>Recon Unit</string>
+                   </property>
+                  </column>
+                  <item>
+                   <property name="text">
+                    <string>Main1</string>
+                   </property>
+                   <property name="textAlignment">
+                    <set>AlignLeading|AlignVCenter</set>
+                   </property>
+                   <property name="text">
+                    <string>T1</string>
+                   </property>
+                   <property name="text">
+                    <string>P1</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>Main2</string>
+                   </property>
+                   <property name="textAlignment">
+                    <set>AlignLeading|AlignVCenter</set>
+                   </property>
+                   <property name="text">
+                    <string>T2</string>
+                   </property>
+                   <property name="text">
+                    <string>P2</string>
+                   </property>
+                   <property name="textAlignment">
+                    <set>AlignLeading|AlignVCenter</set>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>Main3</string>
+                   </property>
+                   <property name="textAlignment">
+                    <set>AlignLeading|AlignVCenter</set>
+                   </property>
+                   <property name="text">
+                    <string>T3</string>
+                   </property>
+                   <property name="text">
+                    <string>P3</string>
+                   </property>
+                  </item>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </widget>
+         <widget class="QWidget" name="panelBottom" native="true">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>189</y>
+            <width>351</width>
+            <height>251</height>
+           </rect>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>16777215</width>
+            <height>350</height>
+           </size>
+          </property>
+          <widget class="QGroupBox" name="tankCctv">
+           <property name="geometry">
+            <rect>
+             <x>0</x>
+             <y>0</y>
+             <width>351</width>
+             <height>251</height>
+            </rect>
+           </property>
+           <property name="title">
+            <string/>
+           </property>
+           <widget class="QWidget" name="verticalLayoutWidget_9">
+            <property name="geometry">
+             <rect>
+              <x>10</x>
+              <y>20</y>
+              <width>331</width>
+              <height>221</height>
+             </rect>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayout_tank">
+             <item>
+              <widget class="GstVideoWidget" name="labelTankView" native="true"/>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+         </widget>
+         <widget class="QWidget" name="panelMiddle" native="true">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>437</y>
+            <width>351</width>
+            <height>261</height>
+           </rect>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>16777215</width>
+            <height>350</height>
+           </size>
+          </property>
+          <widget class="QGroupBox" name="patrolCctv">
+           <property name="geometry">
+            <rect>
+             <x>0</x>
+             <y>0</y>
+             <width>351</width>
+             <height>251</height>
+            </rect>
+           </property>
+           <property name="title">
+            <string/>
+           </property>
+           <widget class="QWidget" name="verticalLayoutWidget_11">
+            <property name="geometry">
+             <rect>
+              <x>10</x>
+              <y>20</y>
+              <width>331</width>
+              <height>221</height>
+             </rect>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayout_Patrol">
+             <item>
+              <widget class="GstVideoWidget" name="labelPatrolView" native="true"/>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1583</width>
+     <height>21</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>GstVideoWidget</class>
+   <extends>QWidget</extends>
+   <header>gstvideowidget.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>MiniMapWidget</class>
+   <extends>QWidget</extends>
+   <header>minimapwidget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

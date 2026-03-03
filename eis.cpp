@@ -21,6 +21,7 @@
 #include <gst/app/gstappsink.h>
 #include <gst/rtsp-server/rtsp-server.h>
 #include <gst/video/video.h>
+#include <glib.h>
 
 #include <algorithm>
 #include <atomic>
@@ -33,11 +34,15 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <termios.h>
 
 #include <linux/i2c-dev.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+#include <softPwm.h>
+#include <wiringPi.h>
 
 using namespace std;
 using namespace cv;
@@ -97,6 +102,19 @@ static const int IMU_STORE_SIZE = 80;  // 중심 평균을 위해 여유 있게 
 // ======================== 전역 변수 ========================
 
 static std::atomic<bool> g_running{true};
+static GMainLoop* g_main_loop = nullptr;
+
+static void request_shutdown() {
+    g_running.store(false);
+}
+
+static gboolean on_mainloop_tick(gpointer) {
+    if (!g_running.load()) {
+        if (g_main_loop) g_main_loop_quit(g_main_loop);
+        return G_SOURCE_REMOVE;
+    }
+    return G_SOURCE_CONTINUE;
+}
 
 static std::mutex g_mtx;
 static GstAppSrc* g_rawsrc = nullptr;
@@ -344,7 +362,228 @@ static bool push_bgr(GstAppSrc* appsrc, const Mat& frame, guint64 idx, const cha
     return true;
 }
 
-static void sigint_handler(int) { g_running = false; }
+static void sigint_handler(int) { request_shutdown(); }
+
+// ======================== Manual Drive (Keyboard) ========================
+
+namespace manual_drive {
+constexpr int STOP = 0;
+constexpr int FORWARD = 1;
+constexpr int BACKWARD = 2;
+
+// wiringPi pin numbers (same as patrol_track / rc_control_node)
+constexpr int L_IN1 = 28;
+constexpr int L_IN2 = 27;
+constexpr int L_EN = 29;
+
+constexpr int R_IN1 = 25;
+constexpr int R_IN2 = 24;
+constexpr int R_EN = 23;
+
+termios g_old_tio{};
+bool g_term_ready = false;
+bool g_motor_ready = false;
+
+int clampPwm(int v) {
+    return std::max(0, std::min(255, v));
+}
+
+void setMotorControl(int en, int in1, int in2, int pwm, int dir) {
+    if (!g_motor_ready) return;
+    pwm = clampPwm(pwm);
+    softPwmWrite(en, pwm);
+
+    if (dir == FORWARD) {
+        digitalWrite(in1, LOW);
+        digitalWrite(in2, HIGH);
+    } else if (dir == BACKWARD) {
+        digitalWrite(in1, HIGH);
+        digitalWrite(in2, LOW);
+    } else {
+        softPwmWrite(en, 0);
+        digitalWrite(in1, LOW);
+        digitalWrite(in2, LOW);
+    }
+}
+
+void stopAll() {
+    if (!g_motor_ready) return;
+    setMotorControl(L_EN, L_IN1, L_IN2, 0, STOP);
+    setMotorControl(R_EN, R_IN1, R_IN2, 0, STOP);
+}
+
+void applyDrive(int left_cmd, int right_cmd, int pwm) {
+    const int ldir = (left_cmd > 0) ? FORWARD : (left_cmd < 0 ? BACKWARD : STOP);
+    const int rdir = (right_cmd > 0) ? FORWARD : (right_cmd < 0 ? BACKWARD : STOP);
+
+    setMotorControl(L_EN, L_IN1, L_IN2, (ldir == STOP) ? 0 : pwm, ldir);
+    setMotorControl(R_EN, R_IN1, R_IN2, (rdir == STOP) ? 0 : pwm, rdir);
+}
+
+void cleanupTerminal() {
+    if (g_term_ready) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &g_old_tio);
+        g_term_ready = false;
+    }
+}
+
+bool setupTerminalRaw() {
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "[MANUAL] stdin is not a TTY; manual drive disabled.\n");
+        return false;
+    }
+    if (tcgetattr(STDIN_FILENO, &g_old_tio) != 0) return false;
+    termios new_tio = g_old_tio;
+    new_tio.c_lflag &= static_cast<unsigned int>(~(ICANON | ECHO));
+    new_tio.c_cc[VMIN] = 0;
+    new_tio.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &new_tio) != 0) return false;
+    g_term_ready = true;
+    return true;
+}
+
+bool setupMotor() {
+    if (wiringPiSetup() == -1) {
+        fprintf(stderr, "[MANUAL] wiringPiSetup failed; motor control disabled.\n");
+        g_motor_ready = false;
+        return false;
+    }
+
+    auto setupOne = [](int en, int in1, int in2) -> bool {
+        pinMode(en, OUTPUT);
+        pinMode(in1, OUTPUT);
+        pinMode(in2, OUTPUT);
+        digitalWrite(in1, LOW);
+        digitalWrite(in2, LOW);
+        return (softPwmCreate(en, 0, 255) == 0);
+    };
+
+    const bool left_ok = setupOne(L_EN, L_IN1, L_IN2);
+    const bool right_ok = setupOne(R_EN, R_IN1, R_IN2);
+    g_motor_ready = left_ok && right_ok;
+
+    if (!g_motor_ready) {
+        fprintf(stderr, "[MANUAL] softPwmCreate failed; motor control disabled.\n");
+        return false;
+    }
+    stopAll();
+    return true;
+}
+
+void printHelp() {
+    fprintf(stderr, "\n=== Manual Drive (Keyboard) ===\n");
+    fprintf(stderr, "W/S: forward/backward\n");
+    fprintf(stderr, "A/D: rotate left/right (tank spin)\n");
+    fprintf(stderr, "Q/E: pivot left/right\n");
+    fprintf(stderr, "Space/X: stop\n");
+    fprintf(stderr, "+/-: speed up/down\n");
+    fprintf(stderr, "H: help, ESC: quit\n");
+    fprintf(stderr, "===============================\n\n");
+}
+
+void run() {
+    if (!setupMotor()) return;
+    if (!setupTerminalRaw()) {
+        stopAll();
+        return;
+    }
+
+    int pwm = 255;
+    int left_cmd = 0;
+    int right_cmd = 0;
+    auto last_motion_key_time = std::chrono::steady_clock::now();
+    constexpr int motion_hold_timeout_ms = 120;
+
+    stopAll();
+    printHelp();
+    fprintf(stderr, "[MANUAL] start PWM=%d\n", pwm);
+
+    while (g_running.load()) {
+        char ch = 0;
+        const ssize_t n = read(STDIN_FILENO, &ch, 1);
+        if (n > 0) {
+            if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+
+            if (ch == 27) { // ESC
+                request_shutdown();
+                break;
+            }
+
+            switch (ch) {
+                case 'w':
+                    pwm = 255;
+                    left_cmd = 1; right_cmd = 1;
+                    last_motion_key_time = std::chrono::steady_clock::now();
+                    break;
+                case 's':
+                    pwm = 255;
+                    left_cmd = -1; right_cmd = -1;
+                    last_motion_key_time = std::chrono::steady_clock::now();
+                    break;
+                case 'a':
+                    pwm = 255;
+                    left_cmd = -1; right_cmd = 1;
+                    last_motion_key_time = std::chrono::steady_clock::now();
+                    break;
+                case 'd':
+                    pwm = 255;
+                    left_cmd = 1; right_cmd = -1;
+                    last_motion_key_time = std::chrono::steady_clock::now();
+                    break;
+                case 'q':
+                    pwm = 255;
+                    left_cmd = 0; right_cmd = 1;
+                    last_motion_key_time = std::chrono::steady_clock::now();
+                    break;
+                case 'e':
+                    pwm = 255;
+                    left_cmd = 1; right_cmd = 0;
+                    last_motion_key_time = std::chrono::steady_clock::now();
+                    break;
+                case 'x':
+                case ' ':
+                    left_cmd = 0; right_cmd = 0;
+                    break;
+                case '+':
+                case '=':
+                    pwm = clampPwm(pwm + 10);
+                    fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
+                    break;
+                case '-':
+                case '_':
+                    pwm = clampPwm(pwm - 10);
+                    fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
+                    break;
+                case 'h':
+                    printHelp();
+                    break;
+                default:
+                    break;
+            }
+
+            applyDrive(left_cmd, right_cmd, pwm);
+            fprintf(stderr, "[MANUAL] L=%d R=%d PWM=%d\n", left_cmd, right_cmd, pwm);
+            fflush(stderr);
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_motion_key_time).count();
+        if ((left_cmd != 0 || right_cmd != 0) && idle_ms > motion_hold_timeout_ms) {
+            left_cmd = 0;
+            right_cmd = 0;
+            applyDrive(left_cmd, right_cmd, pwm);
+            fprintf(stderr, "[MANUAL] auto-stop (key released)\n");
+            fflush(stderr);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    stopAll();
+    cleanupTerminal();
+    fprintf(stderr, "[MANUAL] stopped\n");
+}
+} // namespace manual_drive
 
 // ======================== IMU 쓰레드 ========================
 
@@ -752,15 +991,20 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  rtsp://<PI_IP>:8555/raw | /cam\n");
     fprintf(stderr, "==============================\n");
 
+    g_main_loop = g_main_loop_new(nullptr, FALSE);
+    g_timeout_add(50, on_mainloop_tick, nullptr);
+
     std::thread imu_th(imu_loop);
     std::thread cap_th(capture_loop);
+    std::thread manual_th(manual_drive::run);
 
-    GMainLoop* loop = g_main_loop_new(nullptr, FALSE);
-    g_main_loop_run(loop);
+    g_main_loop_run(g_main_loop);
 
     g_running = false;
     if (cap_th.joinable()) cap_th.join();
     if (imu_th.joinable()) imu_th.join();
-    g_main_loop_unref(loop);
+    if (manual_th.joinable()) manual_th.join();
+    g_main_loop_unref(g_main_loop);
+    g_main_loop = nullptr;
     return 0;
 }

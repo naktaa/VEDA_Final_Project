@@ -17,6 +17,8 @@ pkg_check_modules(GST REQUIRED
   gstreamer-rtsp-server-1.0
 )
 
+find_library(WIRINGPI_LIB wiringPi)
+
 add_executable(eis eis.cpp)
 
 target_include_directories(eis PRIVATE
@@ -31,4 +33,5 @@ target_compile_options(eis PRIVATE
 target_link_libraries(eis
   ${OpenCV_LIBS}
   ${GST_LIBRARIES}
+  ${WIRINGPI_LIB}
 )

@@ -961,10 +961,10 @@ static void capture_loop() {
 
         if (lk_count == 0) {
             // 첫 프레임: 저장만
-            prev_gray = curr_gray.clone();
-            prev_frame = frame.clone();
-            lk_count++;
             stabilized = frame.clone();
+            prev_gray = std::move(curr_gray);
+            prev_frame = std::move(frame);
+            lk_count++;
         }
         else {
             // 특징점 검출 + 추적
@@ -1065,11 +1065,11 @@ static void capture_loop() {
             }
 
             if (!lk_ok) {
-                stabilized = frame.clone();
+                stabilized = frame;  // shallow copy — centerCropAndResize가 새 Mat 생성
             }
 
-            prev_gray = curr_gray.clone();
-            prev_frame = frame.clone();
+            prev_gray = std::move(curr_gray);
+            prev_frame = std::move(frame);
         }
 
         // 자이로 보정이 LK 안에서 통합되지 않은 경우 (LK 실패 or 첫 프레임) — 별도 처리
@@ -1106,22 +1106,12 @@ static void capture_loop() {
         }
 
         // RTSP 출력
-        GstAppSrc *rawsrc, *stabsrc;
+        GstAppSrc *stabsrc;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
-            rawsrc = g_rawsrc;
             stabsrc = g_stabsrc;
         }
 
-        Mat raw_out = frame.clone();
-        if (DEBUG_OVERLAY && imu_ready) {
-            char buf[140];
-            snprintf(buf, sizeof(buf), "R:%+.1f P:%+.1f  LK dx:%+.1f dy:%+.1f",
-                     pose.roll * 180 / CV_PI, pose.pitch * 180 / CV_PI, lk_diff_dx, lk_diff_dy);
-            putText(raw_out, buf, Point(8, 18), FONT_HERSHEY_SIMPLEX, 0.35, Scalar(0, 255, 0), 1, LINE_AA);
-        }
-
-        push_bgr(rawsrc, raw_out, frameIdx, "raw");
         push_bgr(stabsrc, stabilized, frameIdx, "cam");
         frameIdx++;
     }
@@ -1143,9 +1133,10 @@ int main(int argc, char* argv[]) {
     gst_rtsp_server_set_service(server, "8555");
     GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(server);
 
-    GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
-    g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer) "raw");
-    gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
+    // /raw 스트림 비활성화 (CPU 부하 절감 — x264enc 1개 제거)
+    // GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
+    // g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer) "raw");
+    // gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
 
     GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
     g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer) "stab");
@@ -1164,7 +1155,7 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  1단계: LK OptFlow + Kalman (Q=%.4f R=%.1f) + diff clamp\n", KF_Q, KF_R);
     fprintf(stderr, "  2단계: Gyro 고주파 부스트 (alpha=%.3f)\n", SMOOTH_ALPHA);
     fprintf(stderr, "  Crop: %.0f%%\n", FIXED_CROP_PERCENT);
-    fprintf(stderr, "  rtsp://<PI_IP>:8555/raw | /cam\n");
+    fprintf(stderr, "  rtsp://<PI_IP>:8555/cam  (raw 비활성화)\n");
     fprintf(stderr, "==============================\n");
 
     g_main_loop = g_main_loop_new(nullptr, FALSE);

@@ -30,6 +30,7 @@
 #include <cstring>
 #include <cmath>
 #include <cstdio>
+#include <dirent.h>
 #include <deque>
 #include <iostream>
 #include <mutex>
@@ -54,6 +55,8 @@ using namespace cv;
 static const int G_WIDTH = 640;
 static const int G_HEIGHT = 480;
 static const int G_FPS = 24;
+static const bool FLIP_IMAGE = true;
+static const int FLIP_MODE = 0; // 0: vertical, 1: horizontal, -1: both
 
 // MPU-6050
 static const int IMU_ADDR = 0x68;
@@ -598,6 +601,25 @@ bool run_evdev(const char* dev_path) {
     return true;
 }
 
+std::string find_kbd_device() {
+    const char* dirs[] = {"/dev/input/by-id", "/dev/input/by-path"};
+    for (const char* dir_path : dirs) {
+        DIR* dir = opendir(dir_path);
+        if (!dir) continue;
+        while (true) {
+            struct dirent* ent = readdir(dir);
+            if (!ent) break;
+            const std::string name = ent->d_name ? ent->d_name : "";
+            if (name.find("event-kbd") == std::string::npos) continue;
+            const std::string full = std::string(dir_path) + "/" + name;
+            closedir(dir);
+            return full;
+        }
+        closedir(dir);
+    }
+    return {};
+}
+
 void run() {
     if (!setupMotor()) return;
 
@@ -605,6 +627,12 @@ void run() {
     if (evdev && evdev[0] != '\0') {
         if (run_evdev(evdev)) return;
         fprintf(stderr, "[MANUAL] evdev failed, falling back to stdin.\n");
+    } else {
+        std::string auto_dev = find_kbd_device();
+        if (!auto_dev.empty()) {
+            if (run_evdev(auto_dev.c_str())) return;
+            fprintf(stderr, "[MANUAL] auto evdev failed, falling back to stdin.\n");
+        }
     }
 
     if (!setupTerminalRaw()) {
@@ -901,6 +929,9 @@ static void capture_loop() {
     while (g_running) {
         Mat frame;
         if (!pull_frame(frame) || frame.empty()) continue;
+        if (FLIP_IMAGE) {
+            cv::flip(frame, frame, FLIP_MODE);
+        }
 
         // 프레임 캡처 시점 타임스탬프
         double frame_time = now_ms();

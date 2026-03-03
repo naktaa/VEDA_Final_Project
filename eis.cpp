@@ -37,9 +37,11 @@
 #include <termios.h>
 
 #include <linux/i2c-dev.h>
+#include <linux/input.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <poll.h>
 
 #include <softPwm.h>
 #include <wiringPi.h>
@@ -331,13 +333,15 @@ static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
     std::string launch =
         "( appsrc name=" + std::string(appsrc_name) + " "
                                                       "is-live=true format=time do-timestamp=true block=false "
-                                                      "! queue leaky=downstream max-size-buffers=1 "
+                                                      "! queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 "
                                                       "! videoconvert ! video/x-raw,format=I420 "
-                                                      "! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 "
-                                                      "! rtph264pay name=pay0 pt=96 config-interval=1 )";
+                                                      "! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=" +
+        std::to_string(G_FPS) + " bframes=0 "
+                                "! rtph264pay name=pay0 pt=96 config-interval=1 )";
     gst_rtsp_media_factory_set_launch(factory, launch.c_str());
     gst_rtsp_media_factory_set_shared(factory, TRUE);
     gst_rtsp_media_factory_set_suspend_mode(factory, GST_RTSP_SUSPEND_MODE_NONE);
+    gst_rtsp_media_factory_set_latency(factory, 0);
     return factory;
 }
 
@@ -472,8 +476,8 @@ bool setupMotor() {
 
 void printHelp() {
     fprintf(stderr, "\n=== Manual Drive (Keyboard) ===\n");
-    fprintf(stderr, "W/S: forward/backward\n");
-    fprintf(stderr, "A/D: rotate left/right (tank spin)\n");
+    fprintf(stderr, "W/S (or ↑/↓): forward/backward\n");
+    fprintf(stderr, "A/D (or ←/→): rotate left/right (tank spin)\n");
     fprintf(stderr, "Q/E: pivot left/right\n");
     fprintf(stderr, "Space/X: stop\n");
     fprintf(stderr, "+/-: speed up/down\n");
@@ -481,8 +485,128 @@ void printHelp() {
     fprintf(stderr, "===============================\n\n");
 }
 
+bool run_evdev(const char* dev_path) {
+    int fd = open(dev_path, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+        perror("[MANUAL] evdev open");
+        return false;
+    }
+
+    fprintf(stderr, "[MANUAL] evdev input: %s\n", dev_path);
+
+    int pwm = 255;
+    int left_cmd = 0;
+    int right_cmd = 0;
+
+    auto applyAction = [&](int action_key) {
+        switch (action_key) {
+            case KEY_W:
+            case KEY_UP:
+                pwm = 255;
+                left_cmd = 1; right_cmd = 1;
+                break;
+            case KEY_S:
+            case KEY_DOWN:
+                pwm = 255;
+                left_cmd = -1; right_cmd = -1;
+                break;
+            case KEY_A:
+            case KEY_LEFT:
+                pwm = 255;
+                left_cmd = -1; right_cmd = 1;
+                break;
+            case KEY_D:
+            case KEY_RIGHT:
+                pwm = 255;
+                left_cmd = 1; right_cmd = -1;
+                break;
+            case KEY_Q:
+                pwm = 255;
+                left_cmd = 0; right_cmd = 1;
+                break;
+            case KEY_E:
+                pwm = 255;
+                left_cmd = 1; right_cmd = 0;
+                break;
+            default:
+                left_cmd = 0; right_cmd = 0;
+                break;
+        }
+        applyDrive(left_cmd, right_cmd, pwm);
+        fprintf(stderr, "[MANUAL] L=%d R=%d PWM=%d\n", left_cmd, right_cmd, pwm);
+        fflush(stderr);
+    };
+
+    stopAll();
+    printHelp();
+    fprintf(stderr, "[MANUAL] start PWM=%d (evdev)\n", pwm);
+
+    int active_key = 0;
+
+    while (g_running.load()) {
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        const int pr = poll(&pfd, 1, 10);
+        if (pr > 0 && (pfd.revents & POLLIN)) {
+            struct input_event ev;
+            ssize_t n = read(fd, &ev, sizeof(ev));
+            while (n == sizeof(ev)) {
+                if (ev.type == EV_KEY) {
+                    const bool pressed = (ev.value != 0);
+                    const int code = ev.code;
+
+                    if (pressed) {
+                        if (code == KEY_ESC) {
+                            request_shutdown();
+                            break;
+                        }
+                        if (code == KEY_SPACE || code == KEY_X) {
+                            active_key = 0;
+                            applyAction(0);
+                        } else if (code == KEY_EQUAL || code == KEY_KPPLUS) {
+                            pwm = clampPwm(pwm + 10);
+                            fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
+                        } else if (code == KEY_MINUS || code == KEY_KPMINUS) {
+                            pwm = clampPwm(pwm - 10);
+                            fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
+                        } else if (code == KEY_H) {
+                            printHelp();
+                        } else {
+                            // movement key pressed
+                            active_key = code;
+                            applyAction(active_key);
+                        }
+                    } else {
+                        // key released -> stop if it was the active movement key
+                        if (code == active_key) {
+                            active_key = 0;
+                            applyAction(0);
+                        }
+                    }
+                }
+                n = read(fd, &ev, sizeof(ev));
+            }
+        }
+    }
+
+    stopAll();
+    fprintf(stderr, "[MANUAL] stopped (evdev)\n");
+    close(fd);
+    return true;
+}
+
 void run() {
     if (!setupMotor()) return;
+
+    const char* evdev = std::getenv("EIS_INPUT_EVENT");
+    if (evdev && evdev[0] != '\0') {
+        if (run_evdev(evdev)) return;
+        fprintf(stderr, "[MANUAL] evdev failed, falling back to stdin.\n");
+    }
+
     if (!setupTerminalRaw()) {
         stopAll();
         return;
@@ -492,7 +616,11 @@ void run() {
     int left_cmd = 0;
     int right_cmd = 0;
     auto last_motion_key_time = std::chrono::steady_clock::now();
-    constexpr int motion_hold_timeout_ms = 120;
+    int motion_hold_timeout_ms = 80;
+    if (const char* env = std::getenv("MANUAL_HOLD_MS")) {
+        const int v = std::atoi(env);
+        if (v >= 20 && v <= 1000) motion_hold_timeout_ms = v;
+    }
 
     stopAll();
     printHelp();
@@ -504,9 +632,26 @@ void run() {
         if (n > 0) {
             if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
 
-            if (ch == 27) { // ESC
-                request_shutdown();
-                break;
+            if (ch == 27) { // ESC or arrow key sequence
+                char seq1 = 0;
+                char seq2 = 0;
+                const ssize_t n1 = read(STDIN_FILENO, &seq1, 1);
+                if (n1 == 1 && seq1 == '[') {
+                    const ssize_t n2 = read(STDIN_FILENO, &seq2, 1);
+                    if (n2 == 1) {
+                        switch (seq2) {
+                            case 'A': ch = 'w'; break; // Up
+                            case 'B': ch = 's'; break; // Down
+                            case 'C': ch = 'd'; break; // Right
+                            case 'D': ch = 'a'; break; // Left
+                            default: ch = 27; break;
+                        }
+                    }
+                }
+                if (ch == 27) {
+                    request_shutdown();
+                    break;
+                }
             }
 
             switch (ch) {
@@ -576,7 +721,7 @@ void run() {
             fflush(stderr);
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     stopAll();

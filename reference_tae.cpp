@@ -1,0 +1,532 @@
+/**
+ * reference_tae.cpp — 레퍼런스 EIS (LK Optical Flow + 칼만 필터)
+ *
+ * GitHub 레퍼런스 알고리즘을 라즈베리파이 환경에 맞게 적용:
+ *   - goodFeaturesToTrack + calcOpticalFlowPyrLK → 프레임 간 변환 추출
+ *   - estimateAffinePartial2D → dx, dy, da (이동+회전) 추출
+ *   - trajectory 누적 → 칼만 필터로 smooth → 차이를 보정량으로 사용
+ *   - IMU 없이 카메라 영상만으로 동작
+ *
+ * RTSP 출력:
+ *   /raw  — 원본 영상
+ *   /cam  — 보정 영상
+ */
+
+#include <opencv2/opencv.hpp>
+
+#include <gst/gst.h>
+#include <gst/app/gstappsrc.h>
+#include <gst/app/gstappsink.h>
+#include <gst/rtsp-server/rtsp-server.h>
+#include <gst/video/video.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstring>
+#include <cmath>
+#include <cstdio>
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+using namespace std;
+using namespace cv;
+
+// ======================== 설정 상수 ========================
+
+// 해상도 / FPS
+static const int    G_WIDTH  = 960;
+static const int    G_HEIGHT = 540;
+static const int    G_FPS    = 30;
+
+// 크롭 (보정 시 생기는 검은 경계 제거)
+static const int    BORDER_CROP = 30;   // 레퍼런스 원본과 동일
+
+// LK Optical Flow 특징점 수
+static const int    MAX_FEATURES = 200;
+static const double FEATURE_QUALITY = 0.01;
+static const double FEATURE_MIN_DIST = 30.0;
+
+// 칼만 필터 파라미터 (레퍼런스 원본과 동일)
+//   Q = 프로세스 노이즈 (작을수록 smooth 강함)
+//   R = 관측 노이즈 (작을수록 측정값 신뢰)
+static const double KF_Q = 0.004;   // 원본: Q1 = 0.004
+static const double KF_R = 0.5;     // 원본: R1 = 0.5
+
+// 디버그 오버레이
+static const bool   DEBUG_OVERLAY = true;
+
+// ======================== 전역 변수 ========================
+
+static std::atomic<bool> g_running{true};
+
+static std::mutex   g_mtx;
+static GstAppSrc*   g_rawsrc  = nullptr;
+static GstAppSrc*   g_stabsrc = nullptr;
+
+// ======================== 칼만 필터 (1D, 5채널) ========================
+
+struct KalmanState {
+    double x;       // 상태 추정값
+    double P;       // 오차 공분산
+    double Q;       // 프로세스 노이즈
+    double R;       // 관측 노이즈
+    double sum;     // 측정값 누적 (trajectory)
+};
+
+static void kalman_init(KalmanState& kf, double q, double r) {
+    kf.x = 0.0;
+    kf.P = 1.0;
+    kf.Q = q;
+    kf.R = r;
+    kf.sum = 0.0;
+}
+
+static void kalman_update(KalmanState& kf, double measurement) {
+    // 측정값 누적 (trajectory)
+    kf.sum += measurement;
+
+    // Predict
+    double x_pred = kf.x;
+    double P_pred = kf.P + kf.Q;
+
+    // Update
+    double K = P_pred / (P_pred + kf.R);
+    kf.x = x_pred + K * (kf.sum - x_pred);
+    kf.P = (1.0 - K) * P_pred;
+}
+
+// smooth값과 raw trajectory의 차이 = 보정량
+static double kalman_diff(const KalmanState& kf) {
+    return kf.x - kf.sum;
+}
+
+// ======================== 유틸리티 함수 ========================
+
+static Mat ensureBGR(const Mat& in) {
+    if (in.empty()) return Mat();
+    Mat out = in;
+
+    if (out.type() == CV_8UC4)
+        cvtColor(out, out, COLOR_BGRA2BGR);
+    else if (out.type() == CV_8UC1)
+        cvtColor(out, out, COLOR_GRAY2BGR);
+    else if (out.type() != CV_8UC3) {
+        Mat tmp;
+        out.convertTo(tmp, CV_8U);
+        if (tmp.channels() == 1)
+            cvtColor(tmp, out, COLOR_GRAY2BGR);
+        else
+            out = tmp;
+    }
+
+    if (out.cols != G_WIDTH || out.rows != G_HEIGHT)
+        resize(out, out, Size(G_WIDTH, G_HEIGHT), 0, 0, INTER_LINEAR);
+
+    if (!out.isContinuous()) out = out.clone();
+    return out;
+}
+
+// ======================== RTSP 설정 ========================
+
+static void set_appsrc_caps(GstAppSrc* appsrc) {
+    GstCaps* caps = gst_caps_new_simple(
+        "video/x-raw",
+        "format",    G_TYPE_STRING,  "BGR",
+        "width",     G_TYPE_INT,     G_WIDTH,
+        "height",    G_TYPE_INT,     G_HEIGHT,
+        "framerate", GST_TYPE_FRACTION, G_FPS, 1,
+        nullptr);
+    gst_app_src_set_caps(appsrc, caps);
+    gst_caps_unref(caps);
+
+    g_object_set(G_OBJECT(appsrc),
+                 "is-live",       TRUE,
+                 "format",        GST_FORMAT_TIME,
+                 "do-timestamp",  TRUE,
+                 "block",         FALSE,
+                 nullptr);
+}
+
+static void on_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media, gpointer user_data) {
+    const char* which = static_cast<const char*>(user_data);
+    GstElement* element = gst_rtsp_media_get_element(media);
+
+    const char* name = (strcmp(which, "raw") == 0) ? "rawsrc" : "stabsrc";
+    GstElement* app = gst_bin_get_by_name_recurse_up(GST_BIN(element), name);
+    gst_object_unref(element);
+
+    if (!app) {
+        g_printerr("Failed to get appsrc: %s\n", name);
+        return;
+    }
+
+    GstAppSrc* appsrc = GST_APP_SRC(app);
+    set_appsrc_caps(appsrc);
+
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        if (strcmp(which, "raw") == 0) {
+            g_rawsrc = appsrc;
+            g_print("[RTSP] /raw connected\n");
+        } else {
+            g_stabsrc = appsrc;
+            g_print("[RTSP] /cam connected\n");
+        }
+    }
+}
+
+static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
+    GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
+
+    std::string launch =
+        "( appsrc name=" + std::string(appsrc_name) + " "
+        "is-live=true format=time do-timestamp=true block=false "
+        "! queue leaky=downstream max-size-buffers=1 "
+        "! videoconvert "
+        "! video/x-raw,format=I420 "
+        "! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 "
+        "! rtph264pay name=pay0 pt=96 config-interval=1 )";
+
+    gst_rtsp_media_factory_set_launch(factory, launch.c_str());
+    gst_rtsp_media_factory_set_shared(factory, TRUE);
+    gst_rtsp_media_factory_set_suspend_mode(factory, GST_RTSP_SUSPEND_MODE_NONE);
+    return factory;
+}
+
+static bool push_bgr(GstAppSrc* appsrc, const Mat& frame, guint64 idx, const char* tag) {
+    if (!appsrc) return false;
+
+    Mat bgr = ensureBGR(frame);
+    if (bgr.empty()) return false;
+
+    const size_t bytes = bgr.total() * bgr.elemSize();
+    GstBuffer* buffer = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+
+    GstMapInfo map;
+    if (!gst_buffer_map(buffer, &map, GST_MAP_WRITE)) {
+        gst_buffer_unref(buffer);
+        return false;
+    }
+    memcpy(map.data, bgr.data, bytes);
+    gst_buffer_unmap(buffer, &map);
+
+    GstFlowReturn ret = gst_app_src_push_buffer(appsrc, buffer);
+    if (ret != GST_FLOW_OK) {
+        g_printerr("[push:%s] failed (frame=%" G_GUINT64_FORMAT ")\n", tag, idx);
+        return false;
+    }
+    return true;
+}
+
+static void sigint_handler(int) { g_running = false; }
+
+// ======================== 캡처 + 보정 루프 ========================
+
+static void capture_loop() {
+    // GStreamer 캡처 파이프라인
+    std::string cap_pipe =
+        "libcamerasrc ! "
+        "video/x-raw,width=" + std::to_string(G_WIDTH) +
+        ",height=" + std::to_string(G_HEIGHT) +
+        ",framerate=" + std::to_string(G_FPS) + "/1 "
+        "! videoconvert ! video/x-raw,format=BGR "
+        "! appsink name=appsink emit-signals=false sync=false "
+        "max-buffers=1 drop=true";
+
+    GError* err = nullptr;
+    GstElement* pipeline = gst_parse_launch(cap_pipe.c_str(), &err);
+    if (!pipeline) {
+        cerr << "[ERR] Failed to create capture pipeline\n";
+        if (err) g_error_free(err);
+        g_running = false;
+        return;
+    }
+    if (err) {
+        cerr << "[ERR] Pipeline warning: " << err->message << "\n";
+        g_error_free(err);
+    }
+
+    GstElement* sink = gst_bin_get_by_name(GST_BIN(pipeline), "appsink");
+    if (!sink) {
+        cerr << "[ERR] Failed to get appsink\n";
+        gst_object_unref(pipeline);
+        g_running = false;
+        return;
+    }
+    GstAppSink* appsink = GST_APP_SINK(sink);
+    gst_app_sink_set_emit_signals(appsink, FALSE);
+    gst_app_sink_set_drop(appsink, TRUE);
+    gst_app_sink_set_max_buffers(appsink, 1);
+
+    if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+        cerr << "[ERR] Failed to start pipeline\n";
+        gst_object_unref(sink);
+        gst_object_unref(pipeline);
+        g_running = false;
+        return;
+    }
+
+    // 프레임 가져오기 람다
+    auto pull_frame = [&](Mat& out) -> bool {
+        GstSample* sample = gst_app_sink_try_pull_sample(appsink, 100000000);
+        if (!sample) return false;
+
+        GstBuffer* buffer = gst_sample_get_buffer(sample);
+        GstCaps* caps = gst_sample_get_caps(sample);
+        if (!buffer || !caps) {
+            gst_sample_unref(sample);
+            return false;
+        }
+
+        GstVideoInfo info;
+        bool info_ok = gst_video_info_from_caps(&info, caps);
+        int w = info_ok ? (int)info.width  : G_WIDTH;
+        int h = info_ok ? (int)info.height : G_HEIGHT;
+        int stride = info_ok ? (int)info.stride[0] : (w * 3);
+
+        GstMapInfo map;
+        if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+            gst_sample_unref(sample);
+            return false;
+        }
+
+        Mat frame(h, w, CV_8UC3, map.data, stride);
+        out = frame.clone();
+        gst_buffer_unmap(buffer, &map);
+        gst_sample_unref(sample);
+        return !out.empty();
+    };
+
+    // ---- 칼만 필터 초기화 (3채널: theta, transX, transY) ----
+    // 원본 레퍼런스: scale 보정은 행렬에 직접 적용하지 않음 (이동+회전만 보정)
+    KalmanState kf_theta, kf_tx, kf_ty;
+    kalman_init(kf_theta, KF_Q, KF_R);
+    kalman_init(kf_tx, KF_Q, KF_R);
+    kalman_init(kf_ty, KF_Q, KF_R);
+
+    // 이전 프레임 (그레이스케일 + 컬러)
+    Mat prev_gray;
+    Mat prev_frame;
+    int frame_count = 0;   // 칼만 필터 첫 프레임 건너뛰기용
+    guint64 frameIdx = 0;
+
+    // 크롭 계산
+    int vert_border = BORDER_CROP * G_HEIGHT / G_WIDTH;
+
+    // ---- 메인 보정 루프 ----
+    while (g_running) {
+        Mat frame;
+        if (!pull_frame(frame) || frame.empty()) {
+            continue;
+        }
+
+        // 현재 프레임 그레이스케일 변환
+        Mat curr_gray;
+        cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
+
+        Mat stabilized;
+
+        if (frame_count == 0) {
+            // 첫 프레임: 이전 프레임 저장만
+            prev_gray = curr_gray.clone();
+            prev_frame = frame.clone();
+            frame_count++;
+            stabilized = frame.clone();
+        } else {
+            // ---- LK Optical Flow ----
+            vector<Point2f> features_prev, features_curr;
+            vector<uchar> status;
+            vector<float> err_vec;
+
+            // 이전 프레임에서 특징점 검출
+            goodFeaturesToTrack(prev_gray, features_prev,
+                                MAX_FEATURES, FEATURE_QUALITY, FEATURE_MIN_DIST);
+
+            if (features_prev.size() < 10) {
+                // 특징점 부족 → 보정 불가, 원본 출력
+                prev_gray = curr_gray.clone();
+                prev_frame = frame.clone();
+                stabilized = frame.clone();
+            } else {
+                // LK optical flow로 특징점 추적
+                calcOpticalFlowPyrLK(prev_gray, curr_gray,
+                                     features_prev, features_curr,
+                                     status, err_vec);
+
+                // 유효한 매칭만 필터링
+                vector<Point2f> good_prev, good_curr;
+                for (size_t i = 0; i < status.size(); i++) {
+                    if (status[i]) {
+                        good_prev.push_back(features_prev[i]);
+                        good_curr.push_back(features_curr[i]);
+                    }
+                }
+
+                if (good_prev.size() < 6) {
+                    // 유효 매칭 부족
+                    prev_gray = curr_gray.clone();
+                    prev_frame = frame.clone();
+                    stabilized = frame.clone();
+                } else {
+                    // ---- Rigid Transform 추출 ----
+                    Mat affine = estimateAffinePartial2D(good_prev, good_curr);
+
+                    if (affine.empty()) {
+                        prev_gray = curr_gray.clone();
+                        prev_frame = frame.clone();
+                        stabilized = frame.clone();
+                    } else {
+                        // 변환 파라미터 추출
+                        double dx = affine.at<double>(0, 2);
+                        double dy = affine.at<double>(1, 2);
+                        double da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+
+                        // 원본 scale 저장 (행렬에 그대로 사용)
+                        double sx = affine.at<double>(0, 0) / cos(da);
+                        double sy = affine.at<double>(1, 1) / cos(da);
+
+                        // trajectory 누적 (칼만 내부에서 수행)
+                        kalman_update(kf_theta, da);
+                        kalman_update(kf_tx, dx);
+                        kalman_update(kf_ty, dy);
+
+                        double diff_da = 0.0, diff_dx = 0.0, diff_dy = 0.0;
+
+                        if (frame_count == 1) {
+                            // ★ 원본 레퍼런스: 첫 optical flow 프레임에서 칼만 보정 건너뛰기
+                            // (칼만이 수렴하기 전에 큰 보정을 하면 검은 화면 발생)
+                            frame_count++;
+                        } else {
+                            // 보정량 = smooth_trajectory - raw_trajectory
+                            diff_da = kalman_diff(kf_theta);
+                            diff_dx = kalman_diff(kf_tx);
+                            diff_dy = kalman_diff(kf_ty);
+                        }
+
+                        // 보정된 파라미터 (이동+회전만 보정, scale은 원본 유지)
+                        da += diff_da;
+                        dx += diff_dx;
+                        dy += diff_dy;
+
+                        // ★ smoothed 변환 행렬 생성
+                        // 원본 레퍼런스와 동일: scale(sx,sy)은 원본값 사용,
+                        // 이동(dx,dy)과 회전(da)만 보정된 값 사용
+                        Mat smoothed = (Mat_<double>(2, 3) <<
+                            sx * cos(da), sx * -sin(da), dx,
+                            sy * sin(da), sy *  cos(da), dy);
+
+                        // ★ 원본 레퍼런스: 이전 프레임(prev_frame)을 warp
+                        warpAffine(prev_frame, stabilized, smoothed, frame.size());
+
+                        // 경계 크롭 (보정으로 생긴 검은 영역 제거)
+                        stabilized = stabilized(
+                            Range(vert_border, stabilized.rows - vert_border),
+                            Range(BORDER_CROP, stabilized.cols - BORDER_CROP));
+                        resize(stabilized, stabilized, frame.size());
+
+                        // 디버그 오버레이
+                        if (DEBUG_OVERLAY) {
+                            char buf[128];
+                            snprintf(buf, sizeof(buf),
+                                     "dx:%+5.1f dy:%+5.1f da:%+5.2f deg",
+                                     diff_dx, diff_dy, diff_da * 180.0 / CV_PI);
+                            putText(stabilized, buf, Point(8, 18),
+                                    FONT_HERSHEY_SIMPLEX, 0.45,
+                                    Scalar(0, 255, 0), 1, LINE_AA);
+
+                            char buf2[128];
+                            snprintf(buf2, sizeof(buf2),
+                                     "features: %zu  Q:%.4f R:%.1f",
+                                     good_prev.size(), KF_Q, KF_R);
+                            putText(stabilized, buf2, Point(8, 36),
+                                    FONT_HERSHEY_SIMPLEX, 0.4,
+                                    Scalar(0, 255, 255), 1, LINE_AA);
+                        }
+                    }
+                }
+
+                prev_gray = curr_gray.clone();
+                prev_frame = frame.clone();
+            }
+        }
+
+        // RTSP 출력
+        GstAppSrc* rawsrc = nullptr;
+        GstAppSrc* stabsrc = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(g_mtx);
+            rawsrc  = g_rawsrc;
+            stabsrc = g_stabsrc;
+        }
+
+        push_bgr(rawsrc,  frame,      frameIdx, "raw");
+        push_bgr(stabsrc, stabilized,  frameIdx, "cam");
+
+        frameIdx++;
+    }
+
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref(sink);
+    gst_object_unref(pipeline);
+    fprintf(stderr, "[Capture] Thread exiting\n");
+}
+
+// ======================== main ========================
+
+int main(int argc, char* argv[]) {
+    system("fuser -k 8555/tcp 2>/dev/null");
+
+    signal(SIGINT, sigint_handler);
+    gst_init(&argc, &argv);
+
+    // RTSP 서버 설정
+    GstRTSPServer* server = gst_rtsp_server_new();
+    gst_rtsp_server_set_service(server, "8555");
+
+    GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(server);
+
+    GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
+    g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer)"raw");
+    gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
+
+    GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
+    g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer)"stab");
+    gst_rtsp_mount_points_add_factory(mounts, "/cam", f_stab);
+
+    g_object_unref(mounts);
+
+    if (gst_rtsp_server_attach(server, nullptr) == 0) {
+        cerr << "[ERR] Failed to attach RTSP server\n";
+        return -1;
+    }
+
+    fprintf(stderr, "==============================\n");
+    fprintf(stderr, " REFERENCE EIS — LK OptFlow + Kalman\n");
+    fprintf(stderr, "==============================\n");
+    fprintf(stderr, "RTSP endpoints:\n");
+    fprintf(stderr, "  rtsp://<PI_IP>:8555/raw  (original)\n");
+    fprintf(stderr, "  rtsp://<PI_IP>:8555/cam  (stabilized)\n");
+    fprintf(stderr, "Settings:\n");
+    fprintf(stderr, "  Features: %d  quality=%.3f  min_dist=%.0f\n",
+            MAX_FEATURES, FEATURE_QUALITY, FEATURE_MIN_DIST);
+    fprintf(stderr, "  Kalman Q=%.4f  R=%.1f\n", KF_Q, KF_R);
+    fprintf(stderr, "  Border crop: %d px\n", BORDER_CROP);
+    fprintf(stderr, "Ctrl+C to stop\n");
+    fprintf(stderr, "==============================\n");
+
+    // 캡처 쓰레드 시작 (IMU 없음 — 카메라만 사용)
+    std::thread cap_th(capture_loop);
+
+    // GLib 메인 루프 (RTSP 서버)
+    GMainLoop* loop = g_main_loop_new(nullptr, FALSE);
+    g_main_loop_run(loop);
+
+    g_running = false;
+    cap_th.join();
+
+    g_main_loop_unref(loop);
+    return 0;
+}

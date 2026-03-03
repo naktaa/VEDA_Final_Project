@@ -1,0 +1,18 @@
+# Build
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Object files
+*.o
+*.a
+*.so
+
+# Executables
+*.exe
+*.out
+
+# VSCode
+.vscode/

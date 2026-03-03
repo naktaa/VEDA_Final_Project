@@ -1,0 +1,65 @@
+tilting_VR 실행 사용법
+
+0) 핵심 답변 먼저
+- 앱 빌드: 네이티브 앱 빌드는 필요 없음.
+  이유: 이 프로젝트는 휴대폰 브라우저로 여는 웹앱(web/) 구조임.
+- "코드를 모두 RC카에 넣으면 되나?": Raspberry Pi(= RC카 온보드 컴퓨터)에는
+  이 프로젝트 폴더(최소 server/, web/)를 넣으면 됨.
+  휴대폰에는 코드 파일을 넣지 않고 브라우저로 접속만 하면 됨.
+- 삼성폰에서 할 일: Chrome(권장)으로 접속, 센서 접근 허용, 같은 Wi-Fi 연결.
+
+1) 배선
+- PCA9685 SDA -> Pi GPIO2(SDA)
+- PCA9685 SCL -> Pi GPIO3(SCL)
+- PCA9685 VCC -> Pi 3.3V(로직)
+- PCA9685 GND -> Pi GND (공통 접지)
+- 서보 전원은 외부 5V 권장, GND는 Pi와 반드시 공통
+- CH0: pan(좌우), CH1: tilt(상하)
+
+2) 라즈베리파이 1회 설정
+sudo raspi-config
+- Interface Options -> I2C -> Enable
+- 카메라 쓰면 Camera도 Enable
+sudo reboot
+
+3) 의존성 설치
+sudo apt update
+sudo apt install -y build-essential cmake pkg-config libopencv-dev nlohmann-json3-dev i2c-tools wget
+
+4) httplib 헤더 설치
+sudo wget -O /usr/local/include/httplib.h https://raw.githubusercontent.com/yhirose/cpp-httplib/master/httplib.h
+
+5) I2C 인식 확인
+i2cdetect -y 1
+- 표에 40(0x40) 보이면 정상
+
+6) 빌드
+cd tilting_VR/server
+mkdir -p build
+cd build
+cmake ..
+cmake --build . -j
+
+7) 실행
+./tilting_vr_server
+
+8) 휴대폰 접속
+- 같은 Wi-Fi에서 삼성폰 Chrome 열기
+- http://<라즈베리파이IP>:8000/web/
+- "Connect + Start VR" 누르기
+
+9) 삼성폰 체크포인트
+- 인터넷(로컬 네트워크) 허용
+- 브라우저에서 센서 차단된 경우 허용으로 변경
+- Samsung Internet보다 Chrome이 호환성 안정적
+- 자동 회전 ON 권장
+- 절전 모드/배터리 최적화가 강하면 끊길 수 있어 해제 권장
+
+10) 동작 확인
+- 머리 상하 -> tilt(CH1)
+- 머리 좌우 -> pan(CH0)
+
+11) 문제 해결
+- 영상 안 뜸: 카메라 연결/활성화 확인, 서버 로그 확인
+- 서보 안 움직임: i2cdetect 0x40 확인, 전원/GND 공통 확인
+- 떨림: 외부 5V 전원 용량 강화, 배선 길이/접촉 불량 점검

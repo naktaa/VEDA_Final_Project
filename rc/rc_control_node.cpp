@@ -12,7 +12,6 @@
 #include <algorithm>
 
 #include <wiringPi.h>
-#include <softPwm.h>
 
 namespace {
 std::atomic<bool> g_sig_run{true};
@@ -22,14 +21,24 @@ constexpr int STOP = 0;
 constexpr int FORWARD = 1;
 constexpr int BACKWARD = 2;
 
-// wiringPi 핀 번호 (patrol_track.cpp와 동일)
-constexpr int L_IN1 = 28;
-constexpr int L_IN2 = 27;
-constexpr int L_EN  = 29;
+// wiringPi 핀 번호 (manual_drive_hw.cpp와 동일)
+// EN: HW PWM 핀
+//   L_EN -> GPIO18(wPi 1,  physical 12)
+//   R_EN -> GPIO19(wPi 24, physical 35)
+constexpr int L_IN1 = 28; // GPIO20, physical 38
+constexpr int L_IN2 = 27; // GPIO16, physical 36
+constexpr int L_EN  = 1;  // GPIO18, physical 12
 
-constexpr int R_IN1 = 25;
-constexpr int R_IN2 = 24;
-constexpr int R_EN  = 23;
+constexpr int R_IN1 = 25; // GPIO26, physical 37
+constexpr int R_IN2 = 23; // GPIO13, physical 33
+constexpr int R_EN  = 24; // GPIO19, physical 35
+
+constexpr int PWM_HW_RANGE = 1024;
+
+int pwm255ToDuty(int pwm_255) {
+    const int p = std::max(0, std::min(255, pwm_255));
+    return (p * PWM_HW_RANGE) / 255;
+}
 
 void onSignal(int) {
     g_sig_run = false;
@@ -260,6 +269,7 @@ void RcControlNode::controlStep() {
 }
 
 RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, RcStatus& out_status) const {
+    constexpr double ROTATE_IN_PLACE_TH = 25.0 * 3.14159265358979323846 / 180.0;
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
@@ -278,7 +288,17 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, 
         return cmd;
     }
 
-    cmd.speed_mps = clamp(k_linear_ * dist, 0.0, max_speed_mps_);
+    const double abs_err = std::fabs(err_yaw);
+    if (abs_err > ROTATE_IN_PLACE_TH) {
+        // 목표 방향과 크게 어긋나면 제자리 회전으로 먼저 각도를 맞춘다.
+        cmd.speed_mps = 0.0;
+        cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
+        return cmd;
+    }
+
+    // 각도 오차가 있을수록 전진 속도를 줄여 직진 밀림을 줄인다.
+    const double heading_scale = std::max(0.2, std::cos(abs_err));
+    cmd.speed_mps = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_mps_);
     cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
     return cmd;
 }
@@ -339,25 +359,29 @@ void RcControlNode::setupMotorDriver() {
         return;
     }
 
+    // HW PWM 전역 설정(양 채널 공통)
+    // base 19.2MHz / clock(32) / range(1024) ~= 586Hz
+    pwmSetMode(PWM_MODE_MS);
+    pwmSetClock(32);
+    pwmSetRange(PWM_HW_RANGE);
+
     auto setupOne = [](int en, int in1, int in2) -> bool {
-        pinMode(en, OUTPUT);
+        pinMode(en, PWM_OUTPUT);
         pinMode(in1, OUTPUT);
         pinMode(in2, OUTPUT);
+        pwmWrite(en, 0);
         digitalWrite(in1, LOW);
         digitalWrite(in2, LOW);
-        return (softPwmCreate(en, 0, 255) == 0);
+        return true;
     };
 
     const bool left_ok = setupOne(L_EN, L_IN1, L_IN2);
     const bool right_ok = setupOne(R_EN, R_IN1, R_IN2);
     motor_ready_ = left_ok && right_ok;
 
-    if (!motor_ready_) {
-        std::cerr << "[ERR] softPwmCreate failed. motor output disabled.\n";
-        return;
-    }
+    if (!motor_ready_) return;
     stopAllMotors();
-    std::cout << "[OK] motor driver ready (L_EN=29, R_EN=23)\n";
+    std::cout << "[OK] motor driver ready (HW PWM, L_EN=1, R_EN=24)\n";
 }
 
 void RcControlNode::stopAllMotors() const {
@@ -368,7 +392,7 @@ void RcControlNode::stopAllMotors() const {
 
 void RcControlNode::setMotorControl(int en, int in1, int in2, int speed_pwm, int dir) const {
     const int pwm = std::max(0, std::min(pwm_max_, speed_pwm));
-    softPwmWrite(en, pwm);
+    pwmWrite(en, pwm255ToDuty(pwm));
 
     if (dir == FORWARD) {
         digitalWrite(in1, LOW);
@@ -377,7 +401,7 @@ void RcControlNode::setMotorControl(int en, int in1, int in2, int speed_pwm, int
         digitalWrite(in1, HIGH);
         digitalWrite(in2, LOW);
     } else {
-        softPwmWrite(en, 0);
+        pwmWrite(en, 0);
         digitalWrite(in1, LOW);
         digitalWrite(in2, LOW);
     }

@@ -101,6 +101,7 @@ private:
     double max_speed_mps_ = 0.8;
     double max_yaw_rate_rps_ = 1.5;
     double tolerance_m_ = 0.15;
+    int pose_timeout_ms_ = 800;
 
     struct mosquitto* mosq_ = nullptr;
     std::atomic<bool> running_{false};
@@ -110,6 +111,9 @@ private:
     RcPose pose_;
     RcSafety safety_;
     std::chrono::steady_clock::time_point last_pose_rx_;
+    RcStatus last_status_;
+    bool has_last_status_ = false;
+    std::chrono::steady_clock::time_point last_status_pub_tp_ = std::chrono::steady_clock::time_point::min();
 
     bool motor_ready_ = false;
     double track_width_m_ = 0.22;

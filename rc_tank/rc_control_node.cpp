@@ -106,6 +106,15 @@ bool commandChanged(const RcCommand& a, const RcCommand& b) {
            !nearlyEqual(a.yaw_rate_rps, b.yaw_rate_rps, 1e-3);
 }
 
+bool statusChanged(const RcStatus& a, const RcStatus& b) {
+    if (a.mode != b.mode) return true;
+    if (a.reached != b.reached) return true;
+    if (!nearlyEqual(a.err_dist, b.err_dist, 1e-3)) return true;
+    if (!nearlyEqual(a.err_yaw, b.err_yaw, 1e-3)) return true;
+    if (!nearlyEqual(a.battery, b.battery, 1e-3)) return true;
+    return false;
+}
+
 RcCommand g_last_cmd_logged{};
 bool g_has_last_cmd_logged = false;
 std::chrono::steady_clock::time_point g_last_cmd_log_tp = std::chrono::steady_clock::time_point::min();
@@ -300,7 +309,7 @@ void RcControlNode::controlStep() {
 
     const auto now = std::chrono::steady_clock::now();
     const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_pose_rx).count();
-    if (age_ms > 300) {
+    if (age_ms > pose_timeout_ms_) {
         status.mode = "POSE_TIMEOUT";
         status.reached = false;
         sendCommandToRc({0.0, 0.0});
@@ -322,7 +331,7 @@ void RcControlNode::controlStep() {
 }
 
 RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, RcStatus& out_status) const {
-    constexpr double ROTATE_IN_PLACE_TH = 25.0 * 3.14159265358979323846 / 180.0;
+    constexpr double ROTATE_IN_PLACE_TH = 35.0 * 3.14159265358979323846 / 180.0;
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
@@ -356,6 +365,13 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, 
 
 bool RcControlNode::publishStatus(const RcStatus& status) {
     if (!mosq_) return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool changed = !has_last_status_ || statusChanged(status, last_status_);
+    const bool periodic =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_status_pub_tp_).count() >= 1000;
+    if (!changed && !periodic) return true;
+
     char buf[256];
     std::snprintf(buf, sizeof(buf),
                   "{\"mode\":\"%s\",\"reached\":%s,\"err_dist\":%.3f,\"err_yaw\":%.3f,\"battery\":%.2f}",
@@ -372,6 +388,11 @@ bool RcControlNode::publishStatus(const RcStatus& status) {
                                      buf,
                                      1,
                                      false);
+    if (rc == MOSQ_ERR_SUCCESS) {
+        last_status_ = status;
+        has_last_status_ = true;
+        last_status_pub_tp_ = now;
+    }
     return (rc == MOSQ_ERR_SUCCESS);
 }
 
@@ -545,7 +566,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);
-    node.setControlParams(0.8, 1.2, 0.8, 1.5, 0.15);
+    node.setControlParams(0.8, 0.8, 0.8, 1.5, 0.15);
 
     if (!node.start()) return 1;
     node.run();

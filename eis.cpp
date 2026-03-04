@@ -50,7 +50,7 @@ static const int IMU_ADDR = 0x68;
 static const double GYRO_SENSITIVITY = 131.0;
 
 // ---- 자이로 고주파 필터 (1단계: 메인 보정) ----
-static const double SMOOTH_ALPHA = 0.97;  // 0.99→0.97 (메인 보정이므로 좀 더 빠르게 추종)
+static const double SMOOTH_ALPHA = 0.995; // 0.97→0.995 (느리게 추종 → jitter 크게 추출)
 static const double ROLL_GAIN  = 1.0;
 static const double PITCH_GAIN = 1.0;  // 0.5→1.0 (메인 보정이므로 full gain)
 static const double YAW_GAIN   = 1.0;  // 새로 추가

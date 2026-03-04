@@ -320,7 +320,7 @@ static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
                                                       "! rtph264pay name=pay0 pt=96 config-interval=1 )";
     gst_rtsp_media_factory_set_launch(factory, launch.c_str());
     gst_rtsp_media_factory_set_shared(factory, TRUE);
-    gst_rtsp_media_factory_set_suspend_mode(factory, 0);
+    gst_rtsp_media_factory_set_suspend_mode(factory, GST_RTSP_SUSPEND_MODE_NONE);
     return factory;
 }
 

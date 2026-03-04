@@ -44,7 +44,6 @@
 #include <unistd.h>
 #include <poll.h>
 
-#include <softPwm.h>
 #include <wiringPi.h>
 
 using namespace std;
@@ -376,14 +375,16 @@ constexpr int STOP = 0;
 constexpr int FORWARD = 1;
 constexpr int BACKWARD = 2;
 
-// wiringPi pin numbers (same as patrol_track / rc_control_node)
-constexpr int L_IN1 = 28;
-constexpr int L_IN2 = 27;
-constexpr int L_EN = 29;
+// wiringPi pin numbers (hardware PWM)
+//   L_EN -> GPIO18 (wPi 1,  physical 12) PWM0
+//   R_EN -> GPIO19 (wPi 24, physical 35) PWM1
+constexpr int L_IN1 = 28; // GPIO20, physical 38
+constexpr int L_IN2 = 27; // GPIO16, physical 36
+constexpr int L_EN  = 1;  // GPIO18, physical 12 (HW PWM0)
 
-constexpr int R_IN1 = 25;
-constexpr int R_IN2 = 24;
-constexpr int R_EN = 23;
+constexpr int R_IN1 = 25; // GPIO26, physical 37
+constexpr int R_IN2 = 23; // GPIO13, physical 33
+constexpr int R_EN  = 24; // GPIO19, physical 35 (HW PWM1)
 
 termios g_old_tio{};
 bool g_term_ready = false;
@@ -393,10 +394,16 @@ int clampPwm(int v) {
     return std::max(0, std::min(255, v));
 }
 
+int toHwPwmDuty(int pwm_255) {
+    constexpr int HW_RANGE = 1024;
+    const int p = clampPwm(pwm_255);
+    return (p * HW_RANGE) / 255;
+}
+
 void setMotorControl(int en, int in1, int in2, int pwm, int dir) {
     if (!g_motor_ready) return;
     pwm = clampPwm(pwm);
-    softPwmWrite(en, pwm);
+    pwmWrite(en, toHwPwmDuty(pwm));
 
     if (dir == FORWARD) {
         digitalWrite(in1, LOW);
@@ -405,7 +412,7 @@ void setMotorControl(int en, int in1, int in2, int pwm, int dir) {
         digitalWrite(in1, HIGH);
         digitalWrite(in2, LOW);
     } else {
-        softPwmWrite(en, 0);
+        pwmWrite(en, 0);
         digitalWrite(in1, LOW);
         digitalWrite(in2, LOW);
     }
@@ -454,23 +461,28 @@ bool setupMotor() {
         return false;
     }
 
-    auto setupOne = [](int en, int in1, int in2) -> bool {
-        pinMode(en, OUTPUT);
-        pinMode(in1, OUTPUT);
-        pinMode(in2, OUTPUT);
-        digitalWrite(in1, LOW);
-        digitalWrite(in2, LOW);
-        return (softPwmCreate(en, 0, 255) == 0);
-    };
+    // EN 핀: 하드웨어 PWM 출력
+    pinMode(L_EN, PWM_OUTPUT);
+    pinMode(R_EN, PWM_OUTPUT);
 
-    const bool left_ok = setupOne(L_EN, L_IN1, L_IN2);
-    const bool right_ok = setupOne(R_EN, R_IN1, R_IN2);
-    g_motor_ready = left_ok && right_ok;
+    // IN 핀: 일반 디지털 출력
+    pinMode(L_IN1, OUTPUT);
+    pinMode(L_IN2, OUTPUT);
+    pinMode(R_IN1, OUTPUT);
+    pinMode(R_IN2, OUTPUT);
 
-    if (!g_motor_ready) {
-        fprintf(stderr, "[MANUAL] softPwmCreate failed; motor control disabled.\n");
-        return false;
-    }
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, LOW);
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, LOW);
+
+    // 하드웨어 PWM 전역 설정 (양 채널 공통)
+    // base 19.2MHz / clock(32) / range(1024) ~= 586Hz
+    pwmSetMode(PWM_MODE_MS);
+    pwmSetClock(32);
+    pwmSetRange(1024);
+
+    g_motor_ready = true;
     stopAll();
     return true;
 }

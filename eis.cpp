@@ -90,7 +90,7 @@ static const int IMU_SIGN_ROLL  = 1;
 static const int IMU_SIGN_PITCH = 1;
 static const int IMU_SIGN_YAW   = 1;  // 새로 추가
 static const int CALIB_SAMPLES = 300;
-static const bool DEBUG_OVERLAY = false;
+static const bool DEBUG_OVERLAY = true;
 static const int IMU_BUFFER_SIZE = 20;
 static const int IMU_STORE_SIZE = 80;
 

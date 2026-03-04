@@ -334,17 +334,15 @@ static void on_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media, gpoint
 static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
     GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
     std::string launch =
-        "( appsrc name=" + std::string(appsrc_name) + " "
-                                                      "is-live=true format=time do-timestamp=true block=false "
-                                                      "! queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 "
-                                                      "! videoconvert ! video/x-raw,format=I420 "
-                                                      "! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=" +
-        std::to_string(G_FPS) + " bframes=0 "
-                                "! rtph264pay name=pay0 pt=96 config-interval=1 )";
+        "( appsrc name=" + std::string(appsrc_name) + " is-live=true format=time do-timestamp=true block=false "
+                                                      "! videoconvert "
+                                                      "! video/x-raw,format=I420 "
+                                                      "! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" "
+                                                      "! video/x-h264,level=(string)4,profile=(string)baseline "
+                                                      "! rtph264pay name=pay0 pt=96 config-interval=1 )";
     gst_rtsp_media_factory_set_launch(factory, launch.c_str());
     gst_rtsp_media_factory_set_shared(factory, TRUE);
     gst_rtsp_media_factory_set_suspend_mode(factory, GST_RTSP_SUSPEND_MODE_NONE);
-    gst_rtsp_media_factory_set_latency(factory, 0);
     return factory;
 }
 

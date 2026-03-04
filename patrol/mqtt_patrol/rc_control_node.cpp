@@ -1,3 +1,8 @@
+/*
+g++ -O2 -std=c++17 rc_control_node.cpp -o rc_control_node -lmosquitto -lwiringPi -lpthread
+sudo ./rc_control_node 192.168.100.10 1883 wiserisk/rc/goal wiserisk/p1/pose wiserisk/rc/safety wiserisk/rc/status
+*/
+
 #include "rc_control_node.h"
 #include <fstream>
 #include <chrono>
@@ -6,6 +11,7 @@
 #include <cstring>
 #include <cstdio>
 #include <iostream>
+#include <iomanip>
 #include <regex>
 #include <sstream>
 #include <thread>
@@ -13,9 +19,12 @@
 #include <wiringPi.h>
 #include <softPwm.h>
 #include <unistd.h>
+#include <termios.h>
+#include <fcntl.h>
 
 namespace {
 std::atomic<bool> g_sig_run{true};
+auto g_last_diag_log = std::chrono::steady_clock::now();
 
 void onSignal(int) {
     g_sig_run = false;
@@ -52,6 +61,48 @@ bool extractBool(const std::string& json, const std::string& key, bool& out) {
     out = (m[1].str() == "true");
     return true;
 }
+
+static long long nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+struct KeyboardGuard {
+    bool enabled = false;
+    struct termios old_tio{};
+    int old_flags = -1;
+
+    bool setup() {
+        if (!isatty(STDIN_FILENO)) return false;
+        if (tcgetattr(STDIN_FILENO, &old_tio) != 0) return false;
+
+        struct termios new_tio = old_tio;
+        new_tio.c_lflag &= static_cast<unsigned long>(~(ICANON | ECHO));
+        new_tio.c_cc[VMIN] = 0;
+        new_tio.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &new_tio) != 0) return false;
+
+        old_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+        if (old_flags < 0) return false;
+        if (fcntl(STDIN_FILENO, F_SETFL, old_flags | O_NONBLOCK) != 0) return false;
+
+        enabled = true;
+        return true;
+    }
+
+    int readChar() const {
+        unsigned char ch = 0;
+        const ssize_t n = ::read(STDIN_FILENO, &ch, 1);
+        return (n == 1) ? static_cast<int>(ch) : -1;
+    }
+
+    ~KeyboardGuard() {
+        if (!enabled) return;
+        tcsetattr(STDIN_FILENO, TCSANOW, &old_tio);
+        if (old_flags >= 0) fcntl(STDIN_FILENO, F_SETFL, old_flags);
+    }
+};
 
 
 
@@ -93,8 +144,8 @@ static void setupServoPwmSysfs()
 
 static void setServoUs(int us)
 {
-    if (us < 750) us = 750;
-    if (us > 1750) us = 1750;
+    if (us < 900) us = 900;
+    if (us > 1600) us = 1600;
     long ns = (long)us * 1000;
     sysfsWrite(PWM_PATH + "duty_cycle", std::to_string(ns));
 }
@@ -210,7 +261,34 @@ bool RcControlNode::start() {
 }
 
 void RcControlNode::run() {
+    KeyboardGuard kb;
+    const bool keyboard_ok = kb.setup();
+    if (keyboard_ok) {
+        std::cout << "[KEY] press SPACE to set midpoint goal of id10(6,4) and id11(6,5): (6,4.5), press q to quit\n";
+    }
+
     while (running_ && g_sig_run) {
+        if (keyboard_ok) {
+            const int ch = kb.readChar();
+            if (ch == ' ') {
+                RcGoal g;
+                g.x = 6.0;
+                g.y = 4.5; // midpoint between id10(6,4) and id11(6,5)
+                g.frame = "world";
+                g.ts_ms = nowMs();
+                g.valid = true;
+                {
+                    std::lock_guard<std::mutex> lk(data_mtx_);
+                    goal_ = g;
+                    reached_hold_ = false; // new manual goal releases reached latch
+                }
+                std::cout << "[MANUAL_GOAL] id10-11 midpoint"
+                          << " x=" << g.x << " y=" << g.y << "\n";
+            } else if (ch == 'q' || ch == 'Q') {
+                g_sig_run = false;
+            }
+        }
+
         controlStep();
         std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 20 Hz
     }
@@ -280,6 +358,7 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
         RcGoal g;
         if (parseGoalJson(payload, g) && g.frame == "world") {
             goal_ = g;
+            reached_hold_ = false; // any new goal input releases reached latch
             std::cout << "[GOAL] x=" << g.x << " y=" << g.y << " ts_ms=" << g.ts_ms << "\n";
         } else {
             std::cerr << "[WARN] invalid goal payload: " << payload << "\n";
@@ -301,15 +380,23 @@ void RcControlNode::controlStep() {
     RcGoal goal;
     RcPose pose;
     RcSafety safety;
+    bool reached_hold = false;
     {
         std::lock_guard<std::mutex> lk(data_mtx_);
         goal = goal_;
         pose = pose_;
         safety = safety_;
+        reached_hold = reached_hold_;
     }
 
     RcStatus status;
     if (!goal.valid || !pose.valid) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - g_last_diag_log >= std::chrono::seconds(1)) {
+            std::cout << "[DIAG] WAIT_INPUT goal.valid=" << goal.valid
+                      << " pose.valid=" << pose.valid << "\n";
+            g_last_diag_log = now;
+        }
         status.mode = "WAIT_INPUT";
         publishStatus(status);
         hardStop();
@@ -317,16 +404,56 @@ void RcControlNode::controlStep() {
     }
 
     if (safety.estop || safety.obstacle_stop || safety.planner_fail) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - g_last_diag_log >= std::chrono::seconds(1)) {
+            std::cout << "[DIAG] SAFE_STOP estop=" << safety.estop
+                      << " obstacle_stop=" << safety.obstacle_stop
+                      << " planner_fail=" << safety.planner_fail << "\n";
+            g_last_diag_log = now;
+        }
         status.mode = "SAFE_STOP";
         status.reached = false;
          hardStop();
-        sendCommandToRc({0.0, 0.0});
+        const RcCommand stop_cmd{0.0, 0.0};
+        sendCommandToRc(stop_cmd, computeServoUs(stop_cmd));
+        publishStatus(status);
+        return;
+    }
+
+    if (reached_hold) {
+        status.mode = "REACHED";
+        status.reached = true;
+        status.err_dist = std::hypot(goal.x - pose.x, goal.y - pose.y);
+        status.err_yaw = 0.0;
+        hardStop();
+        const RcCommand stop_cmd{0.0, 0.0};
+        sendCommandToRc(stop_cmd, computeServoUs(stop_cmd));
         publishStatus(status);
         return;
     }
 
     RcCommand cmd = computeCommand(pose, goal, status);
-    sendCommandToRc(cmd);
+    const int servo_us = computeServoUs(cmd);
+    if (status.mode == "REACHED") {
+        std::lock_guard<std::mutex> lk(data_mtx_);
+        reached_hold_ = true;
+    }
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - g_last_diag_log >= std::chrono::seconds(1)) {
+            std::cout << std::fixed << std::setprecision(3)
+                      << "[DIAG] mode=" << status.mode
+                      << " pose=(" << pose.x << "," << pose.y << "," << pose.yaw << ")"
+                      << " goal=(" << goal.x << "," << goal.y << ")"
+                      << " dist=" << status.err_dist
+                      << " err_yaw=" << status.err_yaw
+                      << " cmd_v=" << cmd.speed_mps
+                      << " cmd_w=" << cmd.yaw_rate_rps
+                      << " servo_us=" << servo_us << "\n";
+            g_last_diag_log = now;
+        }
+    }
+    sendCommandToRc(cmd, servo_us);
     publishStatus(status);
 }
 
@@ -334,13 +461,17 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, 
     constexpr double PI = 3.14159265358979323846;
     constexpr double REVERSE_SWITCH_RAD = PI / 2.0; // 90 deg
     constexpr double REVERSE_SPEED_SCALE = 0.6;     // reverse safety scale
+    constexpr double SLOWDOWN_DIST_M = 0.5;
+    constexpr double SLOWDOWN_SCALE = 0.5;
 
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
 
     const double target_heading = std::atan2(dy, dx);
-    const double err_yaw_fwd = normalizeAngle(target_heading - pose.yaw);
+    constexpr double YAW_FRAME_OFFSET_RAD = 0.0; // tracker yaw is already aligned to +x=0
+    const double pose_yaw_ctrl = normalizeAngle(pose.yaw + YAW_FRAME_OFFSET_RAD);
+    const double err_yaw_fwd = normalizeAngle(target_heading - pose_yaw_ctrl);
     const bool use_reverse = (std::fabs(err_yaw_fwd) > REVERSE_SWITCH_RAD);
     const double err_yaw = use_reverse ? normalizeAngle(err_yaw_fwd + PI) : err_yaw_fwd;
 
@@ -356,7 +487,11 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, 
     }
 
     const double speed_abs = clamp(k_linear_ * dist, 0.0, max_speed_mps_);
-    cmd.speed_mps = use_reverse ? (-speed_abs * REVERSE_SPEED_SCALE) : speed_abs;
+    double speed_cmd = use_reverse ? (-speed_abs * REVERSE_SPEED_SCALE) : speed_abs;
+    if (dist <= SLOWDOWN_DIST_M) {
+        speed_cmd *= SLOWDOWN_SCALE;
+    }
+    cmd.speed_mps = speed_cmd;
     cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
     return cmd;
 }
@@ -382,7 +517,7 @@ bool RcControlNode::publishStatus(const RcStatus& status) {
     return (rc == MOSQ_ERR_SUCCESS);
 }
 
-void RcControlNode::sendCommandToRc(const RcCommand& cmd) const {
+void RcControlNode::sendCommandToRc(const RcCommand& cmd, int servo_us) const {
     // TODO(team): replace this with real motor/steering transport (UART/CAN/PWM/etc).
     // 1) 작은 속도는 그냥 정지(떨림 방지)
     const double speed_abs = std::fabs(cmd.speed_mps);
@@ -396,20 +531,32 @@ void RcControlNode::sendCommandToRc(const RcCommand& cmd) const {
     if (pwm < 70) pwm = 70;     // 최소 구동 (차에 맞게 튜닝)
     if (pwm > 180) pwm = 180;   // 상한(안전)
 
-    // 3) yaw_rate(rad/s) -> servo us(750~1750)
-    // 기본 가정: +yaw_rate => 좌회전 방향으로 조향.
-    // 후진 시에는 동일 yaw 방향을 만들기 위해 조향 부호를 반대로 준다.
+    // 3) yaw_rate(rad/s) -> servo us(900~1600)
     const bool reverse = (cmd.speed_mps < 0.0);
-    const double steer_cmd = reverse ? -cmd.yaw_rate_rps : cmd.yaw_rate_rps;
-    int us = 1250 + (int)std::round(steer_cmd / max_yaw_rate_rps_ * 500.0);
-    if (us < 750)  us = 750;
-    if (us > 1750) us = 1750;
-
-    setServoUs(us);
+    setServoUs(servo_us);
     setMotorControl(pwm, reverse ? BACKWARD : FORWARD);
 
     // 디버그 필요하면:
-    // std::cout << "[HW] pwm=" << pwm << " us=" << us << "\n";
+    // std::cout << "[HW] pwm=" << pwm << " us=" << servo_us << "\n";
+}
+
+int RcControlNode::computeServoUs(const RcCommand& cmd) const {
+    constexpr int SERVO_CENTER_US = 1250;
+    constexpr double STEER_HW_SIGN = 1.0;  // positive yaw -> right steering on this platform
+    constexpr double STEER_GAIN = 0.6;     // reduce aggressive steering
+    constexpr int SERVO_MIN_US = 900;
+    constexpr int SERVO_MAX_US = 1600;
+
+    if (max_yaw_rate_rps_ <= 0.0) return SERVO_CENTER_US;
+
+    // Kinematic reverse compensation, then hardware sign/scale.
+    const bool reverse = (cmd.speed_mps < 0.0);
+    const double steer_body = reverse ? -cmd.yaw_rate_rps : cmd.yaw_rate_rps;
+    const double steer_cmd = STEER_HW_SIGN * STEER_GAIN * steer_body;
+    int us = SERVO_CENTER_US + (int)std::round(steer_cmd / max_yaw_rate_rps_ * 500.0);
+    if (us < SERVO_MIN_US) us = SERVO_MIN_US;
+    if (us > SERVO_MAX_US) us = SERVO_MAX_US;
+    return us;
 }
 
 double RcControlNode::normalizeAngle(double rad)
@@ -469,7 +616,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);
-    node.setControlParams(0.8, 1.2, 0.8, 1.5, 0.15);
+    node.setControlParams(0.8, 1.2, 1.5, 1.5, 0.15);
 
     if (!node.start()) return 1;
     node.run();

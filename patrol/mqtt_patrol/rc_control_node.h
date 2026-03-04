@@ -73,7 +73,8 @@ private:
     void controlStep();
     RcCommand computeCommand(const RcPose& pose, const RcGoal& goal, RcStatus& out_status) const;
     bool publishStatus(const RcStatus& status);
-    void sendCommandToRc(const RcCommand& cmd) const;
+    void sendCommandToRc(const RcCommand& cmd, int servo_us) const;
+    int computeServoUs(const RcCommand& cmd) const;
 
     static double normalizeAngle(double rad);
     static double clamp(double v, double lo, double hi);
@@ -104,4 +105,5 @@ private:
     RcGoal goal_;
     RcPose pose_;
     RcSafety safety_;
+    bool reached_hold_ = false;
 };

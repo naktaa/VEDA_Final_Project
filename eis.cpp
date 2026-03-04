@@ -1,14 +1,14 @@
 /**
- * eis.cpp — 자이로 1차 EIS (Phase 1: Gyro-Only 테스트)
+ * eis.cpp — 하이브리드 EIS (자이로 Roll + LK 이동 보정, 단일 warp)
  *
  * 보정 원리:
- *   자이로 고주파 필터로 roll/pitch/yaw jitter 추출
- *   → 역회전 행렬 생성 → warpAffine으로 현재 프레임 보정
- *   (LK+칼만은 Phase 2에서 2차 보정으로 추가 예정)
+ *   1) 자이로 고주파 필터 → roll jitter 추출 → 역회전 행렬
+ *   2) LK OptFlow + 칼만 → 원본 프레임의 이동/회전 보정 행렬
+ *   3) 두 행렬을 합쳐서 warpAffine 1회만 호출 (여백 최소화)
  *
  * RTSP 출력:
  *   /raw  — 원본 영상
- *   /cam  — 자이로 보정 영상
+ *   /cam  — 보정 영상
  */
 
 #include <opencv2/opencv.hpp>
@@ -49,26 +49,22 @@ static const int G_FPS = 24;
 static const int IMU_ADDR = 0x68;
 static const double GYRO_SENSITIVITY = 131.0;
 
-// ---- 자이로 고주파 필터 (1단계: 메인 보정) ----
-static const double SMOOTH_ALPHA = 0.995; // 0.97→0.995 (느리게 추종 → jitter 크게 추출)
+// ---- 자이로 고주파 필터 (roll 보정만 담당) ----
+static const double SMOOTH_ALPHA = 0.99;
 static const double ROLL_GAIN  = 1.0;
-static const double PITCH_GAIN = 1.0;  // 0.5→1.0 (메인 보정이므로 full gain)
-static const double YAW_GAIN   = 1.0;  // 새로 추가
-static const double MAX_ROLL_RAD  = 12.0 * CV_PI / 180.0;  // 8→12도 (메인이므로 범위 확대)
-static const double MAX_PITCH_RAD = 10.0 * CV_PI / 180.0;  // 5→10도
-static const double MAX_YAW_RAD   = 10.0 * CV_PI / 180.0;  // 새로 추가
+static const double MAX_ROLL_RAD  = 10.0 * CV_PI / 180.0;
 
 // 적응형 Alpha
-static const double ADAPT_THRESHOLD = 3.0 * CV_PI / 180.0;  // 5→3도 (더 빨리 적응)
+static const double ADAPT_THRESHOLD = 3.0 * CV_PI / 180.0;
 static const double ADAPT_RATE = 15.0;
-static const double ADAPT_MIN_ALPHA = 0.85;  // 0.80→0.85 (과잉보정 방지)
+static const double ADAPT_MIN_ALPHA = 0.85;
 
-// ---- LK Optical Flow (Phase 2에서 2차 보정으로 사용 예정) ----
+// ---- LK Optical Flow (이동 + 잔여 회전 보정) ----
 static const int LK_MAX_FEATURES = 200;
 static const double LK_QUALITY = 0.01;
 static const double LK_MIN_DIST = 30.0;
 
-// ---- 칼만 필터 (Phase 2에서 사용 예정) ----
+// ---- 칼만 필터 ----
 static const double KF_Q = 0.004;
 static const double KF_R = 1.0;
 static const double MAX_DIFF_DX = 30.0;
@@ -76,7 +72,7 @@ static const double MAX_DIFF_DY = 30.0;
 static const double MAX_DIFF_DA = 5.0 * CV_PI / 180.0;
 
 // 크롭
-static const double FIXED_CROP_PERCENT = 15.0; // 20→15% (자이로 보정은 여백 적음 → 화각 확보)
+static const double FIXED_CROP_PERCENT = 20.0;
 
 // 카메라 FOV
 static const double HFOV_DEG = 62.2;
@@ -505,11 +501,11 @@ static void capture_loop() {
 
     guint64 frameIdx = 0;
 
-    // 자이로 고주파 필터 (1단계: 메인 보정)
+    // 자이로 고주파 필터 (roll 보정)
     HighPassState hp = {0, 0, 0, false};
 
-    // LK + 칼만 (2단계: 잔여 이동 보정)
-    Mat prev_gray;
+    // LK + 칼만 (원본 프레임 기반 이동/회전 보정)
+    Mat prev_gray, prev_frame;
     int lk_count = 0;
     KalmanState kf_theta, kf_tx, kf_ty;
     kalman_init(kf_theta, KF_Q, KF_R);
@@ -520,10 +516,9 @@ static void capture_loop() {
         Mat frame;
         if (!pull_frame(frame) || frame.empty()) continue;
 
-        // 프레임 캡처 시점 타임스탬프
         double frame_time = now_ms();
 
-        // IMU 평균 샘플 가져오기
+        // IMU 평균 샘플
         ImuAverageResult imu_result;
         bool imu_ready;
         {
@@ -533,85 +528,41 @@ static void capture_loop() {
         }
         ImuPose pose = imu_result.pose;
 
-        Mat gyro_corrected;  // 1단계 결과
-        double jitter_roll = 0, jitter_pitch = 0, jitter_yaw = 0;
-
-        // ============================================================
-        // 1단계: 자이로 고주파 필터 → 현재 프레임에 직접 보정
-        //        roll/pitch/yaw jitter를 추출하여 역회전 적용
-        // ============================================================
+        // 자이로 roll jitter 추출
+        double jitter_roll = 0;
+        double roll_corr = 0;
 
         if (imu_ready) {
             if (!hp.initialized) {
-                hp.smooth_roll  = pose.roll;
-                hp.smooth_pitch = pose.pitch;
-                hp.smooth_yaw   = pose.yaw;
-                hp.initialized  = true;
-                gyro_corrected = frame.clone();
-            }
-            else {
-                double diff_r = pose.roll  - hp.smooth_roll;
-                double diff_p = pose.pitch - hp.smooth_pitch;
-                double diff_y = pose.yaw   - hp.smooth_yaw;
-
+                hp.smooth_roll = pose.roll;
+                hp.initialized = true;
+            } else {
+                double diff_r = pose.roll - hp.smooth_roll;
                 double alpha_r = adaptiveAlpha(SMOOTH_ALPHA, diff_r, ADAPT_THRESHOLD, ADAPT_RATE, ADAPT_MIN_ALPHA);
-                double alpha_p = adaptiveAlpha(SMOOTH_ALPHA, diff_p, ADAPT_THRESHOLD, ADAPT_RATE, ADAPT_MIN_ALPHA);
-                double alpha_y = adaptiveAlpha(SMOOTH_ALPHA, diff_y, ADAPT_THRESHOLD, ADAPT_RATE, ADAPT_MIN_ALPHA);
-
-                hp.smooth_roll  = alpha_r * hp.smooth_roll  + (1.0 - alpha_r) * pose.roll;
-                hp.smooth_pitch = alpha_p * hp.smooth_pitch + (1.0 - alpha_p) * pose.pitch;
-                hp.smooth_yaw   = alpha_y * hp.smooth_yaw   + (1.0 - alpha_y) * pose.yaw;
-
-                jitter_roll  = pose.roll  - hp.smooth_roll;
-                jitter_pitch = pose.pitch - hp.smooth_pitch;
-                jitter_yaw   = pose.yaw   - hp.smooth_yaw;
-
-                double roll_corr  = -std::clamp(jitter_roll  * ROLL_GAIN,  -MAX_ROLL_RAD,  MAX_ROLL_RAD);
-                double pitch_corr = -std::clamp(jitter_pitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
-                double yaw_corr   = -std::clamp(jitter_yaw   * YAW_GAIN,   -MAX_YAW_RAD,   MAX_YAW_RAD);
-
-                double jitter_thresh = 0.02 * CV_PI / 180.0;
-                if (std::abs(jitter_roll)  > jitter_thresh ||
-                    std::abs(jitter_pitch) > jitter_thresh ||
-                    std::abs(jitter_yaw)   > jitter_thresh) {
-
-                    double dx_yaw   = fx * yaw_corr;
-                    double dy_pitch = fy * pitch_corr;
-                    double cos_r = cos(roll_corr);
-                    double sin_r = sin(roll_corr);
-                    double gtx = (1.0 - cos_r) * cx_cam + sin_r * cy_cam + dx_yaw;
-                    double gty = -sin_r * cx_cam + (1.0 - cos_r) * cy_cam + dy_pitch;
-
-                    Mat T_gyro = (Mat_<double>(2, 3) << cos_r, -sin_r, gtx,
-                                  sin_r, cos_r, gty);
-                    warpAffine(frame, gyro_corrected, T_gyro, frame.size());
-                }
-                else {
-                    gyro_corrected = frame.clone();
-                }
+                hp.smooth_roll = alpha_r * hp.smooth_roll + (1.0 - alpha_r) * pose.roll;
+                jitter_roll = pose.roll - hp.smooth_roll;
+                roll_corr = -std::clamp(jitter_roll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
             }
-        }
-        else {
-            gyro_corrected = frame.clone();
+        } else {
             hp.initialized = false;
         }
 
         // ============================================================
-        // 2단계: LK OptFlow + 칼만 → 자이로 보정 프레임의 잔여 이동 보정
-        //        (자이로가 못 잡는 dx, dy + 잔여 da)
+        // LK OptFlow + 칼만 (원본 프레임 기반)
+        // + 자이로 roll 보정을 행렬에 합쳐서 warpAffine 1회만 호출
         // ============================================================
 
         Mat stabilized;
         double lk_diff_dx = 0, lk_diff_dy = 0, lk_diff_da = 0;
 
         Mat curr_gray;
-        cvtColor(gyro_corrected, curr_gray, COLOR_BGR2GRAY);
+        cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
 
         if (lk_count == 0) {
-            // 첫 프레임: 저장만
             prev_gray = curr_gray.clone();
+            prev_frame = frame.clone();
             lk_count++;
-            stabilized = gyro_corrected.clone();
+            stabilized = frame.clone();
         }
         else {
             vector<Point2f> feat_prev, feat_curr;
@@ -638,6 +589,8 @@ static void capture_loop() {
                         double dx = affine.at<double>(0, 2);
                         double dy = affine.at<double>(1, 2);
                         double da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+                        double sx = affine.at<double>(0, 0) / cos(da);
+                        double sy = affine.at<double>(1, 1) / cos(da);
 
                         kalman_update(kf_theta, da);
                         kalman_update(kf_tx, dx);
@@ -650,23 +603,45 @@ static void capture_loop() {
                         }
                         lk_count++;
 
-                        // 잔여 보정 적용
-                        double cos_a = cos(da + lk_diff_da);
-                        double sin_a = sin(da + lk_diff_da);
-                        Mat smoothed = (Mat_<double>(2, 3) << cos_a, -sin_a, dx + lk_diff_dx,
-                                        sin_a, cos_a, dy + lk_diff_dy);
+                        // LK smoothed 변환 행렬 (prev_frame → 안정화 프레임)
+                        double sda = da + lk_diff_da;
+                        double sdx = dx + lk_diff_dx;
+                        double sdy = dy + lk_diff_dy;
 
-                        warpAffine(gyro_corrected, stabilized, smoothed, frame.size());
+                        Mat smoothed = (Mat_<double>(2, 3) << sx * cos(sda), sx * -sin(sda), sdx,
+                                        sy * sin(sda), sy * cos(sda), sdy);
+
+                        // 자이로 roll 보정 행렬 (프레임 중심 기준 회전)
+                        if (std::abs(roll_corr) > 0.0003) {  // ~0.02도
+                            double cos_r = cos(roll_corr);
+                            double sin_r = sin(roll_corr);
+                            double gtx = (1.0 - cos_r) * cx_cam + sin_r * cy_cam;
+                            double gty = -sin_r * cx_cam + (1.0 - cos_r) * cy_cam;
+
+                            Mat T_gyro = (Mat_<double>(2, 3) << cos_r, -sin_r, gtx,
+                                          sin_r, cos_r, gty);
+
+                            // 행렬 합성: T_gyro × smoothed (3x3 확장 후 곱셈)
+                            Mat S3 = Mat::eye(3, 3, CV_64F);
+                            smoothed.copyTo(S3(Rect(0, 0, 3, 2)));
+                            Mat G3 = Mat::eye(3, 3, CV_64F);
+                            T_gyro.copyTo(G3(Rect(0, 0, 3, 2)));
+                            Mat combined3 = G3 * S3;
+                            smoothed = combined3(Rect(0, 0, 3, 2)).clone();
+                        }
+
+                        warpAffine(prev_frame, stabilized, smoothed, frame.size());
                         lk_ok = true;
                     }
                 }
             }
 
             if (!lk_ok) {
-                stabilized = gyro_corrected.clone();
+                stabilized = frame.clone();
             }
 
             prev_gray = curr_gray.clone();
+            prev_frame = frame.clone();
         }
 
         // 고정 크롭
@@ -678,15 +653,13 @@ static void capture_loop() {
             const int font = FONT_HERSHEY_SIMPLEX;
 
             if (imu_ready) {
-                snprintf(buf, sizeof(buf), "Gyro R:%+5.2f P:%+5.2f Y:%+5.2f",
-                         pose.roll * 180 / CV_PI, pose.pitch * 180 / CV_PI,
-                         pose.yaw * 180 / CV_PI);
+                snprintf(buf, sizeof(buf), "Roll jit:%+5.2f  corr:%+5.2f",
+                         jitter_roll * 180 / CV_PI, roll_corr * 180 / CV_PI);
                 putText(stabilized, buf, Point(8, 18), font, 0.4, Scalar(0, 255, 0), 1, LINE_AA);
 
-                snprintf(buf, sizeof(buf), "Jit R:%+4.2f P:%+4.2f Y:%+4.2f  LK dx:%+.1f dy:%+.1f",
-                         jitter_roll * 180 / CV_PI, jitter_pitch * 180 / CV_PI,
-                         jitter_yaw * 180 / CV_PI, lk_diff_dx, lk_diff_dy);
-                putText(stabilized, buf, Point(8, 33), font, 0.35, Scalar(255, 200, 0), 1, LINE_AA);
+                snprintf(buf, sizeof(buf), "LK dx:%+5.1f dy:%+5.1f da:%+4.2f",
+                         lk_diff_dx, lk_diff_dy, lk_diff_da * 180 / CV_PI);
+                putText(stabilized, buf, Point(8, 33), font, 0.4, Scalar(255, 200, 0), 1, LINE_AA);
             }
             else {
                 putText(stabilized, "IMU: NOT READY", Point(8, 18), font, 0.45, Scalar(0, 0, 255), 1, LINE_AA);
@@ -701,16 +674,7 @@ static void capture_loop() {
             stabsrc = g_stabsrc;
         }
 
-        Mat raw_out = frame.clone();
-        if (DEBUG_OVERLAY && imu_ready) {
-            char buf[140];
-            snprintf(buf, sizeof(buf), "R:%+.1f P:%+.1f Y:%+.1f",
-                     pose.roll * 180 / CV_PI, pose.pitch * 180 / CV_PI,
-                     pose.yaw * 180 / CV_PI);
-            putText(raw_out, buf, Point(8, 18), FONT_HERSHEY_SIMPLEX, 0.35, Scalar(0, 255, 0), 1, LINE_AA);
-        }
-
-        push_bgr(rawsrc, raw_out, frameIdx, "raw");
+        push_bgr(rawsrc, frame, frameIdx, "raw");
         push_bgr(stabsrc, stabilized, frameIdx, "cam");
         frameIdx++;
     }
@@ -748,12 +712,10 @@ int main(int argc, char* argv[]) {
     }
 
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, " EIS — Phase 2: Gyro 1st + LK 2nd\n");
+    fprintf(stderr, " EIS — Hybrid (Gyro Roll + LK, Single Warp)\n");
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, "  1단계: 자이로 고주파 필터 (alpha=%.3f)\n", SMOOTH_ALPHA);
-    fprintf(stderr, "  Roll: ±%.1f°  Pitch: ±%.1f°  Yaw: ±%.1f°\n",
-            MAX_ROLL_RAD * 180 / CV_PI, MAX_PITCH_RAD * 180 / CV_PI, MAX_YAW_RAD * 180 / CV_PI);
-    fprintf(stderr, "  2단계: LK OptFlow + Kalman (Q=%.4f R=%.1f)\n", KF_Q, KF_R);
+    fprintf(stderr, "  Gyro: roll HF filter (alpha=%.3f, max=±%.1f°)\n", SMOOTH_ALPHA, MAX_ROLL_RAD * 180 / CV_PI);
+    fprintf(stderr, "  LK: OptFlow + Kalman (Q=%.4f R=%.1f)\n", KF_Q, KF_R);
     fprintf(stderr, "  Crop: %.0f%%\n", FIXED_CROP_PERCENT);
     fprintf(stderr, "  rtsp://<PI_IP>:8555/raw | /cam\n");
     fprintf(stderr, "==============================\n");

@@ -508,13 +508,13 @@ static void capture_loop() {
     // 자이로 고주파 필터 (1단계: 메인 보정)
     HighPassState hp = {0, 0, 0, false};
 
-    // LK + 칼만은 Phase 2에서 사용 예정 (현재 비활성)
-    // Mat prev_gray, prev_frame;
-    // int lk_count = 0;
-    // KalmanState kf_theta, kf_tx, kf_ty;
-    // kalman_init(kf_theta, KF_Q, KF_R);
-    // kalman_init(kf_tx, KF_Q, KF_R);
-    // kalman_init(kf_ty, KF_Q, KF_R);
+    // LK + 칼만 (2단계: 잔여 이동 보정)
+    Mat prev_gray;
+    int lk_count = 0;
+    KalmanState kf_theta, kf_tx, kf_ty;
+    kalman_init(kf_theta, KF_Q, KF_R);
+    kalman_init(kf_tx, KF_Q, KF_R);
+    kalman_init(kf_ty, KF_Q, KF_R);
 
     while (g_running) {
         Mat frame;
@@ -533,7 +533,7 @@ static void capture_loop() {
         }
         ImuPose pose = imu_result.pose;
 
-        Mat stabilized;
+        Mat gyro_corrected;  // 1단계 결과
         double jitter_roll = 0, jitter_pitch = 0, jitter_yaw = 0;
 
         // ============================================================
@@ -543,15 +543,13 @@ static void capture_loop() {
 
         if (imu_ready) {
             if (!hp.initialized) {
-                // 첫 프레임: smooth 값 초기화
                 hp.smooth_roll  = pose.roll;
                 hp.smooth_pitch = pose.pitch;
                 hp.smooth_yaw   = pose.yaw;
                 hp.initialized  = true;
-                stabilized = frame.clone();
+                gyro_corrected = frame.clone();
             }
             else {
-                // 적응형 알파로 smooth 업데이트
                 double diff_r = pose.roll  - hp.smooth_roll;
                 double diff_p = pose.pitch - hp.smooth_pitch;
                 double diff_y = pose.yaw   - hp.smooth_yaw;
@@ -564,48 +562,111 @@ static void capture_loop() {
                 hp.smooth_pitch = alpha_p * hp.smooth_pitch + (1.0 - alpha_p) * pose.pitch;
                 hp.smooth_yaw   = alpha_y * hp.smooth_yaw   + (1.0 - alpha_y) * pose.yaw;
 
-                // 고주파 성분(jitter) 추출
                 jitter_roll  = pose.roll  - hp.smooth_roll;
                 jitter_pitch = pose.pitch - hp.smooth_pitch;
                 jitter_yaw   = pose.yaw   - hp.smooth_yaw;
 
-                // jitter → 역보정량 (부호 반전, 클램핑)
                 double roll_corr  = -std::clamp(jitter_roll  * ROLL_GAIN,  -MAX_ROLL_RAD,  MAX_ROLL_RAD);
                 double pitch_corr = -std::clamp(jitter_pitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
                 double yaw_corr   = -std::clamp(jitter_yaw   * YAW_GAIN,   -MAX_YAW_RAD,   MAX_YAW_RAD);
 
-                // 의미 있는 jitter가 있을 때만 보정
                 double jitter_thresh = 0.02 * CV_PI / 180.0;
                 if (std::abs(jitter_roll)  > jitter_thresh ||
                     std::abs(jitter_pitch) > jitter_thresh ||
                     std::abs(jitter_yaw)   > jitter_thresh) {
 
-                    // pitch → 수직 이동, yaw → 수평 이동 (focal length 매핑)
                     double dx_yaw   = fx * yaw_corr;
                     double dy_pitch = fy * pitch_corr;
-
-                    // roll → 영상 회전 (프레임 중심 기준)
                     double cos_r = cos(roll_corr);
                     double sin_r = sin(roll_corr);
-
-                    // 회전 중심을 프레임 중심으로 + pitch/yaw 이동 결합
                     double gtx = (1.0 - cos_r) * cx_cam + sin_r * cy_cam + dx_yaw;
                     double gty = -sin_r * cx_cam + (1.0 - cos_r) * cy_cam + dy_pitch;
 
                     Mat T_gyro = (Mat_<double>(2, 3) << cos_r, -sin_r, gtx,
                                   sin_r, cos_r, gty);
-
-                    warpAffine(frame, stabilized, T_gyro, frame.size());
+                    warpAffine(frame, gyro_corrected, T_gyro, frame.size());
                 }
                 else {
-                    stabilized = frame.clone();
+                    gyro_corrected = frame.clone();
                 }
             }
         }
         else {
-            // IMU 미준비 시 원본 그대로
-            stabilized = frame.clone();
+            gyro_corrected = frame.clone();
             hp.initialized = false;
+        }
+
+        // ============================================================
+        // 2단계: LK OptFlow + 칼만 → 자이로 보정 프레임의 잔여 이동 보정
+        //        (자이로가 못 잡는 dx, dy + 잔여 da)
+        // ============================================================
+
+        Mat stabilized;
+        double lk_diff_dx = 0, lk_diff_dy = 0, lk_diff_da = 0;
+
+        Mat curr_gray;
+        cvtColor(gyro_corrected, curr_gray, COLOR_BGR2GRAY);
+
+        if (lk_count == 0) {
+            // 첫 프레임: 저장만
+            prev_gray = curr_gray.clone();
+            lk_count++;
+            stabilized = gyro_corrected.clone();
+        }
+        else {
+            vector<Point2f> feat_prev, feat_curr;
+            goodFeaturesToTrack(prev_gray, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
+
+            bool lk_ok = false;
+
+            if (feat_prev.size() >= 10) {
+                vector<uchar> status;
+                vector<float> err_vec;
+                calcOpticalFlowPyrLK(prev_gray, curr_gray, feat_prev, feat_curr, status, err_vec);
+
+                vector<Point2f> gp, gc;
+                for (size_t i = 0; i < status.size(); i++) {
+                    if (status[i]) {
+                        gp.push_back(feat_prev[i]);
+                        gc.push_back(feat_curr[i]);
+                    }
+                }
+
+                if (gp.size() >= 6) {
+                    Mat affine = estimateAffinePartial2D(gp, gc);
+                    if (!affine.empty()) {
+                        double dx = affine.at<double>(0, 2);
+                        double dy = affine.at<double>(1, 2);
+                        double da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+
+                        kalman_update(kf_theta, da);
+                        kalman_update(kf_tx, dx);
+                        kalman_update(kf_ty, dy);
+
+                        if (lk_count >= 2) {
+                            lk_diff_da = kalman_diff(kf_theta, MAX_DIFF_DA);
+                            lk_diff_dx = kalman_diff(kf_tx, MAX_DIFF_DX);
+                            lk_diff_dy = kalman_diff(kf_ty, MAX_DIFF_DY);
+                        }
+                        lk_count++;
+
+                        // 잔여 보정 적용
+                        double cos_a = cos(da + lk_diff_da);
+                        double sin_a = sin(da + lk_diff_da);
+                        Mat smoothed = (Mat_<double>(2, 3) << cos_a, -sin_a, dx + lk_diff_dx,
+                                        sin_a, cos_a, dy + lk_diff_dy);
+
+                        warpAffine(gyro_corrected, stabilized, smoothed, frame.size());
+                        lk_ok = true;
+                    }
+                }
+            }
+
+            if (!lk_ok) {
+                stabilized = gyro_corrected.clone();
+            }
+
+            prev_gray = curr_gray.clone();
         }
 
         // 고정 크롭
@@ -622,10 +683,10 @@ static void capture_loop() {
                          pose.yaw * 180 / CV_PI);
                 putText(stabilized, buf, Point(8, 18), font, 0.4, Scalar(0, 255, 0), 1, LINE_AA);
 
-                snprintf(buf, sizeof(buf), "Jit R:%+4.2f P:%+4.2f Y:%+4.2f (n=%d)",
+                snprintf(buf, sizeof(buf), "Jit R:%+4.2f P:%+4.2f Y:%+4.2f  LK dx:%+.1f dy:%+.1f",
                          jitter_roll * 180 / CV_PI, jitter_pitch * 180 / CV_PI,
-                         jitter_yaw * 180 / CV_PI, imu_result.sample_count);
-                putText(stabilized, buf, Point(8, 33), font, 0.4, Scalar(255, 200, 0), 1, LINE_AA);
+                         jitter_yaw * 180 / CV_PI, lk_diff_dx, lk_diff_dy);
+                putText(stabilized, buf, Point(8, 33), font, 0.35, Scalar(255, 200, 0), 1, LINE_AA);
             }
             else {
                 putText(stabilized, "IMU: NOT READY", Point(8, 18), font, 0.45, Scalar(0, 0, 255), 1, LINE_AA);
@@ -687,11 +748,12 @@ int main(int argc, char* argv[]) {
     }
 
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, " EIS — Phase 1: Gyro-Only Stabilization\n");
+    fprintf(stderr, " EIS — Phase 2: Gyro 1st + LK 2nd\n");
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, "  자이로 고주파 필터 (alpha=%.3f)\n", SMOOTH_ALPHA);
+    fprintf(stderr, "  1단계: 자이로 고주파 필터 (alpha=%.3f)\n", SMOOTH_ALPHA);
     fprintf(stderr, "  Roll: ±%.1f°  Pitch: ±%.1f°  Yaw: ±%.1f°\n",
             MAX_ROLL_RAD * 180 / CV_PI, MAX_PITCH_RAD * 180 / CV_PI, MAX_YAW_RAD * 180 / CV_PI);
+    fprintf(stderr, "  2단계: LK OptFlow + Kalman (Q=%.4f R=%.1f)\n", KF_Q, KF_R);
     fprintf(stderr, "  Crop: %.0f%%\n", FIXED_CROP_PERCENT);
     fprintf(stderr, "  rtsp://<PI_IP>:8555/raw | /cam\n");
     fprintf(stderr, "==============================\n");

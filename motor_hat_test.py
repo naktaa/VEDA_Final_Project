@@ -21,7 +21,7 @@ except ImportError:
     sys.exit(1)
 
 # ─── MotorHAT 초기화 (I2C 주소 0x40) ───
-mh = Adafruit_MotorHAT(addr=0x40)
+mh = Adafruit_MotorHAT(addr=0x40, i2c_bus=1)
 
 # Motor 1, 2, 3, 4 중 어떤 것이 연결되어 있는지 테스트
 def test_motor(motor_num, speed=150):

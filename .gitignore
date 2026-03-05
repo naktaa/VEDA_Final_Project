@@ -2,3 +2,22 @@ __pycache__/
 *.pyc
 two_servo_cpp
 JetBot-AI-Robot-Car/
+
+# Build
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Object files
+*.o
+*.a
+*.so
+
+# Executables
+*.exe
+*.out
+
+# VSCode
+.vscode/

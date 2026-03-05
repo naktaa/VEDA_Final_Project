@@ -9,31 +9,21 @@ import busio
 from adafruit_pca9685 import PCA9685
 from adafruit_motor import motor
 
-# Yahboom JetBot Hardware Manual 기준 매핑
 I2C_ADDR = 0x40
-FREQ_HZ = 1600
+FREQ_HZ = 1000  # 필요하면 100 ~ 1600 범위로 바꿔 테스트
 
-RIGHT_A = 8
-RIGHT_B = 9
-LEFT_A = 10
-LEFT_B = 11
+# Adafruit Motor HAT/FeatherWing 매핑
+EN_A = 8
+A1 = 9
+A2 = 10
 
-# 속도/턴 조정
-SPEED = 0.6       # 전진/후진 기본 속도 (0.0~1.0)
-TURN_SCALE = 0.5  # 회전 시 한쪽 바퀴 속도 배율
-IDLE_STOP_SEC = 0.2  # 이 시간 동안 입력 없으면 정지
+EN_B = 13
+B1 = 11
+B2 = 12
 
-def make_motor(pca, a, b):
-    # 방향이 반대면 a/b를 바꾸세요.
-    return motor.DCMotor(pca.channels[a], pca.channels[b])
-
-def stop(m, brake=True):
-    # brake=True면 강제 브레이크(0), False면 코스트(None)
-    m.throttle = 0 if brake else None
-
-def set_motion(left, right, lspd, rspd):
-    left.throttle = lspd
-    right.throttle = rspd
+SPEED = 0.6
+TURN_SCALE = 0.5
+IDLE_STOP_SEC = 0.2
 
 def read_key(timeout=0.05):
     rlist, _, _ = select.select([sys.stdin], [], [], timeout)
@@ -46,8 +36,12 @@ def main():
     pca = PCA9685(i2c, address=I2C_ADDR)
     pca.frequency = FREQ_HZ
 
-    right = make_motor(pca, RIGHT_A, RIGHT_B)
-    left = make_motor(pca, LEFT_A, LEFT_B)
+    # Enable 채널 HIGH
+    pca.channels[EN_A].duty_cycle = 0xFFFF
+    pca.channels[EN_B].duty_cycle = 0xFFFF
+
+    motor_a = motor.DCMotor(pca.channels[A1], pca.channels[A2])  # 오른쪽/왼쪽은 상황에 따라 바꿔도 됨
+    motor_b = motor.DCMotor(pca.channels[B1], pca.channels[B2])
 
     old = termios.tcgetattr(sys.stdin)
     tty.setcbreak(sys.stdin.fileno())
@@ -64,26 +58,30 @@ def main():
                 k = key.lower()
 
                 if k == 'w':
-                    set_motion(left, right, SPEED, SPEED)
+                    motor_a.throttle = SPEED
+                    motor_b.throttle = SPEED
                 elif k == 's':
-                    set_motion(left, right, -SPEED, -SPEED)
+                    motor_a.throttle = -SPEED
+                    motor_b.throttle = -SPEED
                 elif k == 'a':
-                    set_motion(left, right, SPEED * TURN_SCALE, SPEED)
+                    motor_a.throttle = SPEED * TURN_SCALE
+                    motor_b.throttle = SPEED
                 elif k == 'd':
-                    set_motion(left, right, SPEED, SPEED * TURN_SCALE)
+                    motor_a.throttle = SPEED
+                    motor_b.throttle = SPEED * TURN_SCALE
                 elif k == ' ':
-                    stop(left, brake=True)
-                    stop(right, brake=True)
+                    motor_a.throttle = 0
+                    motor_b.throttle = 0
                 elif k == 'q':
                     break
 
             if now - last_input > IDLE_STOP_SEC:
-                stop(left, brake=True)
-                stop(right, brake=True)
+                motor_a.throttle = 0
+                motor_b.throttle = 0
 
     finally:
-        stop(left, brake=True)
-        stop(right, brake=True)
+        motor_a.throttle = 0
+        motor_b.throttle = 0
         pca.deinit()
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
 

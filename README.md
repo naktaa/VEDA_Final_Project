@@ -1,8 +1,3 @@
-좋다. 지금까지 한 작업을 **프로젝트 README 형식**으로 정리해준다.
-(실제 GitHub에 올려도 되는 수준으로 작성)
-
----
-
 # Yahboom Bus Servo Control using Raspberry Pi
 
 Raspberry Pi와 Yahboom PTZ Bus Servo 확장보드를 이용하여 **UART 기반 직렬 통신으로 PAN/TILT 서보를 제어하는 시스템**이다.

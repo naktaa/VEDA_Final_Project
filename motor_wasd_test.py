@@ -2,7 +2,16 @@
 """
 motor_wasd_test.py
 Yahboom YB-EJF01 VER1.4 확장보드 DC 모터 WASD 제어 테스트
-PCA9685 (I2C 0x40) + H-Bridge 로 DC 모터 2개 제어
+PCA9685 (I2C 0x40) + TB6612FNG H-Bridge 로 DC 모터 2개 제어
+
+TB6612FNG 제어 방식 (모터 1개당 3채널):
+  PWM 채널 : 속도 제어 (0~4095)
+  IN1 채널 : 방향 제어 핀 1 (0 또는 4095)
+  IN2 채널 : 방향 제어 핀 2 (0 또는 4095)
+
+  전진: IN1=HIGH, IN2=LOW,  PWM=속도
+  후진: IN1=LOW,  IN2=HIGH, PWM=속도
+  정지: IN1=LOW,  IN2=LOW,  PWM=0
 
 조작법:
   W : 전진       S : 후진
@@ -14,7 +23,7 @@ PCA9685 (I2C 0x40) + H-Bridge 로 DC 모터 2개 제어
 """
 import time
 import curses
-import smbus2
+import smbus
 
 # ─── PCA9685 설정 ───
 PCA9685_ADDR = 0x40
@@ -26,13 +35,18 @@ def led_on_h(ch):  return 0x07 + 4 * ch
 def led_off_l(ch): return 0x08 + 4 * ch
 def led_off_h(ch): return 0x09 + 4 * ch
 
-# ─── 모터 채널 매핑 (Yahboom 기본값) ───
-MOTOR_R_IN_A = 8    # 오른쪽 모터 정방향
-MOTOR_R_IN_B = 9    # 오른쪽 모터 역방향
-MOTOR_L_IN_A = 10   # 왼쪽 모터 정방향
-MOTOR_L_IN_B = 11   # 왼쪽 모터 역방향
+# ─── Adafruit MotorHAT 호환 채널 매핑 (TB6612FNG) ───
+# Motor 1 (오른쪽): PWM=CH8,  IN2=CH9,  IN1=CH10
+# Motor 2 (왼쪽):   PWM=CH13, IN2=CH12, IN1=CH11
+MOTOR_R_PWM = 8
+MOTOR_R_IN2 = 9
+MOTOR_R_IN1 = 10
 
-bus = smbus2.SMBus(1)
+MOTOR_L_PWM = 13
+MOTOR_L_IN2 = 12
+MOTOR_L_IN1 = 11
+
+bus = smbus.SMBus(1)
 
 
 def pca9685_init():
@@ -40,21 +54,24 @@ def pca9685_init():
     bus.write_byte_data(PCA9685_ADDR, MODE1, 0x00)
     time.sleep(0.005)
     old_mode = bus.read_byte_data(PCA9685_ADDR, MODE1)
-    bus.write_byte_data(PCA9685_ADDR, MODE1, (old_mode & 0x7F) | 0x10)
-    bus.write_byte_data(PCA9685_ADDR, PRESCALE, 5)
-    bus.write_byte_data(PCA9685_ADDR, MODE1, old_mode)
+    bus.write_byte_data(PCA9685_ADDR, MODE1, (old_mode & 0x7F) | 0x10)  # sleep
+    bus.write_byte_data(PCA9685_ADDR, PRESCALE, 5)  # ~1000Hz
+    bus.write_byte_data(PCA9685_ADDR, MODE1, old_mode)  # wake
     time.sleep(0.005)
-    bus.write_byte_data(PCA9685_ADDR, MODE1, old_mode | 0x80)
+    bus.write_byte_data(PCA9685_ADDR, MODE1, old_mode | 0x80)  # restart
 
 
 def set_pwm(channel, value):
     """PCA9685 채널에 PWM 값 설정 (0~4095)"""
-    if value <= 0:
+    value = max(0, min(4095, value))
+    if value == 0:
+        # 완전 OFF
         bus.write_byte_data(PCA9685_ADDR, led_on_l(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_on_h(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_off_l(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_off_h(channel), 0)
     elif value >= 4095:
+        # 완전 ON (full on bit 설정)
         bus.write_byte_data(PCA9685_ADDR, led_on_l(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_on_h(channel), 0x10)
         bus.write_byte_data(PCA9685_ADDR, led_off_l(channel), 0)
@@ -66,82 +83,102 @@ def set_pwm(channel, value):
         bus.write_byte_data(PCA9685_ADDR, led_off_h(channel), (value >> 8) & 0x0F)
 
 
-def motor_forward(in_a, in_b, speed):
-    set_pwm(in_a, speed)
-    set_pwm(in_b, 0)
+def motor_run(pwm_ch, in1_ch, in2_ch, speed):
+    """
+    모터 구동 (TB6612FNG 방식)
+    speed > 0 : 정방향 (IN1=HIGH, IN2=LOW)
+    speed < 0 : 역방향 (IN1=LOW, IN2=HIGH)
+    speed = 0 : 정지
+    """
+    if speed > 0:
+        set_pwm(in1_ch, 4095)   # IN1 = HIGH
+        set_pwm(in2_ch, 0)      # IN2 = LOW
+        set_pwm(pwm_ch, speed)  # PWM = 속도
+    elif speed < 0:
+        set_pwm(in1_ch, 0)      # IN1 = LOW
+        set_pwm(in2_ch, 4095)   # IN2 = HIGH
+        set_pwm(pwm_ch, -speed) # PWM = 속도 (절대값)
+    else:
+        set_pwm(in1_ch, 0)      # IN1 = LOW
+        set_pwm(in2_ch, 0)      # IN2 = LOW
+        set_pwm(pwm_ch, 0)      # PWM = 0
 
-def motor_backward(in_a, in_b, speed):
-    set_pwm(in_a, 0)
-    set_pwm(in_b, speed)
 
-def motor_stop(in_a, in_b):
-    set_pwm(in_a, 0)
-    set_pwm(in_b, 0)
+def motor_right(speed):
+    """오른쪽 모터 제어 (양수=전진, 음수=후진)"""
+    motor_run(MOTOR_R_PWM, MOTOR_R_IN1, MOTOR_R_IN2, speed)
+
+def motor_left(speed):
+    """왼쪽 모터 제어 (양수=전진, 음수=후진)"""
+    motor_run(MOTOR_L_PWM, MOTOR_L_IN1, MOTOR_L_IN2, speed)
 
 def all_stop():
-    motor_stop(MOTOR_R_IN_A, MOTOR_R_IN_B)
-    motor_stop(MOTOR_L_IN_A, MOTOR_L_IN_B)
+    motor_right(0)
+    motor_left(0)
 
 
 # ─── 이동 함수 ───
 def go_forward(speed):
-    motor_forward(MOTOR_R_IN_A, MOTOR_R_IN_B, speed)
-    motor_forward(MOTOR_L_IN_A, MOTOR_L_IN_B, speed)
+    motor_right(speed)
+    motor_left(speed)
 
 def go_backward(speed):
-    motor_backward(MOTOR_R_IN_A, MOTOR_R_IN_B, speed)
-    motor_backward(MOTOR_L_IN_A, MOTOR_L_IN_B, speed)
+    motor_right(-speed)
+    motor_left(-speed)
 
 def turn_left(speed):
     """좌회전: 오른쪽만 전진"""
-    motor_forward(MOTOR_R_IN_A, MOTOR_R_IN_B, speed)
-    motor_stop(MOTOR_L_IN_A, MOTOR_L_IN_B)
+    motor_right(speed)
+    motor_left(0)
 
 def turn_right(speed):
     """우회전: 왼쪽만 전진"""
-    motor_stop(MOTOR_R_IN_A, MOTOR_R_IN_B)
-    motor_forward(MOTOR_L_IN_A, MOTOR_L_IN_B, speed)
+    motor_right(0)
+    motor_left(speed)
 
 def spin_left(speed):
-    """제자리 좌회전: 오른쪽 전진 + 왼쪽 후진"""
-    motor_forward(MOTOR_R_IN_A, MOTOR_R_IN_B, speed)
-    motor_backward(MOTOR_L_IN_A, MOTOR_L_IN_B, speed)
+    """제자리 좌회전"""
+    motor_right(speed)
+    motor_left(-speed)
 
 def spin_right(speed):
-    """제자리 우회전: 오른쪽 후진 + 왼쪽 전진"""
-    motor_backward(MOTOR_R_IN_A, MOTOR_R_IN_B, speed)
-    motor_forward(MOTOR_L_IN_A, MOTOR_L_IN_B, speed)
+    """제자리 우회전"""
+    motor_right(-speed)
+    motor_left(speed)
 
 
 def main(stdscr):
-    curses.curs_set(0)            # 커서 숨기기
-    stdscr.nodelay(True)          # 비블로킹 입력
-    stdscr.timeout(100)           # 100ms마다 갱신
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    stdscr.timeout(100)
 
-    speed = 2000                  # 초기 속도 (0~4095)
-    SPEED_STEP = 400              # 속도 증감 단위
+    speed = 2000              # 초기 속도 (0~4095)
+    SPEED_STEP = 400
     state = "정지"
 
     pca9685_init()
 
-    # ─── UI 그리기 ───
     def draw_ui():
         stdscr.clear()
-        stdscr.addstr(0, 0, "═══════════════════════════════════════")
-        stdscr.addstr(1, 0, "  Yahboom DC Motor WASD 테스트")
-        stdscr.addstr(2, 0, "═══════════════════════════════════════")
-        stdscr.addstr(3, 0, "")
-        stdscr.addstr(4, 0, f"  상태: {state}")
-        stdscr.addstr(5, 0, f"  속도: {speed} / 4095  ({speed*100//4095}%)")
-        stdscr.addstr(6, 0, "")
-        stdscr.addstr(7, 0, "  ─── 조작법 ───")
-        stdscr.addstr(8, 0, "  W : 전진        S : 후진")
-        stdscr.addstr(9, 0, "  A : 좌회전      D : 우회전")
-        stdscr.addstr(10, 0, "  Q : 제자리좌회전  E : 제자리우회전")
-        stdscr.addstr(11, 0, "  + : 속도 증가    - : 속도 감소")
-        stdscr.addstr(12, 0, "  Space : 정지")
-        stdscr.addstr(13, 0, "  X / ESC : 종료")
-        stdscr.addstr(14, 0, "═══════════════════════════════════════")
+        stdscr.addstr(0,  0, "==========================================")
+        stdscr.addstr(1,  0, "  Yahboom DC Motor WASD Test (TB6612FNG)")
+        stdscr.addstr(2,  0, "==========================================")
+        stdscr.addstr(3,  0, "")
+        stdscr.addstr(4,  0, "  State: {}".format(state))
+        stdscr.addstr(5,  0, "  Speed: {} / 4095  ({}%)".format(speed, speed * 100 // 4095))
+        stdscr.addstr(6,  0, "")
+        stdscr.addstr(7,  0, "  --- Controls ---")
+        stdscr.addstr(8,  0, "  W : Forward     S : Backward")
+        stdscr.addstr(9,  0, "  A : Turn Left   D : Turn Right")
+        stdscr.addstr(10, 0, "  Q : Spin Left   E : Spin Right")
+        stdscr.addstr(11, 0, "  + : Speed Up    - : Speed Down")
+        stdscr.addstr(12, 0, "  Space : Stop")
+        stdscr.addstr(13, 0, "  X / ESC : Quit")
+        stdscr.addstr(14, 0, "==========================================")
+        stdscr.addstr(15, 0, "  R_Motor: PWM=CH{} IN1=CH{} IN2=CH{}".format(
+            MOTOR_R_PWM, MOTOR_R_IN1, MOTOR_R_IN2))
+        stdscr.addstr(16, 0, "  L_Motor: PWM=CH{} IN1=CH{} IN2=CH{}".format(
+            MOTOR_L_PWM, MOTOR_L_IN1, MOTOR_L_IN2))
         stdscr.refresh()
 
     draw_ui()
@@ -155,39 +192,38 @@ def main(stdscr):
 
         if ch == 'w':
             go_forward(speed)
-            state = "▲ 전진"
+            state = ">> Forward"
         elif ch == 's':
             go_backward(speed)
-            state = "▼ 후진"
+            state = "<< Backward"
         elif ch == 'a':
             turn_left(speed)
-            state = "◄ 좌회전"
+            state = "<  Turn Left"
         elif ch == 'd':
             turn_right(speed)
-            state = "► 우회전"
+            state = " > Turn Right"
         elif ch == 'q':
             spin_left(speed)
-            state = "↺ 제자리 좌회전"
+            state = "<< Spin Left"
         elif ch == 'e':
             spin_right(speed)
-            state = "↻ 제자리 우회전"
+            state = ">> Spin Right"
         elif ch == ' ':
             all_stop()
-            state = "■ 정지"
+            state = "[] Stopped"
         elif ch in ('+', '='):
             speed = min(4095, speed + SPEED_STEP)
-            state = f"속도 증가 → {speed}"
+            state = "Speed UP -> {}".format(speed)
         elif ch in ('-', '_'):
             speed = max(0, speed - SPEED_STEP)
-            state = f"속도 감소 → {speed}"
-            # 현재 움직이는 중이면 동적으로 반영되지 않음 (다음 키 입력시 적용)
-        elif ch == 'x' or key == 27:  # x 또는 ESC
+            state = "Speed DOWN -> {}".format(speed)
+        elif ch == 'x' or key == 27:
             all_stop()
             break
 
         draw_ui()
 
-    stdscr.addstr(16, 0, "  종료됨. 모터 정지 완료.")
+    stdscr.addstr(18, 0, "  Exited. Motors stopped.")
     stdscr.refresh()
     time.sleep(1)
 
@@ -198,4 +234,4 @@ if __name__ == "__main__":
     finally:
         all_stop()
         bus.close()
-        print("모터 정지, 프로그램 종료")
+        print("Motors stopped. Program exit.")

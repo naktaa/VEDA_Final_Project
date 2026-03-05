@@ -1,0 +1,10 @@
+servoserial.py 동작코드,
+실행: python3 two_servo.py
+
+
+시리얼 고정
+/dev/serial0
+115200
+
+uart포트가 바뀌면 아래 수정
+self.ser = serial.Serial("/dev/serial0", 115200, timeout=0.001)

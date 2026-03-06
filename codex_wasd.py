@@ -37,7 +37,8 @@ def main():
     pca = PCA9685(i2c, address=I2C_ADDR)
     pca.frequency = FREQ_HZ
 
-    motor_right = motor.DCMotor(pca.channels[RIGHT_IN1], pca.channels[RIGHT_IN2])
+    # Invert right motor direction to match left motor forward/backward
+    motor_right = motor.DCMotor(pca.channels[RIGHT_IN2], pca.channels[RIGHT_IN1])
     motor_left = motor.DCMotor(pca.channels[LEFT_IN1], pca.channels[LEFT_IN2])
 
     old = termios.tcgetattr(sys.stdin)

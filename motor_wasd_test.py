@@ -2,16 +2,16 @@
 """
 motor_wasd_test.py
 Yahboom YB-EJF01 VER1.4 확장보드 DC 모터 WASD 제어 테스트
-PCA9685 (I2C 0x40) + TB6612FNG H-Bridge 로 DC 모터 2개 제어
+PCA9685 (I2C 0x40) 2채널 H-Bridge 직접 제어
 
-TB6612FNG 제어 방식 (모터 1개당 3채널):
-  PWM 채널 : 속도 제어 (0~4095)
-  IN1 채널 : 방향 제어 핀 1 (0 또는 4095)
-  IN2 채널 : 방향 제어 핀 2 (0 또는 4095)
+하드웨어 매뉴얼 기준 채널 매핑 (모터 1개당 2채널):
+  Motor 1 (Right): CH8 (IN1A), CH9 (IN1B)
+  Motor 2 (Left):  CH10 (IN2A), CH11 (IN2B)
 
-  전진: IN1=HIGH, IN2=LOW,  PWM=속도
-  후진: IN1=LOW,  IN2=HIGH, PWM=속도
-  정지: IN1=LOW,  IN2=LOW,  PWM=0
+제어 방식:
+  전진: CH_A = 속도(PWM), CH_B = 0
+  후진: CH_A = 0,         CH_B = 속도(PWM)
+  정지: CH_A = 0,         CH_B = 0
 
 조작법:
   W : 전진       S : 후진
@@ -35,16 +35,14 @@ def led_on_h(ch):  return 0x07 + 4 * ch
 def led_off_l(ch): return 0x08 + 4 * ch
 def led_off_h(ch): return 0x09 + 4 * ch
 
-# ─── Adafruit MotorHAT 호환 채널 매핑 (TB6612FNG) ───
-# Motor 1 (오른쪽): PWM=CH8,  IN2=CH9,  IN1=CH10
-# Motor 2 (왼쪽):   PWM=CH13, IN2=CH12, IN1=CH11
-MOTOR_R_PWM = 8
-MOTOR_R_IN2 = 9
-MOTOR_R_IN1 = 10
+# ─── 하드웨어 매뉴얼 기준 채널 매핑 (2채널 방식) ───
+# Motor 1 (오른쪽): CH8 (IN1A), CH9 (IN1B)
+# Motor 2 (왼쪽):   CH10 (IN2A), CH11 (IN2B)
+MOTOR_R_A = 8   # IN1A - 정방향
+MOTOR_R_B = 9   # IN1B - 역방향
 
-MOTOR_L_PWM = 13
-MOTOR_L_IN2 = 12
-MOTOR_L_IN1 = 11
+MOTOR_L_A = 10  # IN2A - 정방향
+MOTOR_L_B = 11  # IN2B - 역방향
 
 bus = smbus.SMBus(1)
 
@@ -83,34 +81,31 @@ def set_pwm(channel, value):
         bus.write_byte_data(PCA9685_ADDR, led_off_h(channel), (value >> 8) & 0x0F)
 
 
-def motor_run(pwm_ch, in1_ch, in2_ch, speed):
+def motor_run(ch_a, ch_b, speed):
     """
-    모터 구동 (TB6612FNG 방식)
-    speed > 0 : 정방향 (IN1=HIGH, IN2=LOW)
-    speed < 0 : 역방향 (IN1=LOW, IN2=HIGH)
-    speed = 0 : 정지
+    모터 구동 (2채널 직접 제어)
+    speed > 0 : 정방향 (CH_A=속도, CH_B=0)
+    speed < 0 : 역방향 (CH_A=0, CH_B=속도)
+    speed = 0 : 정지   (CH_A=0, CH_B=0)
     """
     if speed > 0:
-        set_pwm(in1_ch, 4095)   # IN1 = HIGH
-        set_pwm(in2_ch, 0)      # IN2 = LOW
-        set_pwm(pwm_ch, speed)  # PWM = 속도
+        set_pwm(ch_a, speed)   # A = 속도
+        set_pwm(ch_b, 0)       # B = OFF
     elif speed < 0:
-        set_pwm(in1_ch, 0)      # IN1 = LOW
-        set_pwm(in2_ch, 4095)   # IN2 = HIGH
-        set_pwm(pwm_ch, -speed) # PWM = 속도 (절대값)
+        set_pwm(ch_a, 0)       # A = OFF
+        set_pwm(ch_b, -speed)  # B = 속도 (절대값)
     else:
-        set_pwm(in1_ch, 0)      # IN1 = LOW
-        set_pwm(in2_ch, 0)      # IN2 = LOW
-        set_pwm(pwm_ch, 0)      # PWM = 0
+        set_pwm(ch_a, 0)       # A = OFF
+        set_pwm(ch_b, 0)       # B = OFF
 
 
 def motor_right(speed):
     """오른쪽 모터 제어 (양수=전진, 음수=후진)"""
-    motor_run(MOTOR_R_PWM, MOTOR_R_IN1, MOTOR_R_IN2, speed)
+    motor_run(MOTOR_R_A, MOTOR_R_B, speed)
 
 def motor_left(speed):
     """왼쪽 모터 제어 (양수=전진, 음수=후진)"""
-    motor_run(MOTOR_L_PWM, MOTOR_L_IN1, MOTOR_L_IN2, speed)
+    motor_run(MOTOR_L_A, MOTOR_L_B, speed)
 
 def all_stop():
     motor_right(0)
@@ -175,10 +170,10 @@ def main(stdscr):
         stdscr.addstr(12, 0, "  Space : Stop")
         stdscr.addstr(13, 0, "  X / ESC : Quit")
         stdscr.addstr(14, 0, "==========================================")
-        stdscr.addstr(15, 0, "  R_Motor: PWM=CH{} IN1=CH{} IN2=CH{}".format(
-            MOTOR_R_PWM, MOTOR_R_IN1, MOTOR_R_IN2))
-        stdscr.addstr(16, 0, "  L_Motor: PWM=CH{} IN1=CH{} IN2=CH{}".format(
-            MOTOR_L_PWM, MOTOR_L_IN1, MOTOR_L_IN2))
+        stdscr.addstr(15, 0, "  R_Motor: CH_A={} CH_B={}".format(
+            MOTOR_R_A, MOTOR_R_B))
+        stdscr.addstr(16, 0, "  L_Motor: CH_A={} CH_B={}".format(
+            MOTOR_L_A, MOTOR_L_B))
         stdscr.refresh()
 
     draw_ui()

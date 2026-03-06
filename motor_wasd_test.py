@@ -8,10 +8,6 @@ PCA9685 (I2C 0x40) 2채널 H-Bridge 직접 제어
   Motor 1 (Right): CH8 (IN1A), CH9 (IN1B)
   Motor 2 (Left):  CH10 (IN2A), CH11 (IN2B)
 
-TB6612FNG STBY 핀:
-  라즈베리파이에서는 STBY 핀에 해당하는 GPIO를 수동으로
-  HIGH로 설정해야 모터가 동작함 (Jetson Nano에서는 자동 처리)
-
 조작법:
   W : 전진       S : 후진
   A : 좌회전     D : 우회전
@@ -23,31 +19,6 @@ TB6612FNG STBY 핀:
 import time
 import curses
 import smbus
-
-# ─── STBY 핀 활성화 (RPi.GPIO) ───
-# TB6612FNG STBY 핀이 어느 GPIO에 연결되어 있는지 모르므로
-# 후보 GPIO를 모두 HIGH로 설정
-import RPi.GPIO as GPIO
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
-
-# I2C(2,3), UART(14,15), 부저(6), LED(23,24), 버튼(7,8) 제외
-STBY_SKIP = {2, 3, 6, 7, 8, 14, 15, 23, 24}
-STBY_CANDIDATES = [p for p in range(4, 28) if p not in STBY_SKIP]
-
-def enable_stby():
-    """모든 후보 GPIO를 HIGH로 → STBY 핀 활성화"""
-    for pin in STBY_CANDIDATES:
-        try:
-            GPIO.setup(pin, GPIO.OUT)
-            GPIO.output(pin, GPIO.HIGH)
-        except Exception:
-            pass
-
-def disable_stby():
-    """GPIO 정리"""
-    GPIO.cleanup()
-
 
 # ─── PCA9685 설정 ───
 PCA9685_ADDR = 0x40
@@ -87,35 +58,45 @@ def set_pwm(channel, value):
     """PCA9685 채널에 PWM 값 설정 (0~4095)"""
     value = max(0, min(4095, value))
     if value == 0:
+        # ★ Full OFF 비트(bit4) 설정 → 출력 완전히 LOW
         bus.write_byte_data(PCA9685_ADDR, led_on_l(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_on_h(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_off_l(channel), 0)
-        bus.write_byte_data(PCA9685_ADDR, led_off_h(channel), 0)
+        bus.write_byte_data(PCA9685_ADDR, led_off_h(channel), 0x10)
     elif value >= 4095:
-        bus.write_byte_data(PCA9685_ADDR, led_on_l(channel), 0)
-        bus.write_byte_data(PCA9685_ADDR, led_on_h(channel), 0x10)
+        # ★ Full ON 비트(bit4) 설정 → 출력 완전히 HIGH
+        # Full OFF 비트 해제 필요 (OFF가 ON보다 우선이므로)
         bus.write_byte_data(PCA9685_ADDR, led_off_l(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_off_h(channel), 0)
+        bus.write_byte_data(PCA9685_ADDR, led_on_l(channel), 0)
+        bus.write_byte_data(PCA9685_ADDR, led_on_h(channel), 0x10)
     else:
+        # 일반 PWM: OFF 비트 먼저 해제 후 값 설정
         bus.write_byte_data(PCA9685_ADDR, led_on_l(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_on_h(channel), 0)
         bus.write_byte_data(PCA9685_ADDR, led_off_l(channel), value & 0xFF)
         bus.write_byte_data(PCA9685_ADDR, led_off_h(channel), (value >> 8) & 0x0F)
 
 
+def all_off():
+    """모든 모터 채널 완전 OFF"""
+    for ch in [8, 9, 10, 11, 12, 13]:
+        set_pwm(ch, 0)
+
+
 def motor_run(ch_a, ch_b, speed):
     """
     모터 구동 (2채널 직접 제어)
-    speed > 0 : 정방향 (CH_A=속도, CH_B=0)
-    speed < 0 : 역방향 (CH_A=0, CH_B=속도)
+    speed > 0 : 정방향 (CH_A=속도, CH_B=OFF)
+    speed < 0 : 역방향 (CH_A=OFF, CH_B=속도)
     speed = 0 : 정지
     """
     if speed > 0:
-        set_pwm(ch_a, speed)
-        set_pwm(ch_b, 0)
+        set_pwm(ch_b, 0)       # ★ 반대쪽 먼저 OFF
+        set_pwm(ch_a, speed)   # 그 다음 구동
     elif speed < 0:
-        set_pwm(ch_a, 0)
-        set_pwm(ch_b, -speed)
+        set_pwm(ch_a, 0)       # ★ 반대쪽 먼저 OFF
+        set_pwm(ch_b, -speed)  # 그 다음 구동
     else:
         set_pwm(ch_a, 0)
         set_pwm(ch_b, 0)
@@ -163,33 +144,32 @@ def main(stdscr):
     stdscr.nodelay(True)
     stdscr.timeout(100)
 
-    speed = 2000
+    speed = 4095              # ★ 초기 속도 최대
     SPEED_STEP = 400
     state = "정지"
 
     pca9685_init()
-    enable_stby()  # ★ STBY 활성화
+    all_off()                 # 초기화 시 모든 채널 확실히 OFF
 
     def draw_ui():
         stdscr.clear()
         stdscr.addstr(0,  0, "==========================================")
-        stdscr.addstr(1,  0, "  DC Motor WASD Test (2CH + STBY FIX)")
+        stdscr.addstr(1,  0, "  DC Motor WASD Test (2CH PCA9685)")
         stdscr.addstr(2,  0, "==========================================")
         stdscr.addstr(3,  0, "")
         stdscr.addstr(4,  0, "  State: {}".format(state))
         stdscr.addstr(5,  0, "  Speed: {} / 4095  ({}%)".format(speed, speed * 100 // 4095))
-        stdscr.addstr(6,  0, "  STBY: ALL GPIO HIGH ({} pins)".format(len(STBY_CANDIDATES)))
-        stdscr.addstr(7,  0, "")
-        stdscr.addstr(8,  0, "  --- Controls ---")
-        stdscr.addstr(9,  0, "  W : Forward     S : Backward")
-        stdscr.addstr(10, 0, "  A : Turn Left   D : Turn Right")
-        stdscr.addstr(11, 0, "  Q : Spin Left   E : Spin Right")
-        stdscr.addstr(12, 0, "  + : Speed Up    - : Speed Down")
-        stdscr.addstr(13, 0, "  Space : Stop")
-        stdscr.addstr(14, 0, "  X / ESC : Quit")
-        stdscr.addstr(15, 0, "==========================================")
-        stdscr.addstr(16, 0, "  R_Motor: A=CH{} B=CH{}".format(MOTOR_R_A, MOTOR_R_B))
-        stdscr.addstr(17, 0, "  L_Motor: A=CH{} B=CH{}".format(MOTOR_L_A, MOTOR_L_B))
+        stdscr.addstr(6,  0, "")
+        stdscr.addstr(7,  0, "  --- Controls ---")
+        stdscr.addstr(8,  0, "  W : Forward     S : Backward")
+        stdscr.addstr(9,  0, "  A : Turn Left   D : Turn Right")
+        stdscr.addstr(10, 0, "  Q : Spin Left   E : Spin Right")
+        stdscr.addstr(11, 0, "  + : Speed Up    - : Speed Down")
+        stdscr.addstr(12, 0, "  Space : Stop")
+        stdscr.addstr(13, 0, "  X / ESC : Quit")
+        stdscr.addstr(14, 0, "==========================================")
+        stdscr.addstr(15, 0, "  R_Motor: A=CH{} B=CH{}".format(MOTOR_R_A, MOTOR_R_B))
+        stdscr.addstr(16, 0, "  L_Motor: A=CH{} B=CH{}".format(MOTOR_L_A, MOTOR_L_B))
         stdscr.refresh()
 
     draw_ui()
@@ -234,7 +214,7 @@ def main(stdscr):
 
         draw_ui()
 
-    stdscr.addstr(19, 0, "  Exited. Motors stopped.")
+    stdscr.addstr(18, 0, "  Exited. Motors stopped.")
     stdscr.refresh()
     time.sleep(1)
 
@@ -243,7 +223,6 @@ if __name__ == "__main__":
     try:
         curses.wrapper(main)
     finally:
-        all_stop()
-        disable_stby()
+        all_off()
         bus.close()
-        print("Motors stopped. GPIO cleaned. Exit.")
+        print("Motors stopped. Exit.")

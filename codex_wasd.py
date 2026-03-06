@@ -10,7 +10,7 @@ from adafruit_pca9685 import PCA9685
 from adafruit_motor import motor
 
 I2C_ADDR = 0x40
-FREQ_HZ = 1000  # adjust in 100~1600 if needed
+FREQ_HZ = 200  # adjust in 100~1600 if needed
 
 # Yahboom Jetbot Hardware Manual (PCA9685 mapping)
 # Right motor: IN1A ch8, IN1B ch9
@@ -20,7 +20,7 @@ RIGHT_IN2 = 9
 LEFT_IN1 = 10
 LEFT_IN2 = 11
 
-SPEED = 0.6
+SPEED = 1.0
 TURN_SCALE = 0.5
 IDLE_STOP_SEC = 0.2
 

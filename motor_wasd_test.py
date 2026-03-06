@@ -62,8 +62,8 @@ def led_off_h(ch): return 0x09 + 4 * ch
 # ─── 하드웨어 매뉴얼 기준 채널 매핑 (2채널 방식) ───
 # Motor 1 (오른쪽): CH8 (IN1A), CH9 (IN1B)
 # Motor 2 (왼쪽):   CH10 (IN2A), CH11 (IN2B)
-MOTOR_R_A = 8   # IN1A
-MOTOR_R_B = 9   # IN1B
+MOTOR_R_A = 9   # IN1B (A/B 교체 - 방향 보정)
+MOTOR_R_B = 8   # IN1A
 
 MOTOR_L_A = 10  # IN2A
 MOTOR_L_B = 11  # IN2B

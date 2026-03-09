@@ -36,8 +36,8 @@ def led_off_h(ch): return 0x09 + 4 * ch
 MOTOR_R_A = 8   # IN1A
 MOTOR_R_B = 9   # IN1B
 
-MOTOR_L_A = 12  # IN3A
-MOTOR_L_B = 13  # IN3B
+MOTOR_L_A = 10  # IN3A
+MOTOR_L_B = 11  # IN3B
 bus = smbus.SMBus(1)
 
 

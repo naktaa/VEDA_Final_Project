@@ -257,8 +257,6 @@ static bool get_reference_timestamp_ns(GstBuffer* buffer, int64_t& out_ns) {
     return false;
 }
 
-template <typename Seq>
-
 static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_ms, int n, ImuPose& out, double& err_ms) {
     if (buf.empty() || n <= 0) return false;
     int count = 0;

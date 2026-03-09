@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <array>
 #include <chrono>
 #include <string>
 #include <cmath>
@@ -151,8 +152,9 @@ int main(int argc, char** argv)
     const std::string mqttHost = "192.168.100.10";
     const int mqttPort = 1883;
     const std::string mqttTopic = "wiserisk/p1/pose";
+    const std::string wallTopic = "wiserisk/map/walls";
     const std::string statusTopic = "wiserisk/rc/status";
-    constexpr double kSpeedMps = 1.0;      // dead-reckoning speed (match rc_control_node setting)
+    constexpr double kSpeedMps = 0.7;      // dead-reckoning speed (match rc_control_node setting)
     constexpr int kPublishHz = 10;         // publish rate after init
     constexpr int kMpuAddr = 0x68;
     constexpr double kDeg2Rad = 3.14159265358979323846 / 180.0;
@@ -250,6 +252,7 @@ int main(int argc, char** argv)
               << "[OK] MPU6050 gyro bias_z(rad/s)=" << gyro_bias << "\n";
 
     bool initialized = false;
+    std::array<bool, 14> wallPublished{};
     double pose_x = 0.0;
     double pose_y = 0.0;
     double pose_yaw = 0.0;
@@ -268,13 +271,27 @@ int main(int argc, char** argv)
             detector.detectMarkers(frame, corners, ids);
 
             for (size_t i = 0; i < ids.size(); i++) {
-                if (ids[i] != targetMarkerId) continue;
-
                 cv::Point2f c(0, 0);
                 for (const auto& p : corners[i]) c += p;
                 c *= (1.0f / 4.0f);
-
                 cv::Point2f w = applyHomography(H_img2world, c);
+
+                const int markerId = ids[i];
+                if (markerId >= 10 && markerId <= 13 && !wallPublished[markerId]) {
+                    wallPublished[markerId] = true;
+                    const long long ts_ms = nowSec() * 1000;
+                    char wbuf[192];
+                    std::snprintf(wbuf, sizeof(wbuf),
+                                  "{\"id\":%d,\"x\":%.3f,\"y\":%.3f,\"frame\":\"world\",\"ts_ms\":%lld}",
+                                  markerId, w.x, w.y, ts_ms);
+                    mqttPublishJson(mosq, wallTopic, wbuf);
+                    std::cout << std::fixed << std::setprecision(3)
+                              << "[WALL] id=" << markerId
+                              << " x=" << w.x
+                              << " y=" << w.y << "\n";
+                }
+
+                if (ids[i] != targetMarkerId) continue;
                 double yaw_raw = calcYawWorld(H_img2world, c, corners[i]);
                 constexpr double YAW_X_PLUS_REF = -3.101;
                 double yaw = normalizeAngle(yaw_raw - YAW_X_PLUS_REF);
@@ -315,8 +332,10 @@ int main(int argc, char** argv)
             } else if (tracker_state.motion_mode == TrackerState::MotionMode::REV_TRACKING) {
                 v_signed = -kSpeedMps;
             }
-            pose_x += v_signed * dt * std::cos(pose_yaw);
-            pose_y += v_signed * dt * std::sin(pose_yaw);
+            constexpr double THETA_XY_SCALE = 1.5; // compensate under-rotation in DR xy update
+            const double pose_yaw_for_xy = normalizeAngle(pose_yaw * THETA_XY_SCALE);
+            pose_x += v_signed * dt * std::cos(pose_yaw_for_xy);
+            pose_y += v_signed * dt * std::sin(pose_yaw_for_xy);
 
             const long long ts = nowSec();
             const long long ts_ms = ts * 1000;

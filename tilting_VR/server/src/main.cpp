@@ -226,10 +226,11 @@ namespace {
         return lerp_int(kTiltCenter, kTiltUp, t);
     }
 
-    void apply_imu(float pitch, float roll) {
-        std::lock_guard<std::mutex> lock(g_filterMutex);
-        g_filteredPitch = (1.0f - kImuAlpha) * g_filteredPitch + kImuAlpha * pitch;
-        g_filteredRoll = (1.0f - kImuAlpha) * g_filteredRoll + kImuAlpha * roll;
+void apply_imu(float pitch, float roll) {
+  std::lock_guard<std::mutex> lock(g_filterMutex);
+  // Phone orientation axes are swapped for our mount: roll drives tilt, pitch drives pan.
+  g_filteredPitch = (1.0f - kImuAlpha) * g_filteredPitch + kImuAlpha * roll;
+  g_filteredRoll = (1.0f - kImuAlpha) * g_filteredRoll + kImuAlpha * pitch;
 
         const int targetPan = map_pan_from_roll(g_filteredRoll);
         const int targetTilt = map_tilt_from_pitch(g_filteredPitch);

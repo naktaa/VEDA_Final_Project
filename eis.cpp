@@ -113,6 +113,10 @@ static const double OFFSET_COARSE_STEP_MS = 0.5;
 static const double OFFSET_FINE_RANGE_MS = 5.0;
 static const double OFFSET_FINE_STEP_MS = 0.1;
 
+// IMU ?? ???(??? ??)
+static const double IMU_AVG_WINDOW_MS = 20.0;
+static const int IMU_AVG_MAX_SAMPLES = 20;
+
 // ======================== 전역 변수 ========================
 
 static std::atomic<bool> g_running{true};
@@ -257,49 +261,47 @@ static bool get_reference_timestamp_ns(GstBuffer* buffer, int64_t& out_ns) {
     return false;
 }
 
-static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_ms, int n, ImuPose& out, double& err_ms) {
-    if (buf.empty() || n <= 0) return false;
+static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_ms, double window_ms, int max_samples, ImuPose& out, double& err_ms) {
+    if (buf.empty() || window_ms <= 0) return false;
+    const double t_lo = target_ms - window_ms;
+    const double t_hi = target_ms + window_ms;
+
     int count = 0;
     double sum_roll = 0, sum_pitch = 0;
     double sum_rr = 0, sum_pr = 0, sum_yr = 0;
     double sum_sin_y = 0, sum_cos_y = 0;
     double sum_ts = 0;
-    double last_ts = buf.front().timestamp_ms;
 
-    // if target earlier than oldest, use oldest samples
-    if (target_ms <= buf.front().timestamp_ms) {
-        for (size_t i = 0; i < buf.size() && count < n; ++i) {
-            const auto& s = buf[i];
-            sum_roll += s.roll;
-            sum_pitch += s.pitch;
-            sum_rr += s.gyro_roll_rate;
-            sum_pr += s.gyro_pitch_rate;
-            sum_yr += s.gyro_yaw_rate;
-            sum_sin_y += sin(s.yaw);
-            sum_cos_y += cos(s.yaw);
-            sum_ts += s.timestamp_ms;
-            last_ts = s.timestamp_ms;
-            count++;
-        }
-    } else {
-        for (int i = (int)buf.size() - 1; i >= 0 && count < n; --i) {
-            const auto& s = buf[(size_t)i];
-            if (s.timestamp_ms <= target_ms) {
-                sum_roll += s.roll;
-                sum_pitch += s.pitch;
-                sum_rr += s.gyro_roll_rate;
-                sum_pr += s.gyro_pitch_rate;
-                sum_yr += s.gyro_yaw_rate;
-                sum_sin_y += sin(s.yaw);
-                sum_cos_y += cos(s.yaw);
-                sum_ts += s.timestamp_ms;
-                last_ts = s.timestamp_ms;
-                count++;
-            }
-        }
+    // buffer is time-ordered
+    for (const auto& s : buf) {
+        if (s.timestamp_ms < t_lo) continue;
+        if (s.timestamp_ms > t_hi) break;
+        sum_roll += s.roll;
+        sum_pitch += s.pitch;
+        sum_rr += s.gyro_roll_rate;
+        sum_pr += s.gyro_pitch_rate;
+        sum_yr += s.gyro_yaw_rate;
+        sum_sin_y += sin(s.yaw);
+        sum_cos_y += cos(s.yaw);
+        sum_ts += s.timestamp_ms;
+        count++;
+        if (max_samples > 0 && count >= max_samples) break;
     }
 
-    if (count == 0) return false;
+    if (count == 0) {
+        // fallback to nearest sample
+        const ImuPose* best = &buf.front();
+        double best_err = std::abs(target_ms - best->timestamp_ms);
+        for (const auto& s : buf) {
+            double e = std::abs(target_ms - s.timestamp_ms);
+            if (e < best_err) { best_err = e; best = &s; }
+            if (s.timestamp_ms > target_ms && e > best_err) break;
+        }
+        out = *best;
+        err_ms = target_ms - best->timestamp_ms;
+        return true;
+    }
+
     double inv = 1.0 / count;
     out.roll = sum_roll * inv;
     out.pitch = sum_pitch * inv;
@@ -308,13 +310,14 @@ static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_m
     out.gyro_pitch_rate = sum_pr * inv;
     out.gyro_yaw_rate = sum_yr * inv;
     out.timestamp_ms = sum_ts * inv;
-    err_ms = target_ms - last_ts;
+    err_ms = target_ms - out.timestamp_ms;
     return true;
 }
 
+
 static bool imu_sample_at(double target_ms, ImuPose& out, double& err_ms) {
     std::lock_guard<std::mutex> lk(g_imu_mtx);
-    return imu_average_from_seq(g_imu_buffer, target_ms, 20, out, err_ms);
+    return imu_average_from_seq(g_imu_buffer, target_ms, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES, out, err_ms);
 }
 
 static double unwrap_angle(double prev, double curr) {
@@ -752,8 +755,8 @@ static void capture_loop() {
                             double t1 = calib_frames[i].t_ms + off_ms;
                             ImuPose p0, p1;
                             double err;
-                            if (!imu_average_from_seq(imu_copy, t0, 20, p0, err)) continue;
-                            if (!imu_average_from_seq(imu_copy, t1, 20, p1, err)) continue;
+                            if (!imu_average_from_seq(imu_copy, t0, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES, p0, err)) continue;
+                            if (!imu_average_from_seq(imu_copy, t1, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES, p1, err)) continue;
                             double imu_dyaw = p1.yaw - p0.yaw;
                             double diff = calib_frames[i].lk_da - imu_dyaw;
                             sum += diff * diff;

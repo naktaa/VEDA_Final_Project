@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -24,6 +25,9 @@ struct RcPose {
     double yaw = 0.0; // rad
     std::string frame = "world";
     long long ts_ms = 0;
+    double quality = 0.0;
+    long long age_ms = 0;
+    std::string source = "";
     bool valid = false;
 };
 
@@ -39,6 +43,8 @@ struct RcStatus {
     double err_dist = 0.0;
     double err_yaw = 0.0;
     double battery = -1.0; // unknown
+    std::string reason = "NONE";
+    double pose_quality = 0.0;
 };
 
 struct RcCommand {
@@ -79,15 +85,30 @@ private:
     void onMessage(const struct mosquitto_message* msg);
 
     void controlStep();
-    RcCommand computeCommand(const RcPose& pose,
-                             const RcGoal& goal,
-                             RcStatus& out_status,
-                             double reach_tolerance_m) const;
+    RcCommand computePurePursuitCommand(const RcPose& pose,
+                                        const RcGoal& goal,
+                                        RcStatus& out_status,
+                                        double speed_limit_mps,
+                                        int* out_target_idx,
+                                        std::pair<double, double>& out_target_pt,
+                                        double& out_curvature);
+
     bool publishStatus(const RcStatus& status);
+    bool publishCmdFeedback(const RcCommand& cmd, const std::string& mode);
     void sendCommandToRc(const RcCommand& cmd, int servo_us) const;
     int computeServoUs(const RcCommand& cmd) const;
-    bool makePlanIfNeeded(const RcPose& pose, const RcGoal& goal, std::string& reason);
-    bool pickActiveWaypoint(const RcPose& pose, RcGoal& out_target, bool& out_final_wp, double& out_dist_to_target);
+
+    bool makePlan(const RcPose& pose, const RcGoal& goal, std::string& reason);
+    bool ensurePlan(const RcPose& pose, const RcGoal& goal, std::string& reason);
+
+    bool findPursuitTarget(const RcPose& pose,
+                           double lookahead_m,
+                           std::size_t& io_closest_idx,
+                           std::size_t& out_target_idx,
+                           std::pair<double, double>& out_target_pt,
+                           double& out_dist_to_path) const;
+
+    double distanceToTrajectory(const RcPose& pose, std::size_t* out_closest_idx) const;
 
     static double normalizeAngle(double rad);
     static double clamp(double v, double lo, double hi);
@@ -106,6 +127,7 @@ private:
     std::string topic_safety_;
     std::string topic_status_;
     std::string topic_walls_ = "wiserisk/map/walls";
+    std::string topic_cmd_feedback_ = "wiserisk/rc/cmd_feedback";
 
     double k_linear_ = 0.8;
     double k_yaw_ = 1.2;
@@ -129,10 +151,17 @@ private:
         {12, {6.0, 3.0}},
         {13, {6.0, 6.0}},
     };
+    bool walls_dirty_ = true;
 
-    std::vector<std::pair<double, double>> waypoints_;
-    std::size_t waypoint_idx_ = 0;
+    std::vector<std::pair<double, double>> trajectory_;
+    std::size_t traj_closest_hint_ = 0;
+
     bool plan_valid_ = false;
     long long plan_goal_ts_ms_ = -1;
-    long long last_plan_ts_ms_ = 0;
+    long long offtrack_since_ms_ = -1;
+
+    double best_goal_dist_ = std::numeric_limits<double>::infinity();
+    long long last_progress_ts_ms_ = 0;
+
+    RcCommand last_cmd_{};
 };

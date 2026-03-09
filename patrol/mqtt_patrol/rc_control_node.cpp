@@ -4,26 +4,26 @@ sudo ./rc_control_node 192.168.100.10 1883 wiserisk/rc/goal wiserisk/p1/pose wis
 */
 
 #include "rc_control_node.h"
-#include <fstream>
+
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <csignal>
-#include <cstring>
 #include <cstdio>
-#include <algorithm>
-#include <iostream>
+#include <cstring>
+#include <fcntl.h>
+#include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <queue>
 #include <regex>
-#include <sstream>
 #include <thread>
-
-#include <wiringPi.h>
-#include <softPwm.h>
-#include <unistd.h>
 #include <termios.h>
-#include <fcntl.h>
+#include <unistd.h>
+
+#include <softPwm.h>
+#include <wiringPi.h>
 
 namespace {
 std::atomic<bool> g_sig_run{true};
@@ -72,7 +72,7 @@ bool extractBool(const std::string& json, const std::string& key, bool& out) {
     return true;
 }
 
-static long long nowMs() {
+long long nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
         .count();
@@ -114,56 +114,46 @@ struct KeyboardGuard {
     }
 };
 
-
-
 // ====== HW (Pi) ======
 #define STOP 0
 #define FORWARD 1
 #define BACKWARD 2
 
-// wiringPi 핀 번호 (너 patrol.cpp 기준)
 static constexpr int IN1 = 28;
 static constexpr int IN2 = 27;
 static constexpr int ENA = 29;
-static constexpr int US_TRIG = 4;  // wiringPi pin
-static constexpr int US_ECHO = 5;  // wiringPi pin
+static constexpr int US_TRIG = 4;
+static constexpr int US_ECHO = 5;
 
-// sysfs PWM (너 patrol.cpp 기준)
 const std::string CHIP_PATH = "/sys/class/pwm/pwmchip0/";
-const std::string PWM_PATH  = CHIP_PATH + "pwm0/";
+const std::string PWM_PATH = CHIP_PATH + "pwm0/";
 
-static void sysfsWrite(const std::string& path, const std::string& value)
-{
+void sysfsWrite(const std::string& path, const std::string& value) {
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
         std::cerr << "[ERR] write: " << path << "\n";
         return;
     }
     ofs << value;
-    ofs.close();
 }
 
-static void setupServoPwmSysfs()
-{
-    // export 이미 되어있으면 "busy"가 나와도 무시 가능
+void setupServoPwmSysfs() {
     sysfsWrite(CHIP_PATH + "export", "0");
     usleep(200000);
 
-    sysfsWrite(PWM_PATH + "period", "20000000");     // 20ms
+    sysfsWrite(PWM_PATH + "period", "20000000");
     sysfsWrite(PWM_PATH + "enable", "1");
-    sysfsWrite(PWM_PATH + "duty_cycle", "1250000");  // center
+    sysfsWrite(PWM_PATH + "duty_cycle", "1250000");
 }
 
-static void setServoUs(int us)
-{
+void setServoUs(int us) {
     if (us < 900) us = 900;
     if (us > 1600) us = 1600;
-    long ns = (long)us * 1000;
+    const long ns = static_cast<long>(us) * 1000;
     sysfsWrite(PWM_PATH + "duty_cycle", std::to_string(ns));
 }
 
-static void setupMotorPins()
-{
+void setupMotorPins() {
     if (wiringPiSetup() == -1) {
         std::cerr << "[ERR] wiringPiSetup failed\n";
         std::exit(1);
@@ -187,8 +177,7 @@ static void setupMotorPins()
     pullUpDnControl(US_ECHO, PUD_DOWN);
 }
 
-static bool readUltrasonicCm(double& out_cm)
-{
+bool readUltrasonicCm(double& out_cm) {
     constexpr unsigned int kWaitLowUs = 30000;
     constexpr unsigned int kEchoTimeoutUs = 30000;
 
@@ -207,14 +196,14 @@ static bool readUltrasonicCm(double& out_cm)
     while (digitalRead(US_ECHO) == HIGH) {
         if ((micros() - echo_start) > kEchoTimeoutUs) return false;
     }
+
     const unsigned int echo_end = micros();
     const unsigned int pulse_us = echo_end - echo_start;
     out_cm = static_cast<double>(pulse_us) / 58.0;
     return true;
 }
 
-static void setMotorControl(int speed, int stat)
-{
+void setMotorControl(int speed, int stat) {
     if (speed < 0) speed = 0;
     if (speed > 255) speed = 255;
 
@@ -229,14 +218,13 @@ static void setMotorControl(int speed, int stat)
     if (stat == FORWARD) {
         digitalWrite(IN1, LOW);
         digitalWrite(IN2, HIGH);
-    } else { // BACKWARD
+    } else {
         digitalWrite(IN1, HIGH);
         digitalWrite(IN2, LOW);
     }
 }
 
-static void hardStop()
-{
+void hardStop() {
     setMotorControl(0, STOP);
     setServoUs(1250);
 }
@@ -244,7 +232,7 @@ static void hardStop()
 struct GridMapInfo {
     double origin_x = -1.0;
     double origin_y = 0.0;
-    double resolution = 0.10; // m/cell
+    double resolution = 0.10;
     int width = 90;
     int height = 60;
 };
@@ -256,37 +244,34 @@ struct DijkNode {
     bool operator>(const DijkNode& other) const { return cost > other.cost; }
 };
 
-static PlannerCell worldToGrid(double x, double y, const GridMapInfo& m) {
+PlannerCell worldToGrid(double x, double y, const GridMapInfo& m) {
     return {
         static_cast<int>(std::floor((x - m.origin_x) / m.resolution)),
         static_cast<int>(std::floor((y - m.origin_y) / m.resolution)),
     };
 }
 
-static std::pair<double, double> gridToWorldCenter(int gx, int gy, const GridMapInfo& m) {
+std::pair<double, double> gridToWorldCenter(int gx, int gy, const GridMapInfo& m) {
     const double x = m.origin_x + (gx + 0.5) * m.resolution;
     const double y = m.origin_y + (gy + 0.5) * m.resolution;
     return {x, y};
 }
 
-static bool dijkstraGrid(const std::vector<std::vector<int>>& grid,
-                         PlannerCell s,
-                         PlannerCell g,
-                         std::vector<PlannerCell>& out_path) {
+bool dijkstraGrid(const std::vector<std::vector<int>>& grid,
+                  PlannerCell s,
+                  PlannerCell g,
+                  std::vector<PlannerCell>& out_path) {
     const int h = static_cast<int>(grid.size());
     if (h == 0) return false;
     const int w = static_cast<int>(grid[0].size());
-    auto inRange = [w, h](int x, int y) {
-        return (x >= 0 && x < w && y >= 0 && y < h);
-    };
 
+    auto inRange = [w, h](int x, int y) { return (x >= 0 && x < w && y >= 0 && y < h); };
     if (!inRange(s.x, s.y) || !inRange(g.x, g.y)) return false;
     if (grid[s.y][s.x] != 0 || grid[g.y][g.x] != 0) return false;
 
     constexpr double INF = std::numeric_limits<double>::infinity();
     std::vector<std::vector<double>> dist(h, std::vector<double>(w, INF));
-    std::vector<std::vector<PlannerCell>> parent(
-        h, std::vector<PlannerCell>(w, {-1, -1}));
+    std::vector<std::vector<PlannerCell>> parent(h, std::vector<PlannerCell>(w, {-1, -1}));
     std::priority_queue<DijkNode, std::vector<DijkNode>, std::greater<DijkNode>> pq;
 
     dist[s.y][s.x] = 0.0;
@@ -328,8 +313,7 @@ static bool dijkstraGrid(const std::vector<std::vector<int>>& grid,
     return true;
 }
 
-static std::vector<PlannerCell> compressPath(
-    const std::vector<PlannerCell>& path) {
+std::vector<PlannerCell> compressPath(const std::vector<PlannerCell>& path) {
     if (path.size() <= 2) return path;
     std::vector<PlannerCell> out;
     out.push_back(path.front());
@@ -349,7 +333,7 @@ static std::vector<PlannerCell> compressPath(
     return out;
 }
 
-static void setObstacle(std::vector<std::vector<int>>& grid, int gx, int gy) {
+void setObstacle(std::vector<std::vector<int>>& grid, int gx, int gy) {
     const int h = static_cast<int>(grid.size());
     const int w = (h > 0) ? static_cast<int>(grid[0].size()) : 0;
     if (gx >= 0 && gx < w && gy >= 0 && gy < h) {
@@ -357,11 +341,11 @@ static void setObstacle(std::vector<std::vector<int>>& grid, int gx, int gy) {
     }
 }
 
-static void drawObstacleCircle(std::vector<std::vector<int>>& grid,
-                               const GridMapInfo& map,
-                               double cx,
-                               double cy,
-                               double radius_m) {
+void drawObstacleCircle(std::vector<std::vector<int>>& grid,
+                        const GridMapInfo& map,
+                        double cx,
+                        double cy,
+                        double radius_m) {
     const PlannerCell c = worldToGrid(cx, cy, map);
     const int r_cell = std::max(1, static_cast<int>(std::ceil(radius_m / map.resolution)));
     for (int gy = c.y - r_cell; gy <= c.y + r_cell; ++gy) {
@@ -376,13 +360,13 @@ static void drawObstacleCircle(std::vector<std::vector<int>>& grid,
     }
 }
 
-static void drawObstacleSegment(std::vector<std::vector<int>>& grid,
-                                const GridMapInfo& map,
-                                double x0,
-                                double y0,
-                                double x1,
-                                double y1,
-                                double thickness_m) {
+void drawObstacleSegment(std::vector<std::vector<int>>& grid,
+                         const GridMapInfo& map,
+                         double x0,
+                         double y0,
+                         double x1,
+                         double y1,
+                         double thickness_m) {
     const double len = std::hypot(x1 - x0, y1 - y0);
     const int steps = std::max(1, static_cast<int>(std::ceil(len / (map.resolution * 0.4))));
     for (int i = 0; i <= steps; ++i) {
@@ -393,11 +377,11 @@ static void drawObstacleSegment(std::vector<std::vector<int>>& grid,
     }
 }
 
-static void clearPassage(std::vector<std::vector<int>>& grid,
-                         const GridMapInfo& map,
-                         double cx,
-                         double cy,
-                         double radius_m) {
+void clearPassage(std::vector<std::vector<int>>& grid,
+                  const GridMapInfo& map,
+                  double cx,
+                  double cy,
+                  double radius_m) {
     const PlannerCell c = worldToGrid(cx, cy, map);
     const int r_cell = std::max(1, static_cast<int>(std::ceil(radius_m / map.resolution)));
     for (int gy = c.y - r_cell; gy <= c.y + r_cell; ++gy) {
@@ -416,6 +400,76 @@ static void clearPassage(std::vector<std::vector<int>>& grid,
     }
 }
 
+double pointSegDist(double px,
+                    double py,
+                    double ax,
+                    double ay,
+                    double bx,
+                    double by) {
+    const double vx = bx - ax;
+    const double vy = by - ay;
+    const double wx = px - ax;
+    const double wy = py - ay;
+
+    const double len2 = vx * vx + vy * vy;
+    if (len2 <= 1e-12) {
+        return std::hypot(px - ax, py - ay);
+    }
+
+    double t = (wx * vx + wy * vy) / len2;
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+
+    const double cx = ax + t * vx;
+    const double cy = ay + t * vy;
+    return std::hypot(px - cx, py - cy);
+}
+
+std::vector<std::pair<double, double>> buildTrajectory(const std::vector<PlannerCell>& path,
+                                                       const GridMapInfo& map) {
+    std::vector<std::pair<double, double>> anchors;
+    anchors.reserve(path.size());
+    for (const auto& c : path) {
+        anchors.push_back(gridToWorldCenter(c.x, c.y, map));
+    }
+    if (anchors.empty()) return {};
+    if (anchors.size() == 1) return anchors;
+
+    constexpr double kStep = 0.05;
+    std::vector<std::pair<double, double>> dense;
+    dense.push_back(anchors.front());
+
+    for (std::size_t i = 1; i < anchors.size(); ++i) {
+        const double x0 = anchors[i - 1].first;
+        const double y0 = anchors[i - 1].second;
+        const double x1 = anchors[i].first;
+        const double y1 = anchors[i].second;
+        const double len = std::hypot(x1 - x0, y1 - y0);
+        const int steps = std::max(1, static_cast<int>(std::ceil(len / kStep)));
+        for (int s = 1; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / static_cast<double>(steps);
+            dense.push_back({x0 + (x1 - x0) * t, y0 + (y1 - y0) * t});
+        }
+    }
+
+    if (dense.size() < 5) return dense;
+
+    std::vector<std::pair<double, double>> smooth = dense;
+    for (std::size_t i = 2; i + 2 < dense.size(); ++i) {
+        double sx = 0.0;
+        double sy = 0.0;
+        for (int k = -2; k <= 2; ++k) {
+            sx += dense[i + static_cast<std::size_t>(k)].first;
+            sy += dense[i + static_cast<std::size_t>(k)].second;
+        }
+        smooth[i].first = sx / 5.0;
+        smooth[i].second = sy / 5.0;
+    }
+
+    smooth.front() = dense.front();
+    smooth.back() = dense.back();
+    return smooth;
+}
 } // namespace
 
 RcControlNode::RcControlNode(const std::string& broker_host,
@@ -436,13 +490,11 @@ RcControlNode::~RcControlNode() {
 }
 
 bool RcControlNode::start() {
-
-    // HW init first
     setupMotorPins();
     setupServoPwmSysfs();
     hardStop();
-    mosquitto_lib_init();
 
+    mosquitto_lib_init();
     mosq_ = mosquitto_new("rc_control_node", true, this);
     if (!mosq_) {
         std::cerr << "[ERR] mosquitto_new failed\n";
@@ -491,25 +543,25 @@ void RcControlNode::run() {
             if (ch == ' ') {
                 RcGoal g;
                 g.x = 6.0;
-                g.y = 4.5; // midpoint between id10(6,4) and id11(6,5)
+                g.y = 4.5;
                 g.frame = "world";
                 g.ts_ms = nowMs();
                 g.valid = true;
                 {
                     std::lock_guard<std::mutex> lk(data_mtx_);
                     goal_ = g;
-                    reached_hold_ = false; // new manual goal releases reached latch
+                    reached_hold_ = false;
                 }
-                std::cout << "[MANUAL_GOAL] id10-11 midpoint"
-                          << " x=" << g.x << " y=" << g.y << "\n";
+                std::cout << "[MANUAL_GOAL] id10-11 midpoint x=" << g.x << " y=" << g.y << "\n";
             } else if (ch == 'q' || ch == 'Q') {
                 g_sig_run = false;
             }
         }
 
         controlStep();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 20 Hz
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+
     hardStop();
 }
 
@@ -517,6 +569,7 @@ void RcControlNode::stop() {
     if (!running_) return;
     running_ = false;
     hardStop();
+
     if (mosq_) {
         mosquitto_loop_stop(mosq_, true);
         mosquitto_disconnect(mosq_);
@@ -525,8 +578,6 @@ void RcControlNode::stop() {
     }
     mosquitto_lib_cleanup();
 }
-
-
 
 void RcControlNode::setControlParams(double k_linear,
                                      double k_yaw,
@@ -555,62 +606,75 @@ void RcControlNode::onConnect(int rc) {
         std::cerr << "[ERR] MQTT connect callback rc=" << rc << "\n";
         return;
     }
+
     static bool subscribed_log_printed = false;
     const int rc1 = mosquitto_subscribe(mosq_, nullptr, topic_goal_.c_str(), 1);
     const int rc2 = mosquitto_subscribe(mosq_, nullptr, topic_pose_.c_str(), 1);
     const int rc3 = mosquitto_subscribe(mosq_, nullptr, topic_safety_.c_str(), 1);
     const int rc4 = mosquitto_subscribe(mosq_, nullptr, topic_walls_.c_str(), 1);
+
     if (!subscribed_log_printed) {
         subscribed_log_printed = true;
         std::cout << "[OK] subscribed: " << topic_goal_ << ", " << topic_pose_ << ", " << topic_safety_
-                  << ", " << topic_walls_
-                  << " (rc=" << rc1 << "," << rc2 << "," << rc3 << "," << rc4 << ")\n";
+                  << ", " << topic_walls_ << " (rc=" << rc1 << "," << rc2 << "," << rc3 << "," << rc4
+                  << ")\n";
     }
 }
 
 void RcControlNode::onMessage(const struct mosquitto_message* msg) {
     if (!msg || !msg->topic || !msg->payload || msg->payloadlen <= 0) return;
+
     const std::string topic(msg->topic);
     const std::string payload(static_cast<const char*>(msg->payload), msg->payloadlen);
 
     std::lock_guard<std::mutex> lk(data_mtx_);
+
     if (topic == topic_goal_) {
         RcGoal g;
         if (parseGoalJson(payload, g) && g.frame == "world") {
             goal_ = g;
-            reached_hold_ = false; // any new goal input releases reached latch
+            reached_hold_ = false;
             std::cout << "[GOAL] x=" << g.x << " y=" << g.y << " ts_ms=" << g.ts_ms << "\n";
         } else {
             std::cerr << "[WARN] invalid goal payload: " << payload << "\n";
         }
-    } else if (topic == topic_pose_) {
+        return;
+    }
+
+    if (topic == topic_pose_) {
         RcPose p;
         if (parsePoseJson(payload, p) && p.frame == "world") {
             pose_ = p;
         }
-    } else if (topic == topic_safety_) {
+        return;
+    }
+
+    if (topic == topic_safety_) {
         RcSafety s;
         if (parseSafetyJson(payload, s)) {
             safety_ = s;
         }
-    } else if (topic == topic_walls_) {
+        return;
+    }
+
+    if (topic == topic_walls_) {
         int id = -1;
         double x = 0.0;
         double y = 0.0;
         if (parseWallMarkerJson(payload, id, x, y) && id >= 10 && id <= 13) {
+            const auto it = wall_markers_.find(id);
+            const bool changed = (it == wall_markers_.end()) ||
+                                 (std::fabs(it->second.first - x) > 1e-3) ||
+                                 (std::fabs(it->second.second - y) > 1e-3);
             wall_markers_[id] = {x, y};
+            if (changed) {
+                walls_dirty_ = true;
+            }
         }
     }
 }
 
-bool RcControlNode::makePlanIfNeeded(const RcPose& pose, const RcGoal& goal, std::string& reason) {
-    const long long now_ms = nowMs();
-    const bool goal_changed = (goal.ts_ms != plan_goal_ts_ms_);
-    const bool stale = (now_ms - last_plan_ts_ms_ >= 1000);
-    if (plan_valid_ && !waypoints_.empty() && !goal_changed && !stale) {
-        return true;
-    }
-
+bool RcControlNode::makePlan(const RcPose& pose, const RcGoal& goal, std::string& reason) {
     GridMapInfo map_info;
     std::vector<std::vector<int>> grid(map_info.height, std::vector<int>(map_info.width, 0));
 
@@ -628,6 +692,7 @@ bool RcControlNode::makePlanIfNeeded(const RcPose& pose, const RcGoal& goal, std
     constexpr double kWallThicknessM = 0.35;
     constexpr double kMarkerRadiusM = 0.10;
     constexpr double kPassageRadiusM = 0.25;
+
     drawObstacleSegment(grid, map_info, p12.first, p12.second, p10.first, p10.second, kWallThicknessM);
     drawObstacleSegment(grid, map_info, p11.first, p11.second, p13.first, p13.second, kWallThicknessM);
     drawObstacleCircle(grid, map_info, p10.first, p10.second, kMarkerRadiusM);
@@ -635,90 +700,243 @@ bool RcControlNode::makePlanIfNeeded(const RcPose& pose, const RcGoal& goal, std
     drawObstacleCircle(grid, map_info, p12.first, p12.second, kMarkerRadiusM);
     drawObstacleCircle(grid, map_info, p13.first, p13.second, kMarkerRadiusM);
 
-    // id10-id11 사이는 통과 가능하도록 통로를 강제로 연다.
     const double pass_x = 0.5 * (p10.first + p11.first);
     const double pass_y = 0.5 * (p10.second + p11.second);
     clearPassage(grid, map_info, pass_x, pass_y, kPassageRadiusM);
 
     const PlannerCell s = worldToGrid(pose.x, pose.y, map_info);
     const PlannerCell g = worldToGrid(goal.x, goal.y, map_info);
+
     clearPassage(grid, map_info, pose.x, pose.y, 0.16);
     clearPassage(grid, map_info, goal.x, goal.y, 0.16);
 
     std::vector<PlannerCell> raw_path;
     if (!dijkstraGrid(grid, s, g, raw_path)) {
         plan_valid_ = false;
-        waypoints_.clear();
-        waypoint_idx_ = 0;
+        trajectory_.clear();
+        traj_closest_hint_ = 0;
         plan_goal_ts_ms_ = goal.ts_ms;
-        last_plan_ts_ms_ = now_ms;
         reason = "Dijkstra failed: no path";
         return false;
     }
 
     const std::vector<PlannerCell> compressed = compressPath(raw_path);
-    std::vector<std::pair<double, double>> wps;
-    wps.reserve(compressed.size());
-    for (const PlannerCell& c : compressed) {
-        wps.push_back(gridToWorldCenter(c.x, c.y, map_info));
-    }
-    if (wps.empty()) {
+    std::vector<std::pair<double, double>> new_traj = buildTrajectory(compressed, map_info);
+    if (new_traj.empty()) {
         plan_valid_ = false;
-        reason = "Planner produced empty waypoint list";
+        trajectory_.clear();
+        traj_closest_hint_ = 0;
+        reason = "Trajectory build failed";
         return false;
     }
 
-    waypoints_ = std::move(wps);
-    waypoint_idx_ = 0;
+    trajectory_ = std::move(new_traj);
+    traj_closest_hint_ = 0;
     plan_valid_ = true;
     plan_goal_ts_ms_ = goal.ts_ms;
-    last_plan_ts_ms_ = now_ms;
+    walls_dirty_ = false;
+    offtrack_since_ms_ = -1;
 
-    std::cout << "[PLAN] waypoints=" << waypoints_.size()
+    const double d_goal = std::hypot(goal.x - pose.x, goal.y - pose.y);
+    best_goal_dist_ = d_goal;
+    last_progress_ts_ms_ = nowMs();
+
+    std::cout << "[PLAN] traj_pts=" << trajectory_.size()
               << " goal=(" << goal.x << "," << goal.y << ")"
               << " wall10=(" << p10.first << "," << p10.second << ")"
               << " wall11=(" << p11.first << "," << p11.second << ")"
               << " wall12=(" << p12.first << "," << p12.second << ")"
               << " wall13=(" << p13.first << "," << p13.second << ")"
               << "\n";
+
+    reason = "PLAN_OK";
     return true;
 }
 
-bool RcControlNode::pickActiveWaypoint(const RcPose& pose,
-                                       RcGoal& out_target,
-                                       bool& out_final_wp,
-                                       double& out_dist_to_target) {
-    if (!plan_valid_ || waypoints_.empty()) return false;
+bool RcControlNode::ensurePlan(const RcPose& pose, const RcGoal& goal, std::string& reason) {
+    const long long now_ms = nowMs();
+    const bool goal_changed = (goal.ts_ms != plan_goal_ts_ms_);
 
-    while (waypoint_idx_ < waypoints_.size()) {
-        const double wx = waypoints_[waypoint_idx_].first;
-        const double wy = waypoints_[waypoint_idx_].second;
-        const double d = std::hypot(wx - pose.x, wy - pose.y);
-        if (d <= waypoint_tolerance_m_) {
-            waypoint_idx_++;
-            continue;
+    double offtrack_dist = 0.0;
+    bool offtrack_trigger = false;
+
+    if (plan_valid_ && !trajectory_.empty()) {
+        std::size_t closest_idx = traj_closest_hint_;
+        offtrack_dist = distanceToTrajectory(pose, &closest_idx);
+        traj_closest_hint_ = closest_idx;
+
+        if (offtrack_dist > 0.25) {
+            if (offtrack_since_ms_ < 0) offtrack_since_ms_ = now_ms;
+            if (now_ms - offtrack_since_ms_ >= 500) offtrack_trigger = true;
+        } else {
+            offtrack_since_ms_ = -1;
         }
-        out_target = RcGoal{};
-        out_target.x = wx;
-        out_target.y = wy;
-        out_target.frame = "world";
-        out_target.ts_ms = nowMs();
-        out_target.valid = true;
-        out_final_wp = (waypoint_idx_ + 1 >= waypoints_.size());
-        out_dist_to_target = d;
+    }
+
+    const double dist_goal = std::hypot(goal.x - pose.x, goal.y - pose.y);
+    if (!std::isfinite(best_goal_dist_) || dist_goal < best_goal_dist_ - 0.03) {
+        best_goal_dist_ = dist_goal;
+        last_progress_ts_ms_ = now_ms;
+    }
+    const bool stalled = (dist_goal > tolerance_m_) &&
+                         (last_progress_ts_ms_ > 0) &&
+                         (now_ms - last_progress_ts_ms_ >= 3000);
+
+    const bool need_plan =
+        (!plan_valid_) || trajectory_.empty() || goal_changed || walls_dirty_ || offtrack_trigger || stalled;
+
+    if (!need_plan) {
+        reason = "PLAN_REUSE";
         return true;
     }
 
-    // 모든 waypoint를 통과했으면 최종 위치 도착 처리.
-    out_target = RcGoal{};
-    out_target.x = pose.x;
-    out_target.y = pose.y;
-    out_target.frame = "world";
-    out_target.ts_ms = nowMs();
-    out_target.valid = true;
-    out_final_wp = true;
-    out_dist_to_target = 0.0;
+    if (goal_changed) reason = "goal_changed";
+    else if (walls_dirty_) reason = "walls_changed";
+    else if (offtrack_trigger) reason = "offtrack";
+    else if (stalled) reason = "stalled";
+    else reason = "plan_invalid";
+
+    return makePlan(pose, goal, reason);
+}
+
+bool RcControlNode::findPursuitTarget(const RcPose& pose,
+                                      double lookahead_m,
+                                      std::size_t& io_closest_idx,
+                                      std::size_t& out_target_idx,
+                                      std::pair<double, double>& out_target_pt,
+                                      double& out_dist_to_path) const {
+    if (trajectory_.empty()) return false;
+
+    if (io_closest_idx >= trajectory_.size()) io_closest_idx = 0;
+
+    const std::size_t begin = io_closest_idx;
+    const std::size_t end = std::min<std::size_t>(trajectory_.size() - 1, begin + 120);
+
+    double best_d2 = std::numeric_limits<double>::infinity();
+    std::size_t best_idx = begin;
+    for (std::size_t i = begin; i <= end; ++i) {
+        const double dx = trajectory_[i].first - pose.x;
+        const double dy = trajectory_[i].second - pose.y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best_idx = i;
+        }
+    }
+
+    io_closest_idx = best_idx;
+    out_dist_to_path = std::sqrt(best_d2);
+
+    double acc = 0.0;
+    std::size_t tgt = best_idx;
+    while (tgt + 1 < trajectory_.size() && acc < lookahead_m) {
+        acc += std::hypot(trajectory_[tgt + 1].first - trajectory_[tgt].first,
+                          trajectory_[tgt + 1].second - trajectory_[tgt].second);
+        tgt++;
+    }
+
+    out_target_idx = tgt;
+    out_target_pt = trajectory_[tgt];
     return true;
+}
+
+double RcControlNode::distanceToTrajectory(const RcPose& pose, std::size_t* out_closest_idx) const {
+    if (trajectory_.empty()) {
+        if (out_closest_idx) *out_closest_idx = 0;
+        return std::numeric_limits<double>::infinity();
+    }
+
+    if (trajectory_.size() == 1) {
+        if (out_closest_idx) *out_closest_idx = 0;
+        return std::hypot(trajectory_[0].first - pose.x, trajectory_[0].second - pose.y);
+    }
+
+    double best = std::numeric_limits<double>::infinity();
+    std::size_t best_idx = 0;
+    for (std::size_t i = 0; i + 1 < trajectory_.size(); ++i) {
+        const double d = pointSegDist(pose.x,
+                                      pose.y,
+                                      trajectory_[i].first,
+                                      trajectory_[i].second,
+                                      trajectory_[i + 1].first,
+                                      trajectory_[i + 1].second);
+        if (d < best) {
+            best = d;
+            best_idx = i;
+        }
+    }
+
+    if (out_closest_idx) *out_closest_idx = best_idx;
+    return best;
+}
+
+RcCommand RcControlNode::computePurePursuitCommand(const RcPose& pose,
+                                                   const RcGoal& goal,
+                                                   RcStatus& out_status,
+                                                   double speed_limit_mps,
+                                                   int* out_target_idx,
+                                                   std::pair<double, double>& out_target_pt,
+                                                   double& out_curvature) {
+    RcCommand cmd{};
+
+    const double dist_to_goal = std::hypot(goal.x - pose.x, goal.y - pose.y);
+    if (dist_to_goal <= tolerance_m_) {
+        out_status.mode = "REACHED";
+        out_status.reached = true;
+        out_status.err_dist = dist_to_goal;
+        out_status.err_yaw = 0.0;
+        out_status.reason = "GOAL_REACHED";
+        out_curvature = 0.0;
+        if (out_target_idx) *out_target_idx = static_cast<int>(traj_closest_hint_);
+        return cmd;
+    }
+
+    const double lookahead_m = clamp(0.35 + 0.8 * std::fabs(last_cmd_.speed_mps), 0.35, 0.9);
+
+    std::size_t closest_idx = traj_closest_hint_;
+    std::size_t target_idx = closest_idx;
+    double dist_to_path = 0.0;
+    if (!findPursuitTarget(pose, lookahead_m, closest_idx, target_idx, out_target_pt, dist_to_path)) {
+        out_status.mode = "SAFE_STOP";
+        out_status.reached = false;
+        out_status.err_dist = dist_to_goal;
+        out_status.err_yaw = 0.0;
+        out_status.reason = "NO_TARGET";
+        out_curvature = 0.0;
+        if (out_target_idx) *out_target_idx = 0;
+        return cmd;
+    }
+
+    traj_closest_hint_ = closest_idx;
+
+    const double heading = std::atan2(out_target_pt.second - pose.y, out_target_pt.first - pose.x);
+    const double alpha = normalizeAngle(heading - pose.yaw);
+
+    const double kLd = std::max(lookahead_m, 0.2);
+    const double curvature = 2.0 * std::sin(alpha) / kLd;
+
+    double speed_base = clamp(k_linear_ * dist_to_goal, 0.0, max_speed_mps_);
+    if (dist_to_goal <= 0.7) {
+        const double scale = clamp(dist_to_goal / 0.7, 0.20, 1.0);
+        speed_base *= scale;
+    }
+
+    const double speed_by_curvature = max_speed_mps_ / (1.0 + 2.0 * std::fabs(curvature));
+    double speed_cmd = std::min({speed_base, speed_by_curvature, speed_limit_mps});
+    if (speed_cmd < 0.08) speed_cmd = 0.08;
+
+    cmd.speed_mps = speed_cmd;
+    cmd.yaw_rate_rps = clamp(k_yaw_ * speed_cmd * curvature, -max_yaw_rate_rps_, max_yaw_rate_rps_);
+
+    out_status.mode = "TRACKING";
+    out_status.reached = false;
+    out_status.err_dist = dist_to_goal;
+    out_status.err_yaw = alpha;
+    out_status.reason = (dist_to_path > 0.25) ? "TRACKING_OFFPATH" : "TRACKING";
+
+    out_curvature = curvature;
+    if (out_target_idx) *out_target_idx = static_cast<int>(target_idx);
+    return cmd;
 }
 
 void RcControlNode::controlStep() {
@@ -744,6 +962,22 @@ void RcControlNode::controlStep() {
     }
 
     RcStatus status;
+    status.pose_quality = pose.quality;
+
+    auto publishStop = [&](const std::string& mode, const std::string& reason) {
+        status.mode = mode;
+        status.reason = reason;
+        status.reached = (mode == "REACHED");
+        status.err_dist = (goal.valid && pose.valid) ? std::hypot(goal.x - pose.x, goal.y - pose.y) : 0.0;
+        status.err_yaw = 0.0;
+        const RcCommand stop_cmd{0.0, 0.0};
+        hardStop();
+        sendCommandToRc(stop_cmd, computeServoUs(stop_cmd));
+        publishCmdFeedback(stop_cmd, mode);
+        publishStatus(status);
+        last_cmd_ = stop_cmd;
+    };
+
     if (!goal.valid || !pose.valid) {
         const auto now = std::chrono::steady_clock::now();
         if (now - g_last_diag_log >= std::chrono::seconds(1)) {
@@ -751,9 +985,7 @@ void RcControlNode::controlStep() {
                       << " pose.valid=" << pose.valid << "\n";
             g_last_diag_log = now;
         }
-        status.mode = "WAIT_INPUT";
-        publishStatus(status);
-        hardStop();
+        publishStop("WAIT_INPUT", "NO_INPUT");
         return;
     }
 
@@ -765,24 +997,19 @@ void RcControlNode::controlStep() {
                       << " planner_fail=" << safety.planner_fail << "\n";
             g_last_diag_log = now;
         }
-        status.mode = "SAFE_STOP";
-        status.reached = false;
-         hardStop();
-        const RcCommand stop_cmd{0.0, 0.0};
-        sendCommandToRc(stop_cmd, computeServoUs(stop_cmd));
-        publishStatus(status);
+        publishStop("SAFE_STOP", "SAFETY_FLAG");
+        return;
+    }
+
+    const long long now_ms = nowMs();
+    const long long pose_age_ms = (pose.ts_ms > 0) ? (now_ms - pose.ts_ms) : 99999;
+    if (pose.quality < 0.2 || pose_age_ms > 700) {
+        publishStop("SAFE_STOP", "POSE_UNRELIABLE");
         return;
     }
 
     if (reached_hold) {
-        status.mode = "REACHED";
-        status.reached = true;
-        status.err_dist = std::hypot(goal.x - pose.x, goal.y - pose.y);
-        status.err_yaw = 0.0;
-        hardStop();
-        const RcCommand stop_cmd{0.0, 0.0};
-        sendCommandToRc(stop_cmd, computeServoUs(stop_cmd));
-        publishStatus(status);
+        publishStop("REACHED", "HOLD_REACHED");
         return;
     }
 
@@ -811,10 +1038,15 @@ void RcControlNode::controlStep() {
             setServoUs(kLeftTurnUs);
             setMotorControl(kAvoidPwm, FORWARD);
             status.mode = "US_TURN_LEFT";
+            status.reason = "ULTRASONIC_AVOID";
             status.reached = false;
             status.err_dist = std::hypot(goal.x - pose.x, goal.y - pose.y);
             status.err_yaw = 0.0;
+            status.pose_quality = pose.quality;
+            const RcCommand avoid_cmd{0.2, 0.8};
+            publishCmdFeedback(avoid_cmd, status.mode);
             publishStatus(status);
+            last_cmd_ = avoid_cmd;
             return;
         }
     }
@@ -828,146 +1060,91 @@ void RcControlNode::controlStep() {
             setServoUs(kRightTurnUs);
             setMotorControl(kAvoidPwm, FORWARD);
             status.mode = "US_TURN_RIGHT";
+            status.reason = "ULTRASONIC_AVOID";
             status.reached = false;
             status.err_dist = std::hypot(goal.x - pose.x, goal.y - pose.y);
             status.err_yaw = 0.0;
+            status.pose_quality = pose.quality;
+            const RcCommand avoid_cmd{0.2, -0.8};
+            publishCmdFeedback(avoid_cmd, status.mode);
             publishStatus(status);
+            last_cmd_ = avoid_cmd;
             return;
         }
     }
 
     std::string plan_reason;
-    if (!makePlanIfNeeded(pose, goal, plan_reason)) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now - g_last_diag_log >= std::chrono::seconds(1)) {
+    if (!ensurePlan(pose, goal, plan_reason)) {
+        const auto log_now = std::chrono::steady_clock::now();
+        if (log_now - g_last_diag_log >= std::chrono::seconds(1)) {
             std::cout << "[DIAG] SAFE_STOP planner_fail=1 reason=" << plan_reason << "\n";
-            g_last_diag_log = now;
+            g_last_diag_log = log_now;
         }
-        status.mode = "SAFE_STOP";
-        status.reached = false;
-        status.err_dist = std::hypot(goal.x - pose.x, goal.y - pose.y);
-        status.err_yaw = 0.0;
-        hardStop();
-        const RcCommand stop_cmd{0.0, 0.0};
-        sendCommandToRc(stop_cmd, computeServoUs(stop_cmd));
-        publishStatus(status);
+        publishStop("SAFE_STOP", "PLANNER_FAIL");
         return;
     }
 
-    RcGoal tracking_target;
-    bool final_wp = true;
-    double wp_dist = 0.0;
-    if (!pickActiveWaypoint(pose, tracking_target, final_wp, wp_dist)) {
-        status.mode = "SAFE_STOP";
-        status.reached = false;
-        hardStop();
-        const RcCommand stop_cmd{0.0, 0.0};
-        sendCommandToRc(stop_cmd, computeServoUs(stop_cmd));
-        publishStatus(status);
-        return;
+    double speed_limit = max_speed_mps_;
+    if (pose.quality < 0.4) {
+        speed_limit = std::min(speed_limit, 0.2);
     }
 
-    RcCommand cmd = computeCommand(
-        pose,
-        tracking_target,
-        status,
-        final_wp ? tolerance_m_ : waypoint_tolerance_m_);
-    if (!final_wp && status.mode == "REACHED") {
-        // waypoint 통과 직후에는 다음 waypoint를 바로 목표로 전환
-        RcGoal next_target;
-        bool next_final = true;
-        double next_dist = 0.0;
-        if (pickActiveWaypoint(pose, next_target, next_final, next_dist)) {
-            tracking_target = next_target;
-            final_wp = next_final;
-            cmd = computeCommand(
-                pose,
-                tracking_target,
-                status,
-                final_wp ? tolerance_m_ : waypoint_tolerance_m_);
-        }
-    }
+    int target_idx = 0;
+    std::pair<double, double> target_pt{pose.x, pose.y};
+    double curvature = 0.0;
+    RcCommand cmd = computePurePursuitCommand(
+        pose, goal, status, speed_limit, &target_idx, target_pt, curvature);
 
     const int servo_us = computeServoUs(cmd);
-    if (status.mode == "REACHED" && final_wp) {
+    if (status.mode == "REACHED") {
         std::lock_guard<std::mutex> lk(data_mtx_);
         reached_hold_ = true;
     }
+
     {
-        const auto now = std::chrono::steady_clock::now();
-        if (now - g_last_diag_log >= std::chrono::seconds(1)) {
+        const auto log_now = std::chrono::steady_clock::now();
+        if (log_now - g_last_diag_log >= std::chrono::seconds(1)) {
             std::cout << std::fixed << std::setprecision(3)
                       << "[DIAG] mode=" << status.mode
+                      << " reason=" << status.reason
                       << " pose=(" << pose.x << "," << pose.y << "," << pose.yaw << ")"
                       << " goal=(" << goal.x << "," << goal.y << ")"
-                      << " target=(" << tracking_target.x << "," << tracking_target.y << ")"
-                      << " wp_idx=" << waypoint_idx_
-                      << "/" << waypoints_.size()
-                      << " final_wp=" << final_wp
+                      << " target=(" << target_pt.first << "," << target_pt.second << ")"
+                      << " traj_idx=" << target_idx
+                      << " traj_n=" << trajectory_.size()
                       << " dist=" << status.err_dist
                       << " err_yaw=" << status.err_yaw
+                      << " curv=" << curvature
                       << " cmd_v=" << cmd.speed_mps
                       << " cmd_w=" << cmd.yaw_rate_rps
+                      << " quality=" << pose.quality
+                      << " pose_age_ms=" << pose_age_ms
+                      << " plan_reason=" << plan_reason
                       << " servo_us=" << servo_us << "\n";
-            g_last_diag_log = now;
+            g_last_diag_log = log_now;
         }
     }
+
     sendCommandToRc(cmd, servo_us);
+    publishCmdFeedback(cmd, status.mode);
     publishStatus(status);
-}
-
-RcCommand RcControlNode::computeCommand(const RcPose& pose,
-                                        const RcGoal& goal,
-                                        RcStatus& out_status,
-                                        double reach_tolerance_m) const {
-    constexpr double PI = 3.14159265358979323846;
-    constexpr double REVERSE_SWITCH_RAD = PI / 2.0; // 90 deg
-    constexpr double REVERSE_SPEED_SCALE = 0.6;     // reverse safety scale
-    constexpr double SLOWDOWN_DIST_M = 0.5;
-    constexpr double SLOWDOWN_SCALE = 0.5;
-
-    const double dx = goal.x - pose.x;
-    const double dy = goal.y - pose.y;
-    const double dist = std::sqrt(dx * dx + dy * dy);
-
-    const double target_heading = std::atan2(dy, dx);
-    constexpr double YAW_FRAME_OFFSET_RAD = 0.0; // tracker yaw is already aligned to +x=0
-    const double pose_yaw_ctrl = normalizeAngle(pose.yaw + YAW_FRAME_OFFSET_RAD);
-    const double err_yaw_fwd = normalizeAngle(target_heading - pose_yaw_ctrl);
-    const bool use_reverse = (std::fabs(err_yaw_fwd) > REVERSE_SWITCH_RAD);
-    const double err_yaw = use_reverse ? normalizeAngle(err_yaw_fwd + PI) : err_yaw_fwd;
-
-    RcCommand cmd{};
-    out_status.mode = use_reverse ? "REV_TRACKING" : "TRACKING";
-    out_status.err_dist = dist;
-    out_status.err_yaw = err_yaw;
-
-    if (dist <= reach_tolerance_m) {
-        out_status.mode = "REACHED";
-        out_status.reached = true;
-        return cmd;
-    }
-
-    const double speed_abs = clamp(k_linear_ * dist, 0.0, max_speed_mps_);
-    double speed_cmd = use_reverse ? (-speed_abs * REVERSE_SPEED_SCALE) : speed_abs;
-    if (dist <= SLOWDOWN_DIST_M) {
-        speed_cmd *= SLOWDOWN_SCALE;
-    }
-    cmd.speed_mps = speed_cmd;
-    cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
-    return cmd;
+    last_cmd_ = cmd;
 }
 
 bool RcControlNode::publishStatus(const RcStatus& status) {
     if (!mosq_) return false;
-    char buf[256];
-    std::snprintf(buf, sizeof(buf),
-                  "{\"mode\":\"%s\",\"reached\":%s,\"err_dist\":%.3f,\"err_yaw\":%.3f,\"battery\":%.2f}",
+
+    char buf[384];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "{\"mode\":\"%s\",\"reached\":%s,\"err_dist\":%.3f,\"err_yaw\":%.3f,\"battery\":%.2f,\"reason\":\"%s\",\"pose_quality\":%.3f}",
                   status.mode.c_str(),
                   status.reached ? "true" : "false",
                   status.err_dist,
                   status.err_yaw,
-                  status.battery);
+                  status.battery,
+                  status.reason.c_str(),
+                  status.pose_quality);
 
     const int rc = mosquitto_publish(mosq_,
                                      nullptr,
@@ -979,55 +1156,71 @@ bool RcControlNode::publishStatus(const RcStatus& status) {
     return (rc == MOSQ_ERR_SUCCESS);
 }
 
+bool RcControlNode::publishCmdFeedback(const RcCommand& cmd, const std::string& mode) {
+    if (!mosq_) return false;
+
+    char buf[256];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "{\"speed_mps\":%.3f,\"yaw_rate_rps\":%.3f,\"mode\":\"%s\",\"ts_ms\":%lld}",
+                  cmd.speed_mps,
+                  cmd.yaw_rate_rps,
+                  mode.c_str(),
+                  nowMs());
+
+    const int rc = mosquitto_publish(mosq_,
+                                     nullptr,
+                                     topic_cmd_feedback_.c_str(),
+                                     static_cast<int>(std::strlen(buf)),
+                                     buf,
+                                     1,
+                                     false);
+    return (rc == MOSQ_ERR_SUCCESS);
+}
+
 void RcControlNode::sendCommandToRc(const RcCommand& cmd, int servo_us) const {
-    // TODO(team): replace this with real motor/steering transport (UART/CAN/PWM/etc).
-    // 1) 작은 속도는 그냥 정지(떨림 방지)
     const double speed_abs = std::fabs(cmd.speed_mps);
     if (speed_abs < 0.05) {
         hardStop();
         return;
     }
 
-    // 2) speed(m/s) -> PWM(0~255)
-    int pwm = (int)std::round(speed_abs / max_speed_mps_ * 255.0);
-    if (pwm < 70) pwm = 70;     // 최소 구동 (차에 맞게 튜닝)
-    if (pwm > 180) pwm = 180;   // 상한(안전)
+    int pwm = static_cast<int>(std::round(speed_abs / max_speed_mps_ * 255.0));
+    if (pwm < 70) pwm = 70;
+    if (pwm > 180) pwm = 180;
 
-    // 3) yaw_rate(rad/s) -> servo us(900~1600)
     const bool reverse = (cmd.speed_mps < 0.0);
     setServoUs(servo_us);
     setMotorControl(pwm, reverse ? BACKWARD : FORWARD);
-
-    // 디버그 필요하면:
-    // std::cout << "[HW] pwm=" << pwm << " us=" << servo_us << "\n";
 }
 
 int RcControlNode::computeServoUs(const RcCommand& cmd) const {
     constexpr int SERVO_CENTER_US = 1250;
-    constexpr int SERVO_TRIM_US = 32;       // steering trim
-    constexpr double STEER_HW_SIGN = 1.0;  // positive yaw -> right steering on this platform
-    constexpr double STEER_GAIN = 0.6;     // reduce aggressive steering
+    constexpr int SERVO_TRIM_US = 32;
+    constexpr double STEER_HW_SIGN = 1.0;
+    constexpr double STEER_GAIN = 0.6;
     constexpr int SERVO_MIN_US = 900;
     constexpr int SERVO_MAX_US = 1600;
 
     if (max_yaw_rate_rps_ <= 0.0) return SERVO_CENTER_US + SERVO_TRIM_US;
 
-    // Kinematic reverse compensation, then hardware sign/scale.
     const bool reverse = (cmd.speed_mps < 0.0);
     const double steer_body = reverse ? -cmd.yaw_rate_rps : cmd.yaw_rate_rps;
     const double steer_cmd = STEER_HW_SIGN * STEER_GAIN * steer_body;
-    int us = SERVO_CENTER_US + SERVO_TRIM_US + (int)std::round(steer_cmd / max_yaw_rate_rps_ * 500.0);
+
+    int us = SERVO_CENTER_US + SERVO_TRIM_US +
+             static_cast<int>(std::round(steer_cmd / max_yaw_rate_rps_ * 500.0));
+
     if (us < SERVO_MIN_US) us = SERVO_MIN_US;
     if (us > SERVO_MAX_US) us = SERVO_MAX_US;
     return us;
 }
 
-double RcControlNode::normalizeAngle(double rad)
-{ 
-    constexpr double PI = 3.14159265358979323846; 
-    while (rad > PI) rad -= 2.0 * PI; 
-    while (rad < -PI) rad += 2.0 * PI; 
-    return rad; 
+double RcControlNode::normalizeAngle(double rad) {
+    constexpr double PI = 3.14159265358979323846;
+    while (rad > PI) rad -= 2.0 * PI;
+    while (rad < -PI) rad += 2.0 * PI;
+    return rad;
 }
 
 double RcControlNode::clamp(double v, double lo, double hi) {
@@ -1038,8 +1231,7 @@ bool RcControlNode::parseGoalJson(const std::string& payload, RcGoal& out_goal) 
     if (!extractDouble(payload, "x", out_goal.x)) return false;
     if (!extractDouble(payload, "y", out_goal.y)) return false;
     if (!extractString(payload, "frame", out_goal.frame)) return false;
-    if (!extractInt64(payload, "ts_ms", out_goal.ts_ms) &&
-        !extractInt64(payload, "ts", out_goal.ts_ms)) {
+    if (!extractInt64(payload, "ts_ms", out_goal.ts_ms) && !extractInt64(payload, "ts", out_goal.ts_ms)) {
         return false;
     }
     out_goal.valid = true;
@@ -1051,10 +1243,20 @@ bool RcControlNode::parsePoseJson(const std::string& payload, RcPose& out_pose) 
     if (!extractDouble(payload, "y", out_pose.y)) return false;
     if (!extractDouble(payload, "yaw", out_pose.yaw)) return false;
     if (!extractString(payload, "frame", out_pose.frame)) return false;
-    if (!extractInt64(payload, "ts_ms", out_pose.ts_ms) &&
-        !extractInt64(payload, "ts", out_pose.ts_ms)) {
+    if (!extractInt64(payload, "ts_ms", out_pose.ts_ms) && !extractInt64(payload, "ts", out_pose.ts_ms)) {
         return false;
     }
+
+    if (!extractDouble(payload, "quality", out_pose.quality)) {
+        out_pose.quality = 0.5;
+    }
+    if (!extractInt64(payload, "age_ms", out_pose.age_ms)) {
+        out_pose.age_ms = 0;
+    }
+    if (!extractString(payload, "source", out_pose.source)) {
+        out_pose.source = "";
+    }
+
     out_pose.valid = true;
     return true;
 }

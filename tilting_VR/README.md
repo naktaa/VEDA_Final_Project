@@ -1,7 +1,8 @@
 # tilting_VR (C++ MVP)
 
 This project streams Raspberry Pi camera video to a phone in VR split-view and
-uses the phone orientation sensor to control pan/tilt servos (PCA9685 + MG90S).
+uses the phone orientation sensor to control pan/tilt servos over serial
+(`/dev/serial0`).
 
 ## What changed
 
@@ -36,7 +37,7 @@ Install packages on Raspberry Pi OS (example):
 sudo apt update
 sudo apt install -y \
   build-essential cmake pkg-config \
-  libopencv-dev i2c-tools \
+  libopencv-dev \
   nlohmann-json3-dev
 ```
 
@@ -54,11 +55,13 @@ cmake --build . -j
 
 ## Run
 
-Enable I2C first:
+Enable UART serial first:
 
 ```bash
 sudo raspi-config
-# Interface Options -> I2C -> Enable
+# Interface Options -> Serial Port
+# - Login shell over serial? -> No
+# - Enable serial port hardware? -> Yes
 sudo reboot
 ```
 
@@ -78,11 +81,13 @@ http://<raspberry-pi-ip>:8000/web/
 Tap `Connect + Start VR`, allow orientation permission, then mount the phone in
 your VR headset.
 
-## Default PCA9685 mapping
+## Serial servo mapping (calibrated)
 
-- I2C bus: `1`
-- PCA9685 address: `0x40`
-- pan servo channel: `0`
-- tilt servo channel: `1`
+- Device: `/dev/serial0` @ `115200`
+- Servo IDs: `pan=1`, `tilt=2`
+- Center: `pan=1800`, `tilt=2400`
+- Left 45 deg: `pan=2650`, Right 45 deg: `pan=1150`
+- Up 45 deg: `tilt=2900`, Down 45 deg: `tilt=2200` (mechanical limit)
+- IMU clamp: +/- 45 deg (piecewise linear mapping)
 
-Update constants in `server/src/main.cpp` if your wiring differs.
+Update constants in `server/src/main.cpp` if your calibration differs.

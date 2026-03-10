@@ -378,13 +378,13 @@ constexpr int BACKWARD = 2;
 // wiringPi pin numbers (hardware PWM)
 //   L_EN -> GPIO18 (wPi 1,  physical 12) PWM0
 //   R_EN -> GPIO19 (wPi 24, physical 35) PWM1
-constexpr int L_IN1 = 28; // GPIO20, physical 38
-constexpr int L_IN2 = 27; // GPIO16, physical 36
-constexpr int L_EN  = 1;  // GPIO18, physical 12 (HW PWM0)
+constexpr int L_IN1 = 23; // GPIO20, physical 38
+constexpr int L_IN2 = 24; // GPIO16, physical 36
+constexpr int L_EN  = 25; // GPIO18, physical 12 (HW PWM0)
 
-constexpr int R_IN1 = 25; // GPIO26, physical 37
-constexpr int R_IN2 = 23; // GPIO13, physical 33
-constexpr int R_EN  = 24; // GPIO19, physical 35 (HW PWM1)
+constexpr int R_IN1 = 27; // GPIO26, physical 37
+constexpr int R_IN2 = 28; // GPIO13, physical 33
+constexpr int R_EN  = 29; // GPIO19, physical 35 (HW PWM1)
 
 termios g_old_tio{};
 bool g_term_ready = false;

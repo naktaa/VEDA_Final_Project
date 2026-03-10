@@ -9,16 +9,45 @@
 #include <regex>
 #include <sstream>
 #include <thread>
+#include <algorithm>
+
+#if __has_include(<wiringPi.h>)
+#include <wiringPi.h>
+#define RC_HAS_WIRINGPI 1
+#else
+#define RC_HAS_WIRINGPI 0
+#endif
 
 namespace {
 std::atomic<bool> g_sig_run{true};
+std::chrono::steady_clock::time_point g_last_pose_log = std::chrono::steady_clock::time_point::min();
+
+constexpr int STOP = 0;
+constexpr int FORWARD = 1;
+constexpr int BACKWARD = 2;
+
+// wiringPi pin numbers
+constexpr int L_IN1 = 28; // GPIO20, physical 38
+constexpr int L_IN2 = 27; // GPIO16, physical 36
+constexpr int L_EN  = 1;  // GPIO18, physical 12
+
+constexpr int R_IN1 = 25; // GPIO26, physical 37
+constexpr int R_IN2 = 23; // GPIO13, physical 33
+constexpr int R_EN  = 24; // GPIO19, physical 35
+
+constexpr int PWM_HW_RANGE = 1024;
+
+int pwm255ToDuty(int pwm_255) {
+    const int p = std::max(0, std::min(255, pwm_255));
+    return (p * PWM_HW_RANGE) / 255;
+}
 
 void onSignal(int) {
     g_sig_run = false;
 }
 
 bool extractDouble(const std::string& json, const std::string& key, double& out) {
-    const std::regex re("\"" + key + "\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)");
+    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)");
     std::smatch m;
     if (!std::regex_search(json, m, re) || m.size() < 2) return false;
     out = std::stod(m[1].str());
@@ -26,7 +55,7 @@ bool extractDouble(const std::string& json, const std::string& key, double& out)
 }
 
 bool extractInt64(const std::string& json, const std::string& key, long long& out) {
-    const std::regex re("\"" + key + "\"\\s*:\\s*([0-9]+)");
+    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*([0-9]+)");
     std::smatch m;
     if (!std::regex_search(json, m, re) || m.size() < 2) return false;
     out = std::stoll(m[1].str());
@@ -34,7 +63,7 @@ bool extractInt64(const std::string& json, const std::string& key, long long& ou
 }
 
 bool extractString(const std::string& json, const std::string& key, std::string& out) {
-    const std::regex re("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
+    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
     std::smatch m;
     if (!std::regex_search(json, m, re) || m.size() < 2) return false;
     out = m[1].str();
@@ -42,7 +71,7 @@ bool extractString(const std::string& json, const std::string& key, std::string&
 }
 
 bool extractBool(const std::string& json, const std::string& key, bool& out) {
-    const std::regex re("\"" + key + "\"\\s*:\\s*(true|false)");
+    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*(true|false)");
     std::smatch m;
     if (!std::regex_search(json, m, re) || m.size() < 2) return false;
     out = (m[1].str() == "true");
@@ -61,13 +90,16 @@ RcControlNode::RcControlNode(const std::string& broker_host,
       topic_goal_(topic_goal),
       topic_pose_(topic_pose),
       topic_safety_(topic_safety),
-      topic_status_(topic_status) {}
+      topic_status_(topic_status),
+      last_pose_rx_(std::chrono::steady_clock::time_point::min()) {}
 
 RcControlNode::~RcControlNode() {
     stop();
 }
 
 bool RcControlNode::start() {
+    setupMotorDriver();
+
     mosquitto_lib_init();
 
     mosq_ = mosquitto_new("rc_control_node", true, this);
@@ -115,6 +147,7 @@ void RcControlNode::run() {
 void RcControlNode::stop() {
     if (!running_) return;
     running_ = false;
+    stopAllMotors();
 
     if (mosq_) {
         mosquitto_loop_stop(mosq_, true);
@@ -177,6 +210,15 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
         RcPose p;
         if (parsePoseJson(payload, p) && p.frame == "world") {
             pose_ = p;
+            last_pose_rx_ = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(last_pose_rx_ - g_last_pose_log).count() >= 500) {
+                std::cout << "[POSE] x=" << p.x << " y=" << p.y
+                          << " yaw=" << p.yaw << " frame=" << p.frame
+                          << " ts_ms=" << p.ts_ms << "\n";
+                g_last_pose_log = last_pose_rx_;
+            }
+        } else {
+            std::cerr << "[WARN] invalid pose payload: " << payload << "\n";
         }
     } else if (topic == topic_safety_) {
         RcSafety s;
@@ -190,16 +232,29 @@ void RcControlNode::controlStep() {
     RcGoal goal;
     RcPose pose;
     RcSafety safety;
+    std::chrono::steady_clock::time_point last_pose_rx;
     {
         std::lock_guard<std::mutex> lk(data_mtx_);
         goal = goal_;
         pose = pose_;
         safety = safety_;
+        last_pose_rx = last_pose_rx_;
     }
 
     RcStatus status;
     if (!goal.valid || !pose.valid) {
         status.mode = "WAIT_INPUT";
+        sendCommandToRc({0.0, 0.0});
+        publishStatus(status);
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_pose_rx).count();
+    if (age_ms > 300) {
+        status.mode = "POSE_TIMEOUT";
+        status.reached = false;
+        sendCommandToRc({0.0, 0.0});
         publishStatus(status);
         return;
     }
@@ -218,6 +273,7 @@ void RcControlNode::controlStep() {
 }
 
 RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, RcStatus& out_status) const {
+    constexpr double ROTATE_IN_PLACE_TH = 25.0 * 3.14159265358979323846 / 180.0;
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
@@ -236,7 +292,15 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, 
         return cmd;
     }
 
-    cmd.speed_mps = clamp(k_linear_ * dist, 0.0, max_speed_mps_);
+    const double abs_err = std::fabs(err_yaw);
+    if (abs_err > ROTATE_IN_PLACE_TH) {
+        cmd.speed_mps = 0.0;
+        cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
+        return cmd;
+    }
+
+    const double heading_scale = std::max(0.2, std::cos(abs_err));
+    cmd.speed_mps = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_mps_);
     cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
     return cmd;
 }
@@ -263,8 +327,104 @@ bool RcControlNode::publishStatus(const RcStatus& status) {
 }
 
 void RcControlNode::sendCommandToRc(const RcCommand& cmd) const {
-    // TODO(team): replace this with real motor/steering transport (UART/CAN/PWM/etc).
-    std::cout << "[CMD] speed=" << cmd.speed_mps << " m/s, yaw_rate=" << cmd.yaw_rate_rps << " rad/s\n";
+    if (!motor_ready_) {
+        std::cout << "[CMD] speed=" << cmd.speed_mps << " m/s, yaw_rate=" << cmd.yaw_rate_rps
+                  << " rad/s (motor driver not ready)\n";
+        return;
+    }
+
+    double v_left = cmd.speed_mps - (cmd.yaw_rate_rps * track_width_m_ * 0.5);
+    double v_right = cmd.speed_mps + (cmd.yaw_rate_rps * track_width_m_ * 0.5);
+
+    if (std::fabs(v_left) < speed_deadband_mps_) v_left = 0.0;
+    if (std::fabs(v_right) < speed_deadband_mps_) v_right = 0.0;
+
+    const int left_dir = (v_left > 0.0) ? FORWARD : (v_left < 0.0 ? BACKWARD : STOP);
+    const int right_dir = (v_right > 0.0) ? FORWARD : (v_right < 0.0 ? BACKWARD : STOP);
+
+    const int left_pwm = speedToPwm(v_left);
+    const int right_pwm = speedToPwm(v_right);
+
+    setMotorControl(L_EN, L_IN1, L_IN2, left_pwm, left_dir);
+    setMotorControl(R_EN, R_IN1, R_IN2, right_pwm, right_dir);
+
+    std::cout << "[CMD] v=" << cmd.speed_mps << " w=" << cmd.yaw_rate_rps
+              << " | L(v,pwm,dir)=" << v_left << "," << left_pwm << "," << left_dir
+              << " R(v,pwm,dir)=" << v_right << "," << right_pwm << "," << right_dir << "\n";
+}
+
+void RcControlNode::setupMotorDriver() {
+#if !RC_HAS_WIRINGPI
+    std::cerr << "[WARN] wiringPi.h not found. motor output disabled.\n";
+    motor_ready_ = false;
+    return;
+#else
+    if (wiringPiSetup() == -1) {
+        std::cerr << "[ERR] wiringPiSetup failed. motor output disabled.\n";
+        motor_ready_ = false;
+        return;
+    }
+
+    pwmSetMode(PWM_MODE_MS);
+    pwmSetClock(32);
+    pwmSetRange(PWM_HW_RANGE);
+
+    auto setupOne = [](int en, int in1, int in2) -> bool {
+        pinMode(en, PWM_OUTPUT);
+        pinMode(in1, OUTPUT);
+        pinMode(in2, OUTPUT);
+        pwmWrite(en, 0);
+        digitalWrite(in1, LOW);
+        digitalWrite(in2, LOW);
+        return true;
+    };
+
+    const bool left_ok = setupOne(L_EN, L_IN1, L_IN2);
+    const bool right_ok = setupOne(R_EN, R_IN1, R_IN2);
+    motor_ready_ = left_ok && right_ok;
+
+    if (!motor_ready_) return;
+    stopAllMotors();
+    std::cout << "[OK] motor driver ready (HW PWM, L_EN=1, R_EN=24)\n";
+#endif
+}
+
+void RcControlNode::stopAllMotors() const {
+    if (!motor_ready_) return;
+    setMotorControl(L_EN, L_IN1, L_IN2, 0, STOP);
+    setMotorControl(R_EN, R_IN1, R_IN2, 0, STOP);
+}
+
+void RcControlNode::setMotorControl(int en, int in1, int in2, int speed_pwm, int dir) const {
+#if !RC_HAS_WIRINGPI
+    (void)en; (void)in1; (void)in2; (void)speed_pwm; (void)dir;
+    return;
+#else
+    const int pwm = std::max(0, std::min(pwm_max_, speed_pwm));
+    pwmWrite(en, pwm255ToDuty(pwm));
+
+    if (dir == FORWARD) {
+        digitalWrite(in1, LOW);
+        digitalWrite(in2, HIGH);
+    } else if (dir == BACKWARD) {
+        digitalWrite(in1, HIGH);
+        digitalWrite(in2, LOW);
+    } else {
+        pwmWrite(en, 0);
+        digitalWrite(in1, LOW);
+        digitalWrite(in2, LOW);
+    }
+#endif
+}
+
+int RcControlNode::speedToPwm(double speed_mps) const {
+    const double a = std::fabs(speed_mps);
+    if (a < speed_deadband_mps_) return 0;
+
+    const double ratio = std::min(1.0, a / std::max(0.01, wheel_max_speed_mps_));
+    int pwm = static_cast<int>(std::lround(ratio * pwm_max_));
+    if (pwm > 0) pwm = std::max(pwm, pwm_min_effective_);
+    return std::min(pwm, pwm_max_);
 }
 
 double RcControlNode::normalizeAngle(double rad) {

@@ -168,6 +168,19 @@ rc_goal_subscriber/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rc_goal_subscriber.dir/build.make CMakeFiles/rc_goal_subscriber.dir/build
 .PHONY : rc_goal_subscriber/fast
 
+#=============================================================================
+# Target rules for targets named compare_homography
+
+# Build rule for target.
+compare_homography: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 compare_homography
+.PHONY : compare_homography
+
+# fast build rule for target.
+compare_homography/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/build
+.PHONY : compare_homography/fast
+
 calib_aruco_homography.o: calib_aruco_homography.cpp.o
 .PHONY : calib_aruco_homography.o
 
@@ -191,6 +204,30 @@ calib_aruco_homography.s: calib_aruco_homography.cpp.s
 calib_aruco_homography.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/calib_aruco_homography.dir/build.make CMakeFiles/calib_aruco_homography.dir/calib_aruco_homography.cpp.s
 .PHONY : calib_aruco_homography.cpp.s
+
+compare_homography.o: compare_homography.cpp.o
+.PHONY : compare_homography.o
+
+# target to build an object file
+compare_homography.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/compare_homography.cpp.o
+.PHONY : compare_homography.cpp.o
+
+compare_homography.i: compare_homography.cpp.i
+.PHONY : compare_homography.i
+
+# target to preprocess a source file
+compare_homography.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/compare_homography.cpp.i
+.PHONY : compare_homography.cpp.i
+
+compare_homography.s: compare_homography.cpp.s
+.PHONY : compare_homography.s
+
+# target to generate assembly for a file
+compare_homography.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/compare_homography.cpp.s
+.PHONY : compare_homography.cpp.s
 
 homography_mqtt_pub.o: homography_mqtt_pub.cpp.o
 .PHONY : homography_mqtt_pub.o
@@ -273,12 +310,16 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... calib_aruco_homography"
+	@echo "... compare_homography"
 	@echo "... homography_mqtt_pub"
 	@echo "... p1_tracker"
 	@echo "... rc_goal_subscriber"
 	@echo "... calib_aruco_homography.o"
 	@echo "... calib_aruco_homography.i"
 	@echo "... calib_aruco_homography.s"
+	@echo "... compare_homography.o"
+	@echo "... compare_homography.i"
+	@echo "... compare_homography.s"
 	@echo "... homography_mqtt_pub.o"
 	@echo "... homography_mqtt_pub.i"
 	@echo "... homography_mqtt_pub.s"

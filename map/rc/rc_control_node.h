@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <chrono>
 #include <mutex>
 #include <string>
 
@@ -74,6 +75,10 @@ private:
     RcCommand computeCommand(const RcPose& pose, const RcGoal& goal, RcStatus& out_status) const;
     bool publishStatus(const RcStatus& status);
     void sendCommandToRc(const RcCommand& cmd) const;
+    void setupMotorDriver();
+    void stopAllMotors() const;
+    void setMotorControl(int en, int in1, int in2, int speed_pwm, int dir) const;
+    int speedToPwm(double speed_mps) const;
 
     static double normalizeAngle(double rad);
     static double clamp(double v, double lo, double hi);
@@ -104,4 +109,12 @@ private:
     RcGoal goal_;
     RcPose pose_;
     RcSafety safety_;
+    std::chrono::steady_clock::time_point last_pose_rx_;
+
+    bool motor_ready_ = false;
+    double track_width_m_ = 0.22;
+    double wheel_max_speed_mps_ = 1.2;
+    double speed_deadband_mps_ = 0.03;
+    int pwm_min_effective_ = 80;
+    int pwm_max_ = 255;
 };

@@ -88,7 +88,6 @@ p1_tracker: \
   /lib/aarch64-linux-gnu/libcrypto.so.3 \
   /lib/ld-linux-aarch64.so.1 \
   /usr/local/lib/libopencv_imgcodecs.so.4.11.0 \
-  /usr/local/lib/libopencv_imgproc.so.4.11.0 \
   /lib/aarch64-linux-gnu/libgstbase-1.0.so.0 \
   /lib/aarch64-linux-gnu/libgstreamer-1.0.so.0 \
   /lib/aarch64-linux-gnu/libgobject-2.0.so.0 \
@@ -421,8 +420,6 @@ CMakeFiles/p1_tracker.dir/p1_tracker.cpp.o:
 /lib/ld-linux-aarch64.so.1:
 
 /usr/local/lib/libopencv_imgcodecs.so.4.11.0:
-
-/usr/local/lib/libopencv_imgproc.so.4.11.0:
 
 /lib/aarch64-linux-gnu/libgstbase-1.0.so.0:
 

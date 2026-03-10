@@ -67,6 +67,7 @@ all: CMakeFiles/p1_tracker.dir/all
 all: CMakeFiles/calib_aruco_homography.dir/all
 all: CMakeFiles/homography_mqtt_pub.dir/all
 all: CMakeFiles/rc_goal_subscriber.dir/all
+all: CMakeFiles/compare_homography.dir/all
 .PHONY : all
 
 # The main recursive "codegen" target.
@@ -74,6 +75,7 @@ codegen: CMakeFiles/p1_tracker.dir/codegen
 codegen: CMakeFiles/calib_aruco_homography.dir/codegen
 codegen: CMakeFiles/homography_mqtt_pub.dir/codegen
 codegen: CMakeFiles/rc_goal_subscriber.dir/codegen
+codegen: CMakeFiles/compare_homography.dir/codegen
 .PHONY : codegen
 
 # The main recursive "preinstall" target.
@@ -85,6 +87,7 @@ clean: CMakeFiles/p1_tracker.dir/clean
 clean: CMakeFiles/calib_aruco_homography.dir/clean
 clean: CMakeFiles/homography_mqtt_pub.dir/clean
 clean: CMakeFiles/rc_goal_subscriber.dir/clean
+clean: CMakeFiles/compare_homography.dir/clean
 .PHONY : clean
 
 #=============================================================================
@@ -94,7 +97,7 @@ clean: CMakeFiles/rc_goal_subscriber.dir/clean
 CMakeFiles/p1_tracker.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/p1_tracker.dir/build.make CMakeFiles/p1_tracker.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/p1_tracker.dir/build.make CMakeFiles/p1_tracker.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=5,6 "Built target p1_tracker"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=7,8 "Built target p1_tracker"
 .PHONY : CMakeFiles/p1_tracker.dir/all
 
 # Build rule for subdir invocation for target.
@@ -111,7 +114,7 @@ p1_tracker: CMakeFiles/p1_tracker.dir/rule
 # codegen rule for target.
 CMakeFiles/p1_tracker.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/p1_tracker.dir/build.make CMakeFiles/p1_tracker.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=5,6 "Finished codegen for target p1_tracker"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=7,8 "Finished codegen for target p1_tracker"
 .PHONY : CMakeFiles/p1_tracker.dir/codegen
 
 # clean rule for target.
@@ -158,7 +161,7 @@ CMakeFiles/calib_aruco_homography.dir/clean:
 CMakeFiles/homography_mqtt_pub.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/homography_mqtt_pub.dir/build.make CMakeFiles/homography_mqtt_pub.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/homography_mqtt_pub.dir/build.make CMakeFiles/homography_mqtt_pub.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=3,4 "Built target homography_mqtt_pub"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=5,6 "Built target homography_mqtt_pub"
 .PHONY : CMakeFiles/homography_mqtt_pub.dir/all
 
 # Build rule for subdir invocation for target.
@@ -175,7 +178,7 @@ homography_mqtt_pub: CMakeFiles/homography_mqtt_pub.dir/rule
 # codegen rule for target.
 CMakeFiles/homography_mqtt_pub.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/homography_mqtt_pub.dir/build.make CMakeFiles/homography_mqtt_pub.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=3,4 "Finished codegen for target homography_mqtt_pub"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=5,6 "Finished codegen for target homography_mqtt_pub"
 .PHONY : CMakeFiles/homography_mqtt_pub.dir/codegen
 
 # clean rule for target.
@@ -190,7 +193,7 @@ CMakeFiles/homography_mqtt_pub.dir/clean:
 CMakeFiles/rc_goal_subscriber.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rc_goal_subscriber.dir/build.make CMakeFiles/rc_goal_subscriber.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rc_goal_subscriber.dir/build.make CMakeFiles/rc_goal_subscriber.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=7,8 "Built target rc_goal_subscriber"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=9,10 "Built target rc_goal_subscriber"
 .PHONY : CMakeFiles/rc_goal_subscriber.dir/all
 
 # Build rule for subdir invocation for target.
@@ -207,13 +210,45 @@ rc_goal_subscriber: CMakeFiles/rc_goal_subscriber.dir/rule
 # codegen rule for target.
 CMakeFiles/rc_goal_subscriber.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rc_goal_subscriber.dir/build.make CMakeFiles/rc_goal_subscriber.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=7,8 "Finished codegen for target rc_goal_subscriber"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=9,10 "Finished codegen for target rc_goal_subscriber"
 .PHONY : CMakeFiles/rc_goal_subscriber.dir/codegen
 
 # clean rule for target.
 CMakeFiles/rc_goal_subscriber.dir/clean:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rc_goal_subscriber.dir/build.make CMakeFiles/rc_goal_subscriber.dir/clean
 .PHONY : CMakeFiles/rc_goal_subscriber.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/compare_homography.dir
+
+# All Build rule for target.
+CMakeFiles/compare_homography.dir/all:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=3,4 "Built target compare_homography"
+.PHONY : CMakeFiles/compare_homography.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/compare_homography.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/pi/final_veda_test/map/build/CMakeFiles 2
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/compare_homography.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/pi/final_veda_test/map/build/CMakeFiles 0
+.PHONY : CMakeFiles/compare_homography.dir/rule
+
+# Convenience name for target.
+compare_homography: CMakeFiles/compare_homography.dir/rule
+.PHONY : compare_homography
+
+# codegen rule for target.
+CMakeFiles/compare_homography.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/pi/final_veda_test/map/build/CMakeFiles --progress-num=3,4 "Finished codegen for target compare_homography"
+.PHONY : CMakeFiles/compare_homography.dir/codegen
+
+# clean rule for target.
+CMakeFiles/compare_homography.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/compare_homography.dir/build.make CMakeFiles/compare_homography.dir/clean
+.PHONY : CMakeFiles/compare_homography.dir/clean
 
 #=============================================================================
 # Special targets to cleanup operation of make.

@@ -58,4 +58,5 @@ set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/calib_aruco_homography.dir/DependInfo.cmake"
   "CMakeFiles/homography_mqtt_pub.dir/DependInfo.cmake"
   "CMakeFiles/rc_goal_subscriber.dir/DependInfo.cmake"
+  "CMakeFiles/compare_homography.dir/DependInfo.cmake"
   )

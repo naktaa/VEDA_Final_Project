@@ -371,361 +371,394 @@ static void sigint_handler(int) { request_shutdown(); }
 // ======================== Manual Drive (Keyboard) ========================
 
 namespace manual_drive {
-constexpr int STOP = 0;
-constexpr int FORWARD = 1;
-constexpr int BACKWARD = 2;
+    constexpr int STOP = 0;
+    constexpr int FORWARD = 1;
+    constexpr int BACKWARD = 2;
 
-// wiringPi pin numbers (hardware PWM)
-//   L_EN -> GPIO18 (wPi 1,  physical 12) PWM0
-//   R_EN -> GPIO19 (wPi 24, physical 35) PWM1
-constexpr int L_IN1 = 23; // GPIO20, physical 38
-constexpr int L_IN2 = 24; // GPIO16, physical 36
-constexpr int L_EN  = 25; // GPIO18, physical 12 (HW PWM0)
+    // wiringPi pin numbers (hardware PWM)
+    //   L_EN -> GPIO18 (wPi 1,  physical 12) PWM0
+    //   R_EN -> GPIO19 (wPi 24, physical 35) PWM1
 
-constexpr int R_IN1 = 27; // GPIO26, physical 37
-constexpr int R_IN2 = 28; // GPIO13, physical 33
-constexpr int R_EN  = 29; // GPIO19, physical 35 (HW PWM1)
+    constexpr int L_IN1 = 28; // GPIO20, physical 38
+    constexpr int L_IN2 = 27; // GPIO16, physical 36
+    constexpr int L_EN = 1;   // GPIO18, physical 12 (HW PWM0)
 
-termios g_old_tio{};
-bool g_term_ready = false;
-bool g_motor_ready = false;
+    constexpr int R_IN1 = 25; // GPIO26, physical 37
+    constexpr int R_IN2 = 23; // GPIO13, physical 33
+    constexpr int R_EN = 24;  // GPIO19, physical 35 (HW PWM1)
 
-int clampPwm(int v) {
-    return std::max(0, std::min(255, v));
-}
+    termios g_old_tio{};
+    bool g_term_ready = false;
+    bool g_motor_ready = false;
 
-int toHwPwmDuty(int pwm_255) {
-    constexpr int HW_RANGE = 1024;
-    const int p = clampPwm(pwm_255);
-    return (p * HW_RANGE) / 255;
-}
-
-void setMotorControl(int en, int in1, int in2, int pwm, int dir) {
-    if (!g_motor_ready) return;
-    pwm = clampPwm(pwm);
-    pwmWrite(en, toHwPwmDuty(pwm));
-
-    if (dir == FORWARD) {
-        digitalWrite(in1, LOW);
-        digitalWrite(in2, HIGH);
-    } else if (dir == BACKWARD) {
-        digitalWrite(in1, HIGH);
-        digitalWrite(in2, LOW);
-    } else {
-        pwmWrite(en, 0);
-        digitalWrite(in1, LOW);
-        digitalWrite(in2, LOW);
-    }
-}
-
-void stopAll() {
-    if (!g_motor_ready) return;
-    setMotorControl(L_EN, L_IN1, L_IN2, 0, STOP);
-    setMotorControl(R_EN, R_IN1, R_IN2, 0, STOP);
-}
-
-void applyDrive(int left_cmd, int right_cmd, int pwm) {
-    const int ldir = (left_cmd > 0) ? FORWARD : (left_cmd < 0 ? BACKWARD : STOP);
-    const int rdir = (right_cmd > 0) ? FORWARD : (right_cmd < 0 ? BACKWARD : STOP);
-
-    setMotorControl(L_EN, L_IN1, L_IN2, (ldir == STOP) ? 0 : pwm, ldir);
-    setMotorControl(R_EN, R_IN1, R_IN2, (rdir == STOP) ? 0 : pwm, rdir);
-}
-
-void cleanupTerminal() {
-    if (g_term_ready) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &g_old_tio);
-        g_term_ready = false;
-    }
-}
-
-bool setupTerminalRaw() {
-    if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr, "[MANUAL] stdin is not a TTY; manual drive disabled.\n");
-        return false;
-    }
-    if (tcgetattr(STDIN_FILENO, &g_old_tio) != 0) return false;
-    termios new_tio = g_old_tio;
-    new_tio.c_lflag &= static_cast<unsigned int>(~(ICANON | ECHO));
-    new_tio.c_cc[VMIN] = 0;
-    new_tio.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &new_tio) != 0) return false;
-    g_term_ready = true;
-    return true;
-}
-
-bool setupMotor() {
-    if (wiringPiSetup() == -1) {
-        fprintf(stderr, "[MANUAL] wiringPiSetup failed; motor control disabled.\n");
-        g_motor_ready = false;
-        return false;
+    int clampPwm(int v) {
+        return std::max(0, std::min(255, v));
     }
 
-    // EN 핀: 하드웨어 PWM 출력
-    pinMode(L_EN, PWM_OUTPUT);
-    pinMode(R_EN, PWM_OUTPUT);
-
-    // IN 핀: 일반 디지털 출력
-    pinMode(L_IN1, OUTPUT);
-    pinMode(L_IN2, OUTPUT);
-    pinMode(R_IN1, OUTPUT);
-    pinMode(R_IN2, OUTPUT);
-
-    digitalWrite(L_IN1, LOW);
-    digitalWrite(L_IN2, LOW);
-    digitalWrite(R_IN1, LOW);
-    digitalWrite(R_IN2, LOW);
-
-    // 하드웨어 PWM 전역 설정 (양 채널 공통)
-    // base 19.2MHz / clock(32) / range(1024) ~= 586Hz
-    pwmSetMode(PWM_MODE_MS);
-    pwmSetClock(32);
-    pwmSetRange(1024);
-
-    g_motor_ready = true;
-    stopAll();
-    return true;
-}
-
-void printHelp() {
-    fprintf(stderr, "\n=== Manual Drive (Keyboard) ===\n");
-    fprintf(stderr, "W/S (or ↑/↓): forward/backward\n");
-    fprintf(stderr, "A/D (or ←/→): rotate left/right (tank spin)\n");
-    fprintf(stderr, "Q/E: pivot left/right\n");
-    fprintf(stderr, "Space/X: stop\n");
-    fprintf(stderr, "+/-: speed up/down\n");
-    fprintf(stderr, "H: help, ESC: quit\n");
-    fprintf(stderr, "===============================\n\n");
-}
-
-bool run_evdev(const char* dev_path) {
-    int fd = open(dev_path, O_RDONLY | O_NONBLOCK);
-    if (fd < 0) {
-        perror("[MANUAL] evdev open");
-        return false;
+    int toHwPwmDuty(int pwm_255) {
+        constexpr int HW_RANGE = 1024;
+        const int p = clampPwm(pwm_255);
+        return (p * HW_RANGE) / 255;
     }
 
-    fprintf(stderr, "[MANUAL] evdev input: %s\n", dev_path);
+    void setMotorControl(int en, int in1, int in2, int pwm, int dir) {
+        if (!g_motor_ready) return;
+        pwm = clampPwm(pwm);
+        pwmWrite(en, toHwPwmDuty(pwm));
 
-    int pwm = 255;
-    int left_cmd = 0;
-    int right_cmd = 0;
+        if (dir == FORWARD) {
+            digitalWrite(in1, LOW);
+            digitalWrite(in2, HIGH);
+        }
+        else if (dir == BACKWARD) {
+            digitalWrite(in1, HIGH);
+            digitalWrite(in2, LOW);
+        }
+        else {
+            pwmWrite(en, 0);
+            digitalWrite(in1, LOW);
+            digitalWrite(in2, LOW);
+        }
+    }
 
-    auto applyAction = [&](int action_key) {
-        switch (action_key) {
+    void stopAll() {
+        if (!g_motor_ready) return;
+        setMotorControl(L_EN, L_IN1, L_IN2, 0, STOP);
+        setMotorControl(R_EN, R_IN1, R_IN2, 0, STOP);
+    }
+
+    void applyDrive(int left_cmd, int right_cmd, int pwm) {
+        const int ldir = (left_cmd > 0) ? FORWARD : (left_cmd < 0 ? BACKWARD : STOP);
+        const int rdir = (right_cmd > 0) ? FORWARD : (right_cmd < 0 ? BACKWARD : STOP);
+
+        setMotorControl(L_EN, L_IN1, L_IN2, (ldir == STOP) ? 0 : pwm, ldir);
+        setMotorControl(R_EN, R_IN1, R_IN2, (rdir == STOP) ? 0 : pwm, rdir);
+    }
+
+    void cleanupTerminal() {
+        if (g_term_ready) {
+            tcsetattr(STDIN_FILENO, TCSANOW, &g_old_tio);
+            g_term_ready = false;
+        }
+    }
+
+    bool setupTerminalRaw() {
+        if (!isatty(STDIN_FILENO)) {
+            fprintf(stderr, "[MANUAL] stdin is not a TTY; manual drive disabled.\n");
+            return false;
+        }
+        if (tcgetattr(STDIN_FILENO, &g_old_tio) != 0) return false;
+        termios new_tio = g_old_tio;
+        new_tio.c_lflag &= static_cast<unsigned int>(~(ICANON | ECHO));
+        new_tio.c_cc[VMIN] = 0;
+        new_tio.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &new_tio) != 0) return false;
+        g_term_ready = true;
+        return true;
+    }
+
+    bool setupMotor() {
+        if (wiringPiSetup() == -1) {
+            fprintf(stderr, "[MANUAL] wiringPiSetup failed; motor control disabled.\n");
+            g_motor_ready = false;
+            return false;
+        }
+
+        // EN 핀: 하드웨어 PWM 출력
+        pinMode(L_EN, PWM_OUTPUT);
+        pinMode(R_EN, PWM_OUTPUT);
+
+        // IN 핀: 일반 디지털 출력
+        pinMode(L_IN1, OUTPUT);
+        pinMode(L_IN2, OUTPUT);
+        pinMode(R_IN1, OUTPUT);
+        pinMode(R_IN2, OUTPUT);
+
+        digitalWrite(L_IN1, LOW);
+        digitalWrite(L_IN2, LOW);
+        digitalWrite(R_IN1, LOW);
+        digitalWrite(R_IN2, LOW);
+
+        // 하드웨어 PWM 전역 설정 (양 채널 공통)
+        // base 19.2MHz / clock(32) / range(1024) ~= 586Hz
+        pwmSetMode(PWM_MODE_MS);
+        pwmSetClock(32);
+        pwmSetRange(1024);
+
+        g_motor_ready = true;
+        stopAll();
+        return true;
+    }
+
+    void printHelp() {
+        fprintf(stderr, "\n=== Manual Drive (Keyboard) ===\n");
+        fprintf(stderr, "W/S (or ↑/↓): forward/backward\n");
+        fprintf(stderr, "A/D (or ←/→): rotate left/right (tank spin)\n");
+        fprintf(stderr, "Q/E: pivot left/right\n");
+        fprintf(stderr, "Space/X: stop\n");
+        fprintf(stderr, "+/-: speed up/down\n");
+        fprintf(stderr, "H: help, ESC: quit\n");
+        fprintf(stderr, "===============================\n\n");
+    }
+
+    bool run_evdev(const char* dev_path) {
+        int fd = open(dev_path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) {
+            perror("[MANUAL] evdev open");
+            return false;
+        }
+
+        fprintf(stderr, "[MANUAL] evdev input: %s\n", dev_path);
+
+        int pwm = 255;
+        int left_cmd = 0;
+        int right_cmd = 0;
+
+        auto applyAction = [&](int action_key) {
+            switch (action_key) {
             case KEY_W:
             case KEY_UP:
                 pwm = 255;
-                left_cmd = 1; right_cmd = 1;
+                left_cmd = 1;
+                right_cmd = 1;
                 break;
             case KEY_S:
             case KEY_DOWN:
                 pwm = 255;
-                left_cmd = -1; right_cmd = -1;
+                left_cmd = -1;
+                right_cmd = -1;
                 break;
             case KEY_A:
             case KEY_LEFT:
                 pwm = 255;
-                left_cmd = -1; right_cmd = 1;
+                left_cmd = -1;
+                right_cmd = 1;
                 break;
             case KEY_D:
             case KEY_RIGHT:
                 pwm = 255;
-                left_cmd = 1; right_cmd = -1;
+                left_cmd = 1;
+                right_cmd = -1;
                 break;
             case KEY_Q:
                 pwm = 255;
-                left_cmd = 0; right_cmd = 1;
+                left_cmd = 0;
+                right_cmd = 1;
                 break;
             case KEY_E:
                 pwm = 255;
-                left_cmd = 1; right_cmd = 0;
+                left_cmd = 1;
+                right_cmd = 0;
                 break;
             default:
-                left_cmd = 0; right_cmd = 0;
+                left_cmd = 0;
+                right_cmd = 0;
                 break;
-        }
-        applyDrive(left_cmd, right_cmd, pwm);
-        fprintf(stderr, "[MANUAL] L=%d R=%d PWM=%d\n", left_cmd, right_cmd, pwm);
-        fflush(stderr);
-    };
-
-    stopAll();
-    printHelp();
-    fprintf(stderr, "[MANUAL] start PWM=%d (evdev)\n", pwm);
-
-    int active_key = 0;
-
-    while (g_running.load()) {
-        struct pollfd pfd;
-        pfd.fd = fd;
-        pfd.events = POLLIN;
-        pfd.revents = 0;
-
-        const int pr = poll(&pfd, 1, 10);
-        if (pr > 0 && (pfd.revents & POLLIN)) {
-            struct input_event ev;
-            ssize_t n = read(fd, &ev, sizeof(ev));
-            while (n == sizeof(ev)) {
-                if (ev.type == EV_KEY) {
-                    const bool pressed = (ev.value != 0);
-                    const int code = ev.code;
-
-                    if (pressed) {
-                        if (code == KEY_ESC) {
-                            request_shutdown();
-                            break;
-                        }
-                        if (code == KEY_SPACE || code == KEY_X) {
-                            active_key = 0;
-                            applyAction(0);
-                        } else if (code == KEY_EQUAL || code == KEY_KPPLUS) {
-                            pwm = clampPwm(pwm + 10);
-                            fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
-                        } else if (code == KEY_MINUS || code == KEY_KPMINUS) {
-                            pwm = clampPwm(pwm - 10);
-                            fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
-                        } else if (code == KEY_H) {
-                            printHelp();
-                        } else {
-                            // movement key pressed
-                            active_key = code;
-                            applyAction(active_key);
-                        }
-                    } else {
-                        // key released -> stop if it was the active movement key
-                        if (code == active_key) {
-                            active_key = 0;
-                            applyAction(0);
-                        }
-                    }
-                }
-                n = read(fd, &ev, sizeof(ev));
             }
-        }
-    }
+            applyDrive(left_cmd, right_cmd, pwm);
+            fprintf(stderr, "[MANUAL] L=%d R=%d PWM=%d\n", left_cmd, right_cmd, pwm);
+            fflush(stderr);
+        };
 
-    stopAll();
-    fprintf(stderr, "[MANUAL] stopped (evdev)\n");
-    close(fd);
-    return true;
-}
-
-std::string find_kbd_device() {
-    const char* dirs[] = {"/dev/input/by-id", "/dev/input/by-path"};
-    for (const char* dir_path : dirs) {
-        DIR* dir = opendir(dir_path);
-        if (!dir) continue;
-        while (true) {
-            struct dirent* ent = readdir(dir);
-            if (!ent) break;
-            const std::string name = ent->d_name ? ent->d_name : "";
-            if (name.find("event-kbd") == std::string::npos) continue;
-            const std::string full = std::string(dir_path) + "/" + name;
-            closedir(dir);
-            return full;
-        }
-        closedir(dir);
-    }
-    return {};
-}
-
-void run() {
-    if (!setupMotor()) return;
-
-    const char* evdev = std::getenv("EIS_INPUT_EVENT");
-    if (evdev && evdev[0] != '\0') {
-        if (run_evdev(evdev)) return;
-        fprintf(stderr, "[MANUAL] evdev failed, falling back to stdin.\n");
-    } else {
-        std::string auto_dev = find_kbd_device();
-        if (!auto_dev.empty()) {
-            if (run_evdev(auto_dev.c_str())) return;
-            fprintf(stderr, "[MANUAL] auto evdev failed, falling back to stdin.\n");
-        }
-    }
-
-    if (!setupTerminalRaw()) {
         stopAll();
-        return;
-    }
+        printHelp();
+        fprintf(stderr, "[MANUAL] start PWM=%d (evdev)\n", pwm);
 
-    int pwm = 255;
-    int left_cmd = 0;
-    int right_cmd = 0;
-    auto last_motion_key_time = std::chrono::steady_clock::now();
-    int motion_hold_timeout_ms = 80;
-    if (const char* env = std::getenv("MANUAL_HOLD_MS")) {
-        const int v = std::atoi(env);
-        if (v >= 20 && v <= 1000) motion_hold_timeout_ms = v;
-    }
+        int active_key = 0;
 
-    stopAll();
-    printHelp();
-    fprintf(stderr, "[MANUAL] start PWM=%d\n", pwm);
+        while (g_running.load()) {
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
 
-    while (g_running.load()) {
-        char ch = 0;
-        const ssize_t n = read(STDIN_FILENO, &ch, 1);
-        if (n > 0) {
-            if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+            const int pr = poll(&pfd, 1, 10);
+            if (pr > 0 && (pfd.revents & POLLIN)) {
+                struct input_event ev;
+                ssize_t n = read(fd, &ev, sizeof(ev));
+                while (n == sizeof(ev)) {
+                    if (ev.type == EV_KEY) {
+                        const bool pressed = (ev.value != 0);
+                        const int code = ev.code;
 
-            if (ch == 27) { // ESC or arrow key sequence
-                char seq1 = 0;
-                char seq2 = 0;
-                const ssize_t n1 = read(STDIN_FILENO, &seq1, 1);
-                if (n1 == 1 && seq1 == '[') {
-                    const ssize_t n2 = read(STDIN_FILENO, &seq2, 1);
-                    if (n2 == 1) {
-                        switch (seq2) {
-                            case 'A': ch = 'w'; break; // Up
-                            case 'B': ch = 's'; break; // Down
-                            case 'C': ch = 'd'; break; // Right
-                            case 'D': ch = 'a'; break; // Left
-                            default: ch = 27; break;
+                        if (pressed) {
+                            if (code == KEY_ESC) {
+                                request_shutdown();
+                                break;
+                            }
+                            if (code == KEY_SPACE || code == KEY_X) {
+                                active_key = 0;
+                                applyAction(0);
+                            }
+                            else if (code == KEY_EQUAL || code == KEY_KPPLUS) {
+                                pwm = clampPwm(pwm + 10);
+                                fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
+                            }
+                            else if (code == KEY_MINUS || code == KEY_KPMINUS) {
+                                pwm = clampPwm(pwm - 10);
+                                fprintf(stderr, "[MANUAL] PWM %d\n", pwm);
+                            }
+                            else if (code == KEY_H) {
+                                printHelp();
+                            }
+                            else {
+                                // movement key pressed
+                                active_key = code;
+                                applyAction(active_key);
+                            }
+                        }
+                        else {
+                            // key released -> stop if it was the active movement key
+                            if (code == active_key) {
+                                active_key = 0;
+                                applyAction(0);
+                            }
                         }
                     }
-                }
-                if (ch == 27) {
-                    request_shutdown();
-                    break;
+                    n = read(fd, &ev, sizeof(ev));
                 }
             }
+        }
 
-            switch (ch) {
+        stopAll();
+        fprintf(stderr, "[MANUAL] stopped (evdev)\n");
+        close(fd);
+        return true;
+    }
+
+    std::string find_kbd_device() {
+        const char* dirs[] = {"/dev/input/by-id", "/dev/input/by-path"};
+        for (const char* dir_path : dirs) {
+            DIR* dir = opendir(dir_path);
+            if (!dir) continue;
+            while (true) {
+                struct dirent* ent = readdir(dir);
+                if (!ent) break;
+                const std::string name = ent->d_name ? ent->d_name : "";
+                if (name.find("event-kbd") == std::string::npos) continue;
+                const std::string full = std::string(dir_path) + "/" + name;
+                closedir(dir);
+                return full;
+            }
+            closedir(dir);
+        }
+        return {};
+    }
+
+    void run() {
+        if (!setupMotor()) return;
+
+        const char* evdev = std::getenv("EIS_INPUT_EVENT");
+        if (evdev && evdev[0] != '\0') {
+            if (run_evdev(evdev)) return;
+            fprintf(stderr, "[MANUAL] evdev failed, falling back to stdin.\n");
+        }
+        else {
+            std::string auto_dev = find_kbd_device();
+            if (!auto_dev.empty()) {
+                if (run_evdev(auto_dev.c_str())) return;
+                fprintf(stderr, "[MANUAL] auto evdev failed, falling back to stdin.\n");
+            }
+        }
+
+        if (!setupTerminalRaw()) {
+            stopAll();
+            return;
+        }
+
+        int pwm = 255;
+        int left_cmd = 0;
+        int right_cmd = 0;
+        auto last_motion_key_time = std::chrono::steady_clock::now();
+        int motion_hold_timeout_ms = 80;
+        if (const char* env = std::getenv("MANUAL_HOLD_MS")) {
+            const int v = std::atoi(env);
+            if (v >= 20 && v <= 1000) motion_hold_timeout_ms = v;
+        }
+
+        stopAll();
+        printHelp();
+        fprintf(stderr, "[MANUAL] start PWM=%d\n", pwm);
+
+        while (g_running.load()) {
+            char ch = 0;
+            const ssize_t n = read(STDIN_FILENO, &ch, 1);
+            if (n > 0) {
+                if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+
+                if (ch == 27) { // ESC or arrow key sequence
+                    char seq1 = 0;
+                    char seq2 = 0;
+                    const ssize_t n1 = read(STDIN_FILENO, &seq1, 1);
+                    if (n1 == 1 && seq1 == '[') {
+                        const ssize_t n2 = read(STDIN_FILENO, &seq2, 1);
+                        if (n2 == 1) {
+                            switch (seq2) {
+                            case 'A':
+                                ch = 'w';
+                                break; // Up
+                            case 'B':
+                                ch = 's';
+                                break; // Down
+                            case 'C':
+                                ch = 'd';
+                                break; // Right
+                            case 'D':
+                                ch = 'a';
+                                break; // Left
+                            default:
+                                ch = 27;
+                                break;
+                            }
+                        }
+                    }
+                    if (ch == 27) {
+                        request_shutdown();
+                        break;
+                    }
+                }
+
+                switch (ch) {
                 case 'w':
                     pwm = 255;
-                    left_cmd = 1; right_cmd = 1;
+                    left_cmd = 1;
+                    right_cmd = 1;
                     last_motion_key_time = std::chrono::steady_clock::now();
                     break;
                 case 's':
                     pwm = 255;
-                    left_cmd = -1; right_cmd = -1;
+                    left_cmd = -1;
+                    right_cmd = -1;
                     last_motion_key_time = std::chrono::steady_clock::now();
                     break;
                 case 'a':
                     pwm = 255;
-                    left_cmd = -1; right_cmd = 1;
+                    left_cmd = -1;
+                    right_cmd = 1;
                     last_motion_key_time = std::chrono::steady_clock::now();
                     break;
                 case 'd':
                     pwm = 255;
-                    left_cmd = 1; right_cmd = -1;
+                    left_cmd = 1;
+                    right_cmd = -1;
                     last_motion_key_time = std::chrono::steady_clock::now();
                     break;
                 case 'q':
                     pwm = 255;
-                    left_cmd = 0; right_cmd = 1;
+                    left_cmd = 0;
+                    right_cmd = 1;
                     last_motion_key_time = std::chrono::steady_clock::now();
                     break;
                 case 'e':
                     pwm = 255;
-                    left_cmd = 1; right_cmd = 0;
+                    left_cmd = 1;
+                    right_cmd = 0;
                     last_motion_key_time = std::chrono::steady_clock::now();
                     break;
                 case 'x':
                 case ' ':
-                    left_cmd = 0; right_cmd = 0;
+                    left_cmd = 0;
+                    right_cmd = 0;
                     break;
                 case '+':
                 case '=':
@@ -742,30 +775,30 @@ void run() {
                     break;
                 default:
                     break;
+                }
+
+                applyDrive(left_cmd, right_cmd, pwm);
+                fprintf(stderr, "[MANUAL] L=%d R=%d PWM=%d\n", left_cmd, right_cmd, pwm);
+                fflush(stderr);
             }
 
-            applyDrive(left_cmd, right_cmd, pwm);
-            fprintf(stderr, "[MANUAL] L=%d R=%d PWM=%d\n", left_cmd, right_cmd, pwm);
-            fflush(stderr);
+            const auto now = std::chrono::steady_clock::now();
+            const auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_motion_key_time).count();
+            if ((left_cmd != 0 || right_cmd != 0) && idle_ms > motion_hold_timeout_ms) {
+                left_cmd = 0;
+                right_cmd = 0;
+                applyDrive(left_cmd, right_cmd, pwm);
+                fprintf(stderr, "[MANUAL] auto-stop (key released)\n");
+                fflush(stderr);
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        const auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_motion_key_time).count();
-        if ((left_cmd != 0 || right_cmd != 0) && idle_ms > motion_hold_timeout_ms) {
-            left_cmd = 0;
-            right_cmd = 0;
-            applyDrive(left_cmd, right_cmd, pwm);
-            fprintf(stderr, "[MANUAL] auto-stop (key released)\n");
-            fflush(stderr);
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        stopAll();
+        cleanupTerminal();
+        fprintf(stderr, "[MANUAL] stopped\n");
     }
-
-    stopAll();
-    cleanupTerminal();
-    fprintf(stderr, "[MANUAL] stopped\n");
-}
 } // namespace manual_drive
 
 // ======================== IMU 쓰레드 ========================
@@ -1075,7 +1108,7 @@ static void capture_loop() {
             }
 
             if (!lk_ok) {
-                stabilized = frame;  // shallow copy — centerCropAndResize가 새 Mat 생성
+                stabilized = frame; // shallow copy — centerCropAndResize가 새 Mat 생성
             }
 
             prev_gray = std::move(curr_gray);
@@ -1116,7 +1149,7 @@ static void capture_loop() {
         }
 
         // RTSP 출력
-        GstAppSrc *stabsrc;
+        GstAppSrc* stabsrc;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
             stabsrc = g_stabsrc;

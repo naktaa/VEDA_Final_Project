@@ -22,6 +22,7 @@ struct RcPose {
     double yaw = 0.0; // rad
     std::string frame = "world";
     long long ts_ms = 0;
+    int marker_id = -1; // optional
     bool valid = false;
 };
 
@@ -63,6 +64,7 @@ public:
                           double max_speed_mps,
                           double max_yaw_rate_rps,
                           double tolerance_m);
+    void setDistanceScale(double scale);
 
 private:
     static void onConnectStatic(struct mosquitto* mosq, void* obj, int rc);
@@ -101,13 +103,15 @@ private:
     double max_speed_mps_ = 0.8;
     double max_yaw_rate_rps_ = 1.5;
     double tolerance_m_ = 0.15;
+    double distance_scale_ = 1.0;
     int pose_timeout_ms_ = 800;
-
     struct mosquitto* mosq_ = nullptr;
     std::atomic<bool> running_{false};
 
     mutable std::mutex data_mtx_;
     RcGoal goal_;
+    RcGoal pending_goal_;
+    bool has_pending_goal_ = false;
     RcPose pose_;
     RcSafety safety_;
     std::chrono::steady_clock::time_point last_pose_rx_;

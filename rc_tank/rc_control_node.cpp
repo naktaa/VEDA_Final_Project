@@ -29,11 +29,11 @@ constexpr int BACKWARD = 2;
 // wiringPi pin numbers
 constexpr int L_IN1 = 28; // GPIO20, physical 38
 constexpr int L_IN2 = 27; // GPIO16, physical 36
-constexpr int L_EN  = 1;  // GPIO18, physical 12
+constexpr int L_EN  = 1;  // GPIO18, physical 12 (HW PWM0)
 
 constexpr int R_IN1 = 25; // GPIO26, physical 37
 constexpr int R_IN2 = 23; // GPIO13, physical 33
-constexpr int R_EN  = 24; // GPIO19, physical 35
+constexpr int R_EN  = 24; // GPIO19, physical 35 (HW PWM1)
 
 constexpr int PWM_HW_RANGE = 1024;
 
@@ -59,6 +59,14 @@ bool extractInt64(const std::string& json, const std::string& key, long long& ou
     std::smatch m;
     if (!std::regex_search(json, m, re) || m.size() < 2) return false;
     out = std::stoll(m[1].str());
+    return true;
+}
+
+bool extractInt(const std::string& json, const std::string& key, int& out) {
+    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*(-?[0-9]+)");
+    std::smatch m;
+    if (!std::regex_search(json, m, re) || m.size() < 2) return false;
+    out = std::stoi(m[1].str());
     return true;
 }
 
@@ -211,6 +219,10 @@ void RcControlNode::setControlParams(double k_linear,
     tolerance_m_ = tolerance_m;
 }
 
+void RcControlNode::setDistanceScale(double scale) {
+    distance_scale_ = (scale > 0.0) ? scale : 1.0;
+}
+
 void RcControlNode::onConnectStatic(struct mosquitto* mosq, void* obj, int rc) {
     if (!obj) return;
     static_cast<RcControlNode*>(obj)->onConnect(rc);
@@ -244,9 +256,10 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
     if (topic == topic_goal_) {
         RcGoal g;
         if (parseGoalJson(payload, g) && g.frame == "world") {
-            if (goal_.valid && g.ts_ms < goal_.ts_ms) return;
-            if (goal_.valid && sameGoal(g, goal_)) return;
-            goal_ = g;
+            if (has_pending_goal_ && g.ts_ms < pending_goal_.ts_ms) return;
+            if (has_pending_goal_ && sameGoal(g, pending_goal_)) return;
+            pending_goal_ = g;
+            has_pending_goal_ = true;
             std::cout << "[GOAL] x=" << g.x << " y=" << g.y << " ts_ms=" << g.ts_ms << "\n";
         } else {
             std::cerr << "[WARN] invalid goal payload: " << payload << "\n";
@@ -262,6 +275,7 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
             if (std::chrono::duration_cast<std::chrono::milliseconds>(last_pose_rx_ - g_last_pose_log).count() >= 500) {
                 std::cout << "[POSE] x=" << p.x << " y=" << p.y
                           << " yaw=" << p.yaw << " frame=" << p.frame
+                          << " id=" << p.marker_id
                           << " ts_ms=" << p.ts_ms << "\n";
                 g_last_pose_log = last_pose_rx_;
             }
@@ -283,6 +297,10 @@ void RcControlNode::controlStep() {
     std::chrono::steady_clock::time_point last_pose_rx;
     {
         std::lock_guard<std::mutex> lk(data_mtx_);
+        if (has_pending_goal_) {
+            goal_ = pending_goal_;
+            has_pending_goal_ = false;
+        }
         goal = goal_;
         pose = pose_;
         safety = safety_;
@@ -335,16 +353,17 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, 
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
+    const double dist_m = dist * distance_scale_;
 
     const double target_heading = std::atan2(dy, dx);
     const double err_yaw = normalizeAngle(target_heading - pose.yaw);
 
     RcCommand cmd{};
     out_status.mode = "TRACKING";
-    out_status.err_dist = dist;
+    out_status.err_dist = dist_m;
     out_status.err_yaw = err_yaw;
 
-    if (dist <= tolerance_m_) {
+    if (dist_m <= tolerance_m_) {
         out_status.mode = "REACHED";
         out_status.reached = true;
         return cmd;
@@ -356,9 +375,9 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, 
         cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
         return cmd;
     }
-
     const double heading_scale = std::max(0.2, std::cos(abs_err));
-    cmd.speed_mps = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_mps_);
+    const double speed_limit = std::min(max_speed_mps_, std::max(0.10, dist_m * 0.6));
+    cmd.speed_mps = clamp(k_linear_ * dist_m * heading_scale, 0.0, speed_limit);
     cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
     return cmd;
 }
@@ -542,6 +561,14 @@ bool RcControlNode::parsePoseJson(const std::string& payload, RcPose& out_pose) 
         !extractInt64(payload, "ts", out_pose.ts_ms)) {
         return false;
     }
+    out_pose.marker_id = -1;
+    const bool has_id =
+        extractInt(payload, "id", out_pose.marker_id) ||
+        extractInt(payload, "marker_id", out_pose.marker_id) ||
+        extractInt(payload, "aruco_id", out_pose.marker_id);
+    if (has_id) {
+        if (out_pose.marker_id < 26 || out_pose.marker_id > 30) return false;
+    }
     out_pose.valid = true;
     return true;
 }
@@ -566,7 +593,10 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);
-    node.setControlParams(0.8, 0.8, 0.8, 1.5, 0.15);
+    // stop within 10 cm of goal
+    node.setControlParams(0.8, 0.8, 0.8, 1.5, 0.10);
+    // pose/goal are in centimeters -> convert to meters for control
+    node.setDistanceScale(0.01);
 
     if (!node.start()) return 1;
     node.run();

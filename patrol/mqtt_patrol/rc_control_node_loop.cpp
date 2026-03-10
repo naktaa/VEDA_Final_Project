@@ -508,6 +508,9 @@ void RcControlNode::run() {
 
     bool goal_input_mode = false;
     std::string goal_buf;
+    bool auto_route_active = false;
+    std::vector<RcGoal> auto_route;
+    std::size_t auto_route_idx = 0;
 
     while (running_ && g_sig_run) {
         if (keyboard_ok) {
@@ -530,6 +533,7 @@ void RcControlNode::run() {
                             goal_ = g;
                             reached_hold_ = false;
                         }
+                        auto_route_active = false;
                         g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
                         std::cout << "\n[MANUAL_GOAL] x=" << g.x << " y=" << g.y << "\n";
                     } else {
@@ -547,23 +551,35 @@ void RcControlNode::run() {
                     std::cout << static_cast<char>(ch) << std::flush;
                 }
             } else if (ch == ' ') {
-                RcGoal g;
-                g.x = 6.5;
-                g.y = 4.5; // midpoint between id10(6,4) and id11(6,5)
-                g.frame = "world";
-                g.ts_ms = nowMs();
-                g.valid = true;
+                auto_route.clear();
+                auto_route_idx = 0;
+                RcGoal g1;
+                g1.x = 6.5;
+                g1.y = 4.5;
+                g1.frame = "world";
+                g1.ts_ms = nowMs();
+                g1.valid = true;
+                RcGoal g2;
+                g2.x = 1.5;
+                g2.y = 4.5;
+                g2.frame = "world";
+                g2.ts_ms = nowMs();
+                g2.valid = true;
+                auto_route.push_back(g1);
+                auto_route.push_back(g2);
                 {
                     std::lock_guard<std::mutex> lk(data_mtx_);
-                    goal_ = g;
-                    reached_hold_ = false; // new manual goal releases reached latch
+                    goal_ = auto_route[0];
+                    reached_hold_ = false;
                 }
+                auto_route_active = true;
                 g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
-                std::cout << "[MANUAL_GOAL] id10-11 midpoint"
-                          << " x=" << g.x << " y=" << g.y << "\n";
+                std::cout << "[MANUAL_GOAL] auto route start x=" << g1.x << " y=" << g1.y
+                          << " -> x=" << g2.x << " y=" << g2.y << "\n";
             } else if (ch == 'g' || ch == 'G') {
                 goal_input_mode = true;
                 goal_buf.clear();
+                auto_route_active = false;
                 std::cout << "[INPUT] goal x y: " << std::flush;
             } else if (ch == 'q' || ch == 'Q') {
                 g_sig_run = false;
@@ -571,6 +587,29 @@ void RcControlNode::run() {
         }
 
         controlStep();
+        if (auto_route_active) {
+            bool reached = false;
+            {
+                std::lock_guard<std::mutex> lk(data_mtx_);
+                reached = reached_hold_;
+            }
+            if (reached) {
+                auto_route_idx++;
+                if (auto_route_idx < auto_route.size()) {
+                    RcGoal g = auto_route[auto_route_idx];
+                    g.ts_ms = nowMs();
+                    {
+                        std::lock_guard<std::mutex> lk(data_mtx_);
+                        goal_ = g;
+                        reached_hold_ = false;
+                    }
+                    g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
+                    std::cout << "[AUTO_GOAL] x=" << g.x << " y=" << g.y << "\n";
+                } else {
+                    auto_route_active = false;
+                }
+            }
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 20 Hz
     }
     hardStop();

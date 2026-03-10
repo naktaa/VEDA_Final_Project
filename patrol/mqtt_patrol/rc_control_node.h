@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <string>
@@ -122,6 +123,13 @@ private:
     RcPose pose_;
     RcSafety safety_;
     bool reached_hold_ = false;
+    bool dr_pose_initialized_ = false;
+    RcCommand last_dr_cmd_{};
+    std::chrono::steady_clock::time_point last_dr_tick_ = std::chrono::steady_clock::now();
+    RcPose last_pose_raw_{};
+    bool have_last_pose_raw_ = false;
+    std::chrono::steady_clock::time_point pose_stagnant_since_ = std::chrono::steady_clock::now();
+    bool pose_stagnant_active_ = false;
 
     std::map<int, std::pair<double, double>> wall_markers_{
         {10, {6.0, 4.0}},
@@ -135,4 +143,6 @@ private:
     bool plan_valid_ = false;
     long long plan_goal_ts_ms_ = -1;
     long long last_plan_ts_ms_ = 0;
+
+    bool use_mqtt_ = true;
 };

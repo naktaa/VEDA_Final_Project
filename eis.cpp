@@ -124,6 +124,13 @@ static std::mutex g_mtx;
 static GstAppSrc* g_rawsrc = nullptr;
 static GstAppSrc* g_stabsrc = nullptr;
 
+enum class StreamMode {
+    CAM_ONLY,
+    RAW_ONLY,
+    BOTH
+};
+static StreamMode g_stream_mode = StreamMode::CAM_ONLY;
+
 static std::mutex g_imu_mtx;
 static std::atomic<bool> g_imu_ready{false};
 
@@ -1150,12 +1157,19 @@ static void capture_loop() {
 
         // RTSP 출력
         GstAppSrc* stabsrc;
+        GstAppSrc* rawsrc;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
             stabsrc = g_stabsrc;
+            rawsrc = g_rawsrc;
         }
 
-        push_bgr(stabsrc, stabilized, frameIdx, "cam");
+        if (g_stream_mode == StreamMode::RAW_ONLY || g_stream_mode == StreamMode::BOTH) {
+            push_bgr(rawsrc, frame, frameIdx, "raw");
+        }
+        if (g_stream_mode == StreamMode::CAM_ONLY || g_stream_mode == StreamMode::BOTH) {
+            push_bgr(stabsrc, stabilized, frameIdx, "cam");
+        }
         frameIdx++;
     }
 
@@ -1172,18 +1186,27 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, sigint_handler);
     gst_init(&argc, &argv);
 
+    if (const char* mode = std::getenv("EIS_MODE")) {
+        if (strcmp(mode, "raw") == 0) g_stream_mode = StreamMode::RAW_ONLY;
+        else if (strcmp(mode, "cam") == 0) g_stream_mode = StreamMode::CAM_ONLY;
+        else if (strcmp(mode, "both") == 0) g_stream_mode = StreamMode::BOTH;
+    }
+
     GstRTSPServer* server = gst_rtsp_server_new();
     gst_rtsp_server_set_service(server, "8555");
     GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(server);
 
-    // /raw 스트림 비활성화 (CPU 부하 절감 — x264enc 1개 제거)
-    // GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
-    // g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer) "raw");
-    // gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
+    if (g_stream_mode == StreamMode::RAW_ONLY || g_stream_mode == StreamMode::BOTH) {
+        GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
+        g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer) "raw");
+        gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
+    }
 
-    GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
-    g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer) "stab");
-    gst_rtsp_mount_points_add_factory(mounts, "/cam", f_stab);
+    if (g_stream_mode == StreamMode::CAM_ONLY || g_stream_mode == StreamMode::BOTH) {
+        GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
+        g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer) "stab");
+        gst_rtsp_mount_points_add_factory(mounts, "/cam", f_stab);
+    }
 
     g_object_unref(mounts);
 
@@ -1198,7 +1221,12 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  1단계: LK OptFlow + Kalman (Q=%.4f R=%.1f) + diff clamp\n", KF_Q, KF_R);
     fprintf(stderr, "  2단계: Gyro 고주파 부스트 (alpha=%.3f)\n", SMOOTH_ALPHA);
     fprintf(stderr, "  Crop: %.0f%%\n", FIXED_CROP_PERCENT);
-    fprintf(stderr, "  rtsp://<PI_IP>:8555/cam  (raw 비활성화)\n");
+    if (g_stream_mode == StreamMode::RAW_ONLY || g_stream_mode == StreamMode::BOTH) {
+        fprintf(stderr, "  rtsp://<PI_IP>:8555/raw\n");
+    }
+    if (g_stream_mode == StreamMode::CAM_ONLY || g_stream_mode == StreamMode::BOTH) {
+        fprintf(stderr, "  rtsp://<PI_IP>:8555/cam\n");
+    }
     fprintf(stderr, "==============================\n");
 
     g_main_loop = g_main_loop_new(nullptr, FALSE);

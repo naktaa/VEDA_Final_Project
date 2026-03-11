@@ -357,6 +357,7 @@ static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
     GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
     std::string launch =
         "( appsrc name=" + std::string(appsrc_name) + " is-live=true format=time do-timestamp=true block=false "
+                                                      "! queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 "
                                                       "! videoconvert "
                                                       "! video/x-raw,format=I420 "
                                                       "! v4l2h264enc extra-controls=\"controls,video_bitrate=1000000,h264_i_frame_period=20\" "
@@ -687,7 +688,7 @@ namespace manual_drive {
         int left_cmd = 0;
         int right_cmd = 0;
         auto last_motion_key_time = std::chrono::steady_clock::now();
-        int motion_hold_timeout_ms = 80;
+        int motion_hold_timeout_ms = 300;
         if (const char* env = std::getenv("MANUAL_HOLD_MS")) {
             const int v = std::atoi(env);
             if (v >= 20 && v <= 1000) motion_hold_timeout_ms = v;

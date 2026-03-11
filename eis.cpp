@@ -129,7 +129,25 @@ enum class StreamMode {
     RAW_ONLY,
     BOTH
 };
-static StreamMode g_stream_mode = StreamMode::CAM_ONLY;
+static std::atomic<StreamMode> g_stream_mode{StreamMode::BOTH};
+
+static const char* stream_mode_name(StreamMode m) {
+    switch (m) {
+    case StreamMode::RAW_ONLY:
+        return "RAW_ONLY";
+    case StreamMode::CAM_ONLY:
+        return "CAM_ONLY";
+    case StreamMode::BOTH:
+    default:
+        return "BOTH";
+    }
+}
+
+static void set_stream_mode(StreamMode m) {
+    g_stream_mode.store(m, std::memory_order_relaxed);
+    fprintf(stderr, "[STREAM] mode=%s (1=raw 2=cam 3=both)\n", stream_mode_name(m));
+    fflush(stderr);
+}
 
 static std::mutex g_imu_mtx;
 static std::atomic<bool> g_imu_ready{false};
@@ -503,6 +521,7 @@ namespace manual_drive {
         fprintf(stderr, "A/D (or ←/→): rotate left/right (tank spin)\n");
         fprintf(stderr, "Q/E: pivot left/right\n");
         fprintf(stderr, "Space/X: stop\n");
+        fprintf(stderr, "1/2/3: stream RAW/CAM/BOTH\n");
         fprintf(stderr, "+/-: speed up/down\n");
         fprintf(stderr, "H: help, ESC: quit\n");
         fprintf(stderr, "===============================\n\n");
@@ -607,6 +626,15 @@ namespace manual_drive {
                             }
                             else if (code == KEY_H) {
                                 printHelp();
+                            }
+                            else if (code == KEY_1 || code == KEY_KP1) {
+                                set_stream_mode(StreamMode::RAW_ONLY);
+                            }
+                            else if (code == KEY_2 || code == KEY_KP2) {
+                                set_stream_mode(StreamMode::CAM_ONLY);
+                            }
+                            else if (code == KEY_3 || code == KEY_KP3) {
+                                set_stream_mode(StreamMode::BOTH);
                             }
                             else {
                                 // movement key pressed
@@ -779,6 +807,15 @@ namespace manual_drive {
                     break;
                 case 'h':
                     printHelp();
+                    break;
+                case '1':
+                    set_stream_mode(StreamMode::RAW_ONLY);
+                    break;
+                case '2':
+                    set_stream_mode(StreamMode::CAM_ONLY);
+                    break;
+                case '3':
+                    set_stream_mode(StreamMode::BOTH);
                     break;
                 default:
                     break;
@@ -983,6 +1020,18 @@ static void capture_loop() {
             cv::flip(frame, frame, FLIP_MODE);
         }
 
+        // RAW-only fast path: avoid heavy stabilization work
+        if (g_stream_mode.load(std::memory_order_relaxed) == StreamMode::RAW_ONLY) {
+            GstAppSrc* rawsrc;
+            {
+                std::lock_guard<std::mutex> lk(g_mtx);
+                rawsrc = g_rawsrc;
+            }
+            push_bgr(rawsrc, frame, frameIdx, "raw");
+            frameIdx++;
+            continue;
+        }
+
         // 프레임 캡처 시점 타임스탬프
         double frame_time = now_ms();
 
@@ -1164,10 +1213,11 @@ static void capture_loop() {
             rawsrc = g_rawsrc;
         }
 
-        if (g_stream_mode == StreamMode::RAW_ONLY || g_stream_mode == StreamMode::BOTH) {
+        const StreamMode mode = g_stream_mode.load(std::memory_order_relaxed);
+        if (mode == StreamMode::RAW_ONLY || mode == StreamMode::BOTH) {
             push_bgr(rawsrc, frame, frameIdx, "raw");
         }
-        if (g_stream_mode == StreamMode::CAM_ONLY || g_stream_mode == StreamMode::BOTH) {
+        if (mode == StreamMode::CAM_ONLY || mode == StreamMode::BOTH) {
             push_bgr(stabsrc, stabilized, frameIdx, "cam");
         }
         frameIdx++;
@@ -1187,26 +1237,22 @@ int main(int argc, char* argv[]) {
     gst_init(&argc, &argv);
 
     if (const char* mode = std::getenv("EIS_MODE")) {
-        if (strcmp(mode, "raw") == 0) g_stream_mode = StreamMode::RAW_ONLY;
-        else if (strcmp(mode, "cam") == 0) g_stream_mode = StreamMode::CAM_ONLY;
-        else if (strcmp(mode, "both") == 0) g_stream_mode = StreamMode::BOTH;
+        if (strcmp(mode, "raw") == 0) set_stream_mode(StreamMode::RAW_ONLY);
+        else if (strcmp(mode, "cam") == 0) set_stream_mode(StreamMode::CAM_ONLY);
+        else if (strcmp(mode, "both") == 0) set_stream_mode(StreamMode::BOTH);
     }
 
     GstRTSPServer* server = gst_rtsp_server_new();
     gst_rtsp_server_set_service(server, "8555");
     GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(server);
 
-    if (g_stream_mode == StreamMode::RAW_ONLY || g_stream_mode == StreamMode::BOTH) {
-        GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
-        g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer) "raw");
-        gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
-    }
+    GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
+    g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer) "raw");
+    gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
 
-    if (g_stream_mode == StreamMode::CAM_ONLY || g_stream_mode == StreamMode::BOTH) {
-        GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
-        g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer) "stab");
-        gst_rtsp_mount_points_add_factory(mounts, "/cam", f_stab);
-    }
+    GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
+    g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer) "stab");
+    gst_rtsp_mount_points_add_factory(mounts, "/cam", f_stab);
 
     g_object_unref(mounts);
 
@@ -1221,12 +1267,10 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  1단계: LK OptFlow + Kalman (Q=%.4f R=%.1f) + diff clamp\n", KF_Q, KF_R);
     fprintf(stderr, "  2단계: Gyro 고주파 부스트 (alpha=%.3f)\n", SMOOTH_ALPHA);
     fprintf(stderr, "  Crop: %.0f%%\n", FIXED_CROP_PERCENT);
-    if (g_stream_mode == StreamMode::RAW_ONLY || g_stream_mode == StreamMode::BOTH) {
-        fprintf(stderr, "  rtsp://<PI_IP>:8555/raw\n");
-    }
-    if (g_stream_mode == StreamMode::CAM_ONLY || g_stream_mode == StreamMode::BOTH) {
-        fprintf(stderr, "  rtsp://<PI_IP>:8555/cam\n");
-    }
+    fprintf(stderr, "  rtsp://<PI_IP>:8555/raw\n");
+    fprintf(stderr, "  rtsp://<PI_IP>:8555/cam\n");
+    fprintf(stderr, "  Stream mode: %s (1=raw 2=cam 3=both)\n",
+            stream_mode_name(g_stream_mode.load(std::memory_order_relaxed)));
     fprintf(stderr, "==============================\n");
 
     g_main_loop = g_main_loop_new(nullptr, FALSE);

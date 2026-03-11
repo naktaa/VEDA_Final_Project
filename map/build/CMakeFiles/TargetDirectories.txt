@@ -1,6 +1,0 @@
-/home/pi/final_veda_test/map/build/CMakeFiles/p1_tracker.dir
-/home/pi/final_veda_test/map/build/CMakeFiles/calib_aruco_homography.dir
-/home/pi/final_veda_test/map/build/CMakeFiles/homography_mqtt_pub.dir
-/home/pi/final_veda_test/map/build/CMakeFiles/rc_goal_subscriber.dir
-/home/pi/final_veda_test/map/build/CMakeFiles/edit_cache.dir
-/home/pi/final_veda_test/map/build/CMakeFiles/rebuild_cache.dir

@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/rc_goal_subscriber.dir/link.d CMakeFiles/rc_goal_subscriber.dir/rc_goal_subscriber.cpp.o -o rc_goal_subscriber  -lmosquitto

@@ -359,7 +359,7 @@ static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
         "( appsrc name=" + std::string(appsrc_name) + " is-live=true format=time do-timestamp=true block=false "
                                                       "! videoconvert "
                                                       "! video/x-raw,format=I420 "
-                                                      "! v4l2h264enc extra-controls=\"controls,video_bitrate=1000000,h264_i_frame_period=30\" "
+                                                      "! v4l2h264enc extra-controls=\"controls,video_bitrate=1000000,h264_i_frame_period=20\" "
                                                       "! video/x-h264,level=(string)4,profile=(string)baseline "
                                                       "! rtph264pay name=pay0 pt=96 config-interval=1 )";
     gst_rtsp_media_factory_set_launch(factory, launch.c_str());
@@ -1217,8 +1217,10 @@ int main(int argc, char* argv[]) {
     gst_init(&argc, &argv);
 
     if (const char* mode = std::getenv("EIS_MODE")) {
-        if (strcmp(mode, "raw") == 0) set_stream_mode(StreamMode::RAW_ONLY);
-        else if (strcmp(mode, "cam") == 0) set_stream_mode(StreamMode::CAM_ONLY);
+        if (strcmp(mode, "raw") == 0)
+            set_stream_mode(StreamMode::RAW_ONLY);
+        else if (strcmp(mode, "cam") == 0)
+            set_stream_mode(StreamMode::CAM_ONLY);
     }
 
     GstRTSPServer* server = gst_rtsp_server_new();

@@ -503,15 +503,11 @@ void RcControlNode::run() {
     KeyboardGuard kb;
     const bool keyboard_ok = kb.setup();
     if (keyboard_ok) {
-        std::cout << "[KEY] press SPACE to set midpoint goal of id10(6,4) and id11(6,5): (6,4.5), press g to input goal, press q to quit\n";
+        std::cout << "[KEY] press SPACE to go to (6.5,4.5) and stop, press g to input goal, press q to quit\n";
     }
 
     bool goal_input_mode = false;
     std::string goal_buf;
-    bool auto_route_active = false;
-    bool stage_wait_second_space = false;
-    std::vector<RcGoal> auto_route;
-    std::size_t auto_route_idx = 0;
 
     while (running_ && g_sig_run) {
         if (keyboard_ok) {
@@ -534,8 +530,6 @@ void RcControlNode::run() {
                             goal_ = g;
                             reached_hold_ = false;
                         }
-                        auto_route_active = false;
-                        stage_wait_second_space = false;
                         g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
                         std::cout << "\n[MANUAL_GOAL] x=" << g.x << " y=" << g.y << "\n";
                     } else {
@@ -553,62 +547,23 @@ void RcControlNode::run() {
                     std::cout << static_cast<char>(ch) << std::flush;
                 }
             } else if (ch == ' ') {
-                if (!stage_wait_second_space) {
-                    RcGoal g0;
-                    g0.x = 0.5;
-                    g0.y = 5.5;
-                    g0.frame = "world";
-                    g0.ts_ms = nowMs();
-                    g0.valid = true;
-                    {
-                        std::lock_guard<std::mutex> lk(data_mtx_);
-                        goal_ = g0;
-                        reached_hold_ = false;
-                    }
-                    auto_route_active = false;
-                    stage_wait_second_space = true;
-                    g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
-                    std::cout << "[MANUAL_GOAL] stage1 x=" << g0.x << " y=" << g0.y
-                              << " (press SPACE again after arrival)\n";
-                } else {
-                    bool reached_stage1 = false;
-                    {
-                        std::lock_guard<std::mutex> lk(data_mtx_);
-                        reached_stage1 = reached_hold_;
-                    }
-                    if (!reached_stage1) {
-                        std::cout << "[WAIT] stage1 not reached yet at (6.5,4.5)\n";
-                    } else {
-                        auto_route.clear();
-                        auto_route_idx = 0;
-                        auto_route_active = true;
-                        auto_route.reserve(5);
-                        RcGoal g1{6.5, 5.5, "world", nowMs(), true};
-                        RcGoal g2{7.0, 5.5, "world", nowMs(), true};
-                        RcGoal g3{7.0, 3.5, "world", nowMs(), true};
-                        RcGoal g4{7.0, 4.5, "world", nowMs(), true};
-                        RcGoal g5{1.5, 4.5, "world", nowMs(), true};
-                        auto_route.push_back(g1);
-                        auto_route.push_back(g2);
-                        auto_route.push_back(g3);
-                        auto_route.push_back(g4);
-                        auto_route.push_back(g5);
-                        {
-                            std::lock_guard<std::mutex> lk(data_mtx_);
-                            goal_ = auto_route[0];
-                            reached_hold_ = false;
-                        }
-                        stage_wait_second_space = false;
-                        g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
-                        std::cout << "[MANUAL_GOAL] stage2 route start x=" << auto_route[0].x
-                                  << " y=" << auto_route[0].y << "\n";
-                    }
+                // Temporary test mode: SPACE sets only one goal and stops there.
+                RcGoal g;
+                g.x = 5.2;
+                g.y = 4.5;
+                g.frame = "world";
+                g.ts_ms = nowMs();
+                g.valid = true;
+                {
+                    std::lock_guard<std::mutex> lk(data_mtx_);
+                    goal_ = g;
+                    reached_hold_ = false;
                 }
+                g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
+                std::cout << "[MANUAL_GOAL] test target x=" << g.x << " y=" << g.y << "\n";
             } else if (ch == 'g' || ch == 'G') {
                 goal_input_mode = true;
                 goal_buf.clear();
-                auto_route_active = false;
-                stage_wait_second_space = false;
                 std::cout << "[INPUT] goal x y: " << std::flush;
             } else if (ch == 'q' || ch == 'Q') {
                 g_sig_run = false;
@@ -616,29 +571,6 @@ void RcControlNode::run() {
         }
 
         controlStep();
-        if (auto_route_active) {
-            bool reached = false;
-            {
-                std::lock_guard<std::mutex> lk(data_mtx_);
-                reached = reached_hold_;
-            }
-            if (reached) {
-                auto_route_idx++;
-                if (auto_route_idx < auto_route.size()) {
-                    RcGoal g = auto_route[auto_route_idx];
-                    g.ts_ms = nowMs();
-                    {
-                        std::lock_guard<std::mutex> lk(data_mtx_);
-                        goal_ = g;
-                        reached_hold_ = false;
-                    }
-                    g_last_pose_recv_ms.store(nowMs() - 2000, std::memory_order_relaxed);
-                    std::cout << "[AUTO_GOAL] x=" << g.x << " y=" << g.y << "\n";
-                } else {
-                    auto_route_active = false;
-                }
-            }
-        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 20 Hz
     }
     hardStop();
@@ -775,8 +707,8 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
         int id = -1;
         double x = 0.0;
         double y = 0.0;
-        if (parseWallMarkerJson(payload, id, x, y) && id >= 10 && id <= 13) { 
-            wall_markers_[id] = {x, y}; //여기서 다익스트라 벽 생성
+        if (parseWallMarkerJson(payload, id, x, y) && id >= 10 && id <= 13) {
+            wall_markers_[id] = {x, y};
         }
     }
 }
@@ -985,7 +917,6 @@ void RcControlNode::controlStep() {
     constexpr int kLeftTurnUs = 980;
     constexpr int kRightTurnUs = 1520;
     constexpr auto kTurnDuration = std::chrono::milliseconds(500);
-    constexpr bool kUseUltrasonicAvoid = false;
     constexpr auto kReverseWiggleTurnMs = std::chrono::milliseconds(650);
     constexpr auto kReverseForwardMs = std::chrono::milliseconds(260);
     constexpr double kReverseTurnYawScale = 0.9;      // reverse phase: 좌회전(뒤로 이동)
@@ -996,16 +927,13 @@ void RcControlNode::controlStep() {
     constexpr double kReverseMinAbsSpeed = 0.05;
 
     const auto now = std::chrono::steady_clock::now();
-    if (kUseUltrasonicAvoid) {
-        double dist_cm = 0.0;
-        const bool dist_ok = readUltrasonicCm(dist_cm);
-        if (avoid_state == AvoidState::NONE && dist_ok && dist_cm > 0.0 && dist_cm <= kNearObsCm) {
-            avoid_state = AvoidState::TURNING_LEFT;
-            avoid_until = now + kTurnDuration;
-            std::cout << "[US] obstacle " << dist_cm << "cm -> TURN_LEFT 0.5s\n";
-        }
-    } else {
-        avoid_state = AvoidState::NONE;
+    double dist_cm = 0.0;
+    const bool dist_ok = readUltrasonicCm(dist_cm);
+
+    if (avoid_state == AvoidState::NONE && dist_ok && dist_cm > 0.0 && dist_cm <= kNearObsCm) {
+        avoid_state = AvoidState::TURNING_LEFT;
+        avoid_until = now + kTurnDuration;
+        std::cout << "[US] obstacle " << dist_cm << "cm -> TURN_LEFT 0.5s\n";
     }
 
     if (avoid_state == AvoidState::TURNING_LEFT) {
@@ -1147,9 +1075,11 @@ void RcControlNode::controlStep() {
         const auto now = std::chrono::steady_clock::now();
         const double dt = std::clamp(std::chrono::duration<double>(now - last_dr_tick_snapshot).count(), 0.0, 0.2);
         if (dt > 0.0 && (std::fabs(cmd.speed_mps) > 0.01 || std::fabs(cmd.yaw_rate_rps) > 0.01)) {
+            constexpr double kDrXScale = 0.64;
+            constexpr double kDrYScale = 2.1;
             pose.yaw = normalizeAngle(pose.yaw + cmd.yaw_rate_rps * dt);
-            pose.x += cmd.speed_mps * std::cos(pose.yaw) * dt;
-            pose.y += cmd.speed_mps * std::sin(pose.yaw) * dt;
+            pose.x += cmd.speed_mps * std::cos(pose.yaw) * dt * kDrXScale;
+            pose.y += cmd.speed_mps * std::sin(pose.yaw) * dt * kDrYScale;
             pose.ts_ms = nowMs();
             pose.valid = true;
             {
@@ -1315,9 +1245,6 @@ bool RcControlNode::parsePoseJson(const std::string& payload, RcPose& out_pose) 
         !extractInt64(payload, "ts", out_pose.ts_ms)) {
         return false;
     }
-    constexpr double kCmToM = 0.01;
-    out_pose.x *= kCmToM;
-    out_pose.y *= kCmToM;
     out_pose.valid = true;
     return true;
 }
@@ -1337,9 +1264,6 @@ bool RcControlNode::parseWallMarkerJson(const std::string& payload,
     if (!extractInt(payload, "id", out_id)) return false;
     if (!extractDouble(payload, "x", out_x)) return false;
     if (!extractDouble(payload, "y", out_y)) return false;
-    constexpr double kCmToM = 0.01;
-    out_x *= kCmToM;
-    out_y *= kCmToM;
     return true;
 }
 
@@ -1355,7 +1279,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);
-    node.setControlParams(0.8, 1.2, 0.5, 1.5, 0.15);
+    node.setControlParams(0.8, 1.2, 0.6, 1.5, 0.15);
 
     if (!node.start()) return 1;
     node.run();

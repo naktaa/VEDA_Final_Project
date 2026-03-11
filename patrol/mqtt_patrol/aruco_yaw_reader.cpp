@@ -38,6 +38,14 @@ static double calcYawWorld(const cv::Mat& H_img2world,
     return std::atan2((double)(w1.y - w0.y), (double)(w1.x - w0.x));
 }
 
+static double normalizeAngle(double a)
+{
+    constexpr double PI = 3.14159265358979323846;
+    while (a > PI) a -= 2.0 * PI;
+    while (a < -PI) a += 2.0 * PI;
+    return a;
+}
+
 int main()
 {
     const std::string rtspUrl =
@@ -75,7 +83,7 @@ int main()
         detector.detectMarkers(frame, corners, ids);
 
         bool found = false;
-        double yaw = 0.0;
+        double yaw_raw = 0.0;
         for (size_t i = 0; i < ids.size(); ++i) {
             if (ids[i] != targetMarkerId) continue;
 
@@ -83,17 +91,20 @@ int main()
             for (const auto& p : corners[i]) c += p;
             c *= 0.25f;
 
-            yaw = calcYawWorld(H_img2world, c, corners[i]);
+            yaw_raw = calcYawWorld(H_img2world, c, corners[i]);
             found = true;
             break;
         }
 
         if (found) {
+            // Keep this aligned with p1_tracker yaw reference.
+            constexpr double YAW_X_PLUS_REF = 3.069;
+            const double yaw_aligned = normalizeAngle(yaw_raw - YAW_X_PLUS_REF);
             std::cout << std::fixed << std::setprecision(6)
-                      << "[ARUCO_YAW] id=0 yaw=" << yaw << "\n";
+                      << "[ARUCO_YAW] id=0 raw=" << yaw_raw
+                      << " aligned=" << yaw_aligned << "\n";
         } else {
             std::cout << "[ARUCO_YAW] id=0 not found\n";
         }
     }
 }
-

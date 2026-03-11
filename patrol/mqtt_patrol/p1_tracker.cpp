@@ -339,7 +339,7 @@ int main(int argc, char** argv)
             if (area < 5.0) continue;
 
             double yaw_raw = calcYawWorld(H_img2world, c, corners[i]);
-            constexpr double YAW_X_PLUS_REF = 3.069;
+            constexpr double YAW_X_PLUS_REF = 3.194;
             det_yaw = normalizeAngle(yaw_raw - YAW_X_PLUS_REF);
             det_x = w.x;
             det_y = w.y;

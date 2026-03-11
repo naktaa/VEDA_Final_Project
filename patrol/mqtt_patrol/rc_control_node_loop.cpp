@@ -1114,9 +1114,11 @@ void RcControlNode::controlStep() {
         const auto now = std::chrono::steady_clock::now();
         const double dt = std::clamp(std::chrono::duration<double>(now - last_dr_tick_snapshot).count(), 0.0, 0.2);
         if (dt > 0.0 && (std::fabs(cmd.speed_mps) > 0.01 || std::fabs(cmd.yaw_rate_rps) > 0.01)) {
+            constexpr double kDrXScale = 0.64;
+            constexpr double kDrYScale = 2.1;
             pose.yaw = normalizeAngle(pose.yaw + cmd.yaw_rate_rps * dt);
-            pose.x += cmd.speed_mps * std::cos(pose.yaw) * dt;
-            pose.y += cmd.speed_mps * std::sin(pose.yaw) * dt;
+            pose.x += cmd.speed_mps * std::cos(pose.yaw) * dt * kDrXScale;
+            pose.y += cmd.speed_mps * std::sin(pose.yaw) * dt * kDrYScale;
             pose.ts_ms = nowMs();
             pose.valid = true;
             {
@@ -1282,6 +1284,12 @@ bool RcControlNode::parsePoseJson(const std::string& payload, RcPose& out_pose) 
         !extractInt64(payload, "ts", out_pose.ts_ms)) {
         return false;
     }
+    constexpr double kLikelyCmThreshold = 50.0;
+    constexpr double kCmToM = 0.01;
+    if (std::fabs(out_pose.x) > kLikelyCmThreshold || std::fabs(out_pose.y) > kLikelyCmThreshold) {
+        out_pose.x *= kCmToM;
+        out_pose.y *= kCmToM;
+    }
     out_pose.valid = true;
     return true;
 }
@@ -1301,6 +1309,12 @@ bool RcControlNode::parseWallMarkerJson(const std::string& payload,
     if (!extractInt(payload, "id", out_id)) return false;
     if (!extractDouble(payload, "x", out_x)) return false;
     if (!extractDouble(payload, "y", out_y)) return false;
+    constexpr double kLikelyCmThreshold = 50.0;
+    constexpr double kCmToM = 0.01;
+    if (std::fabs(out_x) > kLikelyCmThreshold || std::fabs(out_y) > kLikelyCmThreshold) {
+        out_x *= kCmToM;
+        out_y *= kCmToM;
+    }
     return true;
 }
 

@@ -14,7 +14,6 @@ add_executable(calib_aruco_homography calib_aruco_homography.cpp)
 add_executable(calib_camera calib_camera.cpp)
 add_executable(homography_mqtt_pub homography_mqtt_pub.cpp)
 add_executable(rc_goal_subscriber rc_goal_subscriber.cpp)
-add_executable(compare_homography compare_homography.cpp)
 
 target_include_directories(p1_tracker PRIVATE
     ${OpenCV_INCLUDE_DIRS}
@@ -46,4 +45,3 @@ target_link_libraries(rc_goal_subscriber PRIVATE
 
 target_link_libraries(calib_aruco_homography PRIVATE ${OpenCV_LIBS})
 target_link_libraries(calib_camera PRIVATE ${OpenCV_LIBS})
-target_link_libraries(compare_homography PRIVATE ${OpenCV_LIBS})

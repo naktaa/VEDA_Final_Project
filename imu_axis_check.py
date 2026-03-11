@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import time
+from collections import deque
 
 import smbus2
 
@@ -57,12 +58,72 @@ def read_accel_gyro(bus):
     return ax, ay, az, gx, gy, gz
 
 
+def plot_mode(bus, rate_hz, bias_gx, bias_gy, bias_gz, window):
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+    except Exception as e:
+        print(f"[ERR] matplotlib import failed: {e}")
+        print("Install with: sudo apt install python3-matplotlib")
+        return
+
+    accel_sens = 16384.0  # LSB/g
+    gyro_sens = 131.0     # LSB/(deg/s)
+
+    gx_buf = deque(maxlen=window)
+    gy_buf = deque(maxlen=window)
+    gz_buf = deque(maxlen=window)
+
+    fig, ax = plt.subplots()
+    line_gx, = ax.plot([], [], label="gx [deg/s]")
+    line_gy, = ax.plot([], [], label="gy [deg/s]")
+    line_gz, = ax.plot([], [], label="gz [deg/s]")
+
+    ax.set_xlim(0, window)
+    ax.set_ylim(-200, 200)
+    ax.set_xlabel("sample index")
+    ax.set_ylabel("gyro [deg/s]")
+    ax.set_title("MPU6050 Gyro (Real-time)")
+    ax.grid(True)
+    ax.legend()
+    text = ax.text(0.02, 0.95, "", transform=ax.transAxes)
+
+    interval_ms = int(1000.0 / max(1.0, rate_hz))
+
+    def update(_):
+        ax_raw, ay_raw, az_raw, gx, gy, gz = read_accel_gyro(bus)
+        gx_dps = (gx - bias_gx) / gyro_sens
+        gy_dps = (gy - bias_gy) / gyro_sens
+        gz_dps = (gz - bias_gz) / gyro_sens
+
+        gx_buf.append(gx_dps)
+        gy_buf.append(gy_dps)
+        gz_buf.append(gz_dps)
+
+        x = range(len(gx_buf))
+        line_gx.set_data(x, list(gx_buf))
+        line_gy.set_data(x, list(gy_buf))
+        line_gz.set_data(x, list(gz_buf))
+
+        abs_g = {"X": abs(gx_dps), "Y": abs(gy_dps), "Z": abs(gz_dps)}
+        dominant = max(abs_g, key=abs_g.get)
+        text.set_text(f"Dominant axis: {dominant}")
+
+        return line_gx, line_gy, line_gz, text
+
+    FuncAnimation(fig, update, interval=interval_ms, blit=False)
+    print("Plot mode started. Close the window to stop.")
+    plt.show()
+
+
 def main():
     ap = argparse.ArgumentParser(description="MPU6050 axis check (gyro/accel)")
     ap.add_argument("--bus", type=int, default=1, help="I2C bus number (default: 1)")
     ap.add_argument("--rate", type=float, default=50.0, help="print rate in Hz (default: 50)")
     ap.add_argument("--calib", type=int, default=200, help="gyro bias samples at rest (default: 200)")
-    ap.add_argument("--no-clear", action="store_true", help="do not clear screen each update")
+    ap.add_argument("--clear", action="store_true", help="clear screen each update (text mode)")
+    ap.add_argument("--plot", action="store_true", help="plot gyro in realtime (requires matplotlib)")
+    ap.add_argument("--window", type=int, default=200, help="plot history length (default: 200)")
     args = ap.parse_args()
 
     bus = smbus2.SMBus(args.bus)
@@ -84,6 +145,10 @@ def main():
         bias_gz /= valid
     print(f"Gyro bias: gx={bias_gx:.1f} gy={bias_gy:.1f} gz={bias_gz:.1f}")
 
+    if args.plot:
+        plot_mode(bus, args.rate, bias_gx, bias_gy, bias_gz, args.window)
+        return
+
     # Sensitivity for default full scale
     accel_sens = 16384.0  # LSB/g
     gyro_sens = 131.0     # LSB/(deg/s)
@@ -95,7 +160,7 @@ def main():
     print("")
 
     period = 1.0 / max(1.0, args.rate)
-    use_clear = sys.stdout.isatty() and (not args.no_clear)
+    use_clear = sys.stdout.isatty() and args.clear
 
     while True:
         ax, ay, az, gx, gy, gz = read_accel_gyro(bus)

@@ -53,7 +53,7 @@ using namespace cv;
 
 static const int G_WIDTH = 640;
 static const int G_HEIGHT = 480;
-static const int G_FPS = 24;
+static const int G_FPS = 20;
 static const bool FLIP_IMAGE = true;
 static const int FLIP_MODE = 0; // 0: vertical, 1: horizontal, -1: both
 
@@ -126,10 +126,9 @@ static GstAppSrc* g_stabsrc = nullptr;
 
 enum class StreamMode {
     CAM_ONLY,
-    RAW_ONLY,
-    BOTH
+    RAW_ONLY
 };
-static std::atomic<StreamMode> g_stream_mode{StreamMode::BOTH};
+static std::atomic<StreamMode> g_stream_mode{StreamMode::CAM_ONLY};
 
 static const char* stream_mode_name(StreamMode m) {
     switch (m) {
@@ -137,15 +136,14 @@ static const char* stream_mode_name(StreamMode m) {
         return "RAW_ONLY";
     case StreamMode::CAM_ONLY:
         return "CAM_ONLY";
-    case StreamMode::BOTH:
     default:
-        return "BOTH";
+        return "CAM_ONLY";
     }
 }
 
 static void set_stream_mode(StreamMode m) {
     g_stream_mode.store(m, std::memory_order_relaxed);
-    fprintf(stderr, "[STREAM] mode=%s (1=raw 2=cam 3=both)\n", stream_mode_name(m));
+    fprintf(stderr, "[STREAM] mode=%s (1=raw 2=cam)\n", stream_mode_name(m));
     fflush(stderr);
 }
 
@@ -361,7 +359,7 @@ static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
         "( appsrc name=" + std::string(appsrc_name) + " is-live=true format=time do-timestamp=true block=false "
                                                       "! videoconvert "
                                                       "! video/x-raw,format=I420 "
-                                                      "! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" "
+                                                      "! v4l2h264enc extra-controls=\"controls,video_bitrate=1000000,h264_i_frame_period=30\" "
                                                       "! video/x-h264,level=(string)4,profile=(string)baseline "
                                                       "! rtph264pay name=pay0 pt=96 config-interval=1 )";
     gst_rtsp_media_factory_set_launch(factory, launch.c_str());
@@ -521,7 +519,7 @@ namespace manual_drive {
         fprintf(stderr, "A/D (or ←/→): rotate left/right (tank spin)\n");
         fprintf(stderr, "Q/E: pivot left/right\n");
         fprintf(stderr, "Space/X: stop\n");
-        fprintf(stderr, "1/2/3: stream RAW/CAM/BOTH\n");
+        fprintf(stderr, "1/2: stream RAW/CAM\n");
         fprintf(stderr, "+/-: speed up/down\n");
         fprintf(stderr, "H: help, ESC: quit\n");
         fprintf(stderr, "===============================\n\n");
@@ -633,9 +631,6 @@ namespace manual_drive {
                             else if (code == KEY_2 || code == KEY_KP2) {
                                 set_stream_mode(StreamMode::CAM_ONLY);
                             }
-                            else if (code == KEY_3 || code == KEY_KP3) {
-                                set_stream_mode(StreamMode::BOTH);
-                            }
                             else {
                                 // movement key pressed
                                 active_key = code;
@@ -681,20 +676,7 @@ namespace manual_drive {
     }
 
     void run() {
-        if (!setupMotor()) return;
-
-        const char* evdev = std::getenv("EIS_INPUT_EVENT");
-        if (evdev && evdev[0] != '\0') {
-            if (run_evdev(evdev)) return;
-            fprintf(stderr, "[MANUAL] evdev failed, falling back to stdin.\n");
-        }
-        else {
-            std::string auto_dev = find_kbd_device();
-            if (!auto_dev.empty()) {
-                if (run_evdev(auto_dev.c_str())) return;
-                fprintf(stderr, "[MANUAL] auto evdev failed, falling back to stdin.\n");
-            }
-        }
+        setupMotor();
 
         if (!setupTerminalRaw()) {
             stopAll();
@@ -713,6 +695,7 @@ namespace manual_drive {
 
         stopAll();
         printHelp();
+        fprintf(stderr, "[MANUAL] stdin control (evdev disabled)\n");
         fprintf(stderr, "[MANUAL] start PWM=%d\n", pwm);
 
         while (g_running.load()) {
@@ -813,9 +796,6 @@ namespace manual_drive {
                     break;
                 case '2':
                     set_stream_mode(StreamMode::CAM_ONLY);
-                    break;
-                case '3':
-                    set_stream_mode(StreamMode::BOTH);
                     break;
                 default:
                     break;
@@ -933,7 +913,7 @@ static void imu_loop() {
 static void capture_loop() {
     std::string cap_pipe =
         "libcamerasrc "
-        "! video/x-raw,format=RGBx,width=640,height=480,framerate=24/1 "
+        "! video/x-raw,format=RGBx,width=640,height=480,framerate=20/1 "
         "! videoconvert ! video/x-raw,format=BGR "
         "! appsink name=appsink drop=true max-buffers=1 sync=false";
 
@@ -1214,10 +1194,10 @@ static void capture_loop() {
         }
 
         const StreamMode mode = g_stream_mode.load(std::memory_order_relaxed);
-        if (mode == StreamMode::RAW_ONLY || mode == StreamMode::BOTH) {
+        if (mode == StreamMode::RAW_ONLY) {
             push_bgr(rawsrc, frame, frameIdx, "raw");
         }
-        if (mode == StreamMode::CAM_ONLY || mode == StreamMode::BOTH) {
+        if (mode == StreamMode::CAM_ONLY) {
             push_bgr(stabsrc, stabilized, frameIdx, "cam");
         }
         frameIdx++;
@@ -1239,7 +1219,6 @@ int main(int argc, char* argv[]) {
     if (const char* mode = std::getenv("EIS_MODE")) {
         if (strcmp(mode, "raw") == 0) set_stream_mode(StreamMode::RAW_ONLY);
         else if (strcmp(mode, "cam") == 0) set_stream_mode(StreamMode::CAM_ONLY);
-        else if (strcmp(mode, "both") == 0) set_stream_mode(StreamMode::BOTH);
     }
 
     GstRTSPServer* server = gst_rtsp_server_new();
@@ -1269,7 +1248,7 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  Crop: %.0f%%\n", FIXED_CROP_PERCENT);
     fprintf(stderr, "  rtsp://<PI_IP>:8555/raw\n");
     fprintf(stderr, "  rtsp://<PI_IP>:8555/cam\n");
-    fprintf(stderr, "  Stream mode: %s (1=raw 2=cam 3=both)\n",
+    fprintf(stderr, "  Stream mode: %s (1=raw 2=cam)\n",
             stream_mode_name(g_stream_mode.load(std::memory_order_relaxed)));
     fprintf(stderr, "==============================\n");
 

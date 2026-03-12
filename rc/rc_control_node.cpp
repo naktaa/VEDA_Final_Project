@@ -1,3 +1,12 @@
+/*
+실행 :sudo /home/pi/VEDA_Final_Project/rc/rc_control_node 192.168.100.10 1883 wiserisk/rc/goal wiserisk/p1/pose wiserisk/rc/safety wiserisk/rc/status
+서버 : /home/pi/VEDA_Final_Project/build/p1_tracker "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" 192.168.100.10 1883 wiserisk/p1/pose /home/pi/VEDA_Final_Project/config/H_img2world.yaml /home/pi/VEDA_Final_Project/config/camera.yaml 0.17 0.17 0 0 0
+컴파일 : g++ -std=c++17 /home/pi/VEDA_Final_Project/rc/rc_control_node.cpp \
+-I/home/pi/VEDA_Final_Project/rc \
+-lmosquitto -lpthread -lwiringPi \
+-o /home/pi/VEDA_Final_Project/rc/rc_control_node
+*/
+
 #include "rc_control_node.h"
 
 #include <chrono>
@@ -22,8 +31,8 @@ namespace {
 std::atomic<bool> g_sig_run{true};
 std::chrono::steady_clock::time_point g_last_pose_log = std::chrono::steady_clock::time_point::min();
 
-constexpr int STOP = 0;
-constexpr int FORWARD = 1;
+constexpr int STOP     = 0;
+constexpr int FORWARD  = 1;
 constexpr int BACKWARD = 2;
 constexpr int POSE_TIMEOUT_MS = 800;
 constexpr double CM_TO_M = 0.01;
@@ -38,6 +47,7 @@ constexpr int R_IN2 = 23; // GPIO13, physical 33
 constexpr int R_EN  = 24; // GPIO19, physical 35
 
 constexpr int PWM_HW_RANGE = 1024;
+constexpr bool RC_DEBUG_FORCE_POSE_LOG = true;
 
 int pwm255ToDuty(int pwm_255) {
     const int p = std::max(0, std::min(255, pwm_255));
@@ -165,11 +175,11 @@ void RcControlNode::setControlParams(double k_linear,
                                      double max_speed_mps,
                                      double max_yaw_rate_rps,
                                      double tolerance_m) {
-    k_linear_ = k_linear;
-    k_yaw_ = k_yaw;
-    max_speed_mps_ = max_speed_mps;
+    k_linear_        = k_linear;
+    k_yaw_           = k_yaw;
+    max_speed_mps_   = max_speed_mps;
     max_yaw_rate_rps_ = max_yaw_rate_rps;
-    tolerance_m_ = tolerance_m;
+    tolerance_m_     = tolerance_m;
 }
 
 void RcControlNode::onConnectStatic(struct mosquitto* mosq, void* obj, int rc) {
@@ -187,8 +197,8 @@ void RcControlNode::onConnect(int rc) {
         std::cerr << "[ERR] MQTT connect callback rc=" << rc << "\n";
         return;
     }
-    const int rc1 = mosquitto_subscribe(mosq_, nullptr, topic_goal_.c_str(), 1);
-    const int rc2 = mosquitto_subscribe(mosq_, nullptr, topic_pose_.c_str(), 1);
+    const int rc1 = mosquitto_subscribe(mosq_, nullptr, topic_goal_.c_str(),   1);
+    const int rc2 = mosquitto_subscribe(mosq_, nullptr, topic_pose_.c_str(),   1);
     const int rc3 = mosquitto_subscribe(mosq_, nullptr, topic_safety_.c_str(), 1);
     std::cout << "[OK] subscribed: " << topic_goal_ << ", " << topic_pose_ << ", " << topic_safety_
               << " (rc=" << rc1 << "," << rc2 << "," << rc3 << ")\n";
@@ -203,28 +213,40 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
     if (topic == topic_goal_) {
         RcGoal g;
         if (parseGoalJson(payload, g) && g.frame == "world") {
-            // Incoming goal is in centimeters; convert to meters for control.
-            g.x *= CM_TO_M;
-            g.y *= CM_TO_M;
+            // p1_tracker는 미터(m) 단위로 퍼블리시 → 변환 불필요
             goal_ = g;
-            std::cout << "[GOAL] x=" << g.x << " y=" << g.y << " ts_ms=" << g.ts_ms << "\n";
+
+            // ★ GOAL 수신 시 현재 pose, 거리, 각도 오차 함께 출력
+            const double dx       = g.x - pose_.x;
+            const double dy       = g.y - pose_.y;
+            const double dist     = std::sqrt(dx * dx + dy * dy);
+            const double t_head   = std::atan2(dy, dx);
+            const double err_yaw  = normalizeAngle(t_head - pose_.yaw);
+
+            std::cout << "[GOAL] goal=(" << g.x << ", " << g.y << ")"
+                      << "  cur=(" << pose_.x << ", " << pose_.y << ")"
+                      << "  yaw=" << pose_.yaw
+                      << "  dist=" << dist
+                      << "  err_yaw=" << err_yaw
+                      << "  pose_valid=" << pose_.valid
+                      << "  ts_ms=" << g.ts_ms << "\n";
         } else {
             std::cerr << "[WARN] invalid goal payload: " << payload << "\n";
         }
     } else if (topic == topic_pose_) {
         RcPose p;
         if (parsePoseJson(payload, p) && p.frame == "world") {
-            // Incoming pose is in centimeters; convert to meters for control.
-            p.x *= CM_TO_M;
-            p.y *= CM_TO_M;
+            // p1_tracker는 미터(m) 단위로 퍼블리시 → 변환 불필요
             pose_ = p;
             last_pose_rx_ = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(last_pose_rx_ - g_last_pose_log).count() >= 500) {
-                std::cout << "[POSE] x=" << p.x << " y=" << p.y
-                          << " yaw=" << p.yaw << " frame=" << p.frame
-                          << " ts_ms=" << p.ts_ms << "\n";
-                g_last_pose_log = last_pose_rx_;
-            }
+
+            // 수신되는 대로 pose 로그 출력
+            std::cout << "[POSE] x=" << p.x << " y=" << p.y
+                      << " yaw=" << p.yaw
+                      << " frame=" << p.frame
+                      << " ts_ms=" << p.ts_ms
+                      << " pose_valid=" << p.valid << "\n";
+            std::cout.flush();
         } else {
             std::cerr << "[WARN] invalid pose payload: " << payload << "\n";
         }
@@ -237,39 +259,56 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
 }
 
 void RcControlNode::controlStep() {
-    RcGoal goal;
-    RcPose pose;
+    RcGoal  goal;
+    RcPose  pose;
     RcSafety safety;
     std::chrono::steady_clock::time_point last_pose_rx;
     {
         std::lock_guard<std::mutex> lk(data_mtx_);
-        goal = goal_;
-        pose = pose_;
-        safety = safety_;
+        goal         = goal_;
+        pose         = pose_;
+        safety       = safety_;
         last_pose_rx = last_pose_rx_;
     }
+
+    // 1초마다 한 번만 로그 출력
+    static auto last_status_log = std::chrono::steady_clock::time_point::min();
+    const auto now_step = std::chrono::steady_clock::now();
+    const bool do_log = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now_step - last_status_log).count() >= 1000;
+    if (do_log) last_status_log = now_step;
 
     RcStatus status;
     if (!goal.valid || !pose.valid) {
         status.mode = "WAIT_INPUT";
+        if (do_log)
+            std::cout << "[STATUS] WAIT_INPUT  goal_valid=" << goal.valid
+                      << "  pose_valid=" << pose.valid << "\n";
         sendCommandToRc({0.0, 0.0});
         publishStatus(status);
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_pose_rx).count();
+    const auto now    = std::chrono::steady_clock::now();
+    const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - last_pose_rx).count();
     if (age_ms > POSE_TIMEOUT_MS) {
-        status.mode = "POSE_TIMEOUT";
+        status.mode    = "POSE_TIMEOUT";
         status.reached = false;
+        if (do_log)
+            std::cout << "[STATUS] POSE_TIMEOUT  age_ms=" << age_ms << "\n";
         sendCommandToRc({0.0, 0.0});
         publishStatus(status);
         return;
     }
 
     if (safety.estop || safety.obstacle_stop || safety.planner_fail) {
-        status.mode = "SAFE_STOP";
+        status.mode    = "SAFE_STOP";
         status.reached = false;
+        if (do_log)
+            std::cout << "[STATUS] SAFE_STOP  estop=" << safety.estop
+                      << "  obs=" << safety.obstacle_stop
+                      << "  plan=" << safety.planner_fail << "\n";
         sendCommandToRc({0.0, 0.0});
         publishStatus(status);
         return;
@@ -280,35 +319,40 @@ void RcControlNode::controlStep() {
     publishStatus(status);
 }
 
-RcCommand RcControlNode::computeCommand(const RcPose& pose, const RcGoal& goal, RcStatus& out_status) const {
+RcCommand RcControlNode::computeCommand(const RcPose& pose,
+                                         const RcGoal& goal,
+                                         RcStatus& out_status) const {
     constexpr double ROTATE_IN_PLACE_TH = 25.0 * 3.14159265358979323846 / 180.0;
-    const double dx = goal.x - pose.x;
-    const double dy = goal.y - pose.y;
+
+    const double dx   = goal.x - pose.x;
+    const double dy   = goal.y - pose.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
 
     const double target_heading = std::atan2(dy, dx);
-    const double err_yaw = normalizeAngle(target_heading - pose.yaw);
+    const double err_yaw        = normalizeAngle(target_heading - pose.yaw);
 
     RcCommand cmd{};
-    out_status.mode = "TRACKING";
+    out_status.mode     = "TRACKING";
     out_status.err_dist = dist;
-    out_status.err_yaw = err_yaw;
+    out_status.err_yaw  = err_yaw;
 
     if (dist <= tolerance_m_) {
-        out_status.mode = "REACHED";
+        out_status.mode    = "REACHED";
         out_status.reached = true;
         return cmd;
     }
 
     const double abs_err = std::fabs(err_yaw);
     if (abs_err > ROTATE_IN_PLACE_TH) {
-        cmd.speed_mps = 0.0;
+        // 각도 오차 25도 초과 → 제자리 회전만
+        cmd.speed_mps    = 0.0;
         cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
         return cmd;
     }
 
+    // 각도 오차 작으면 전진 + 미세 회전
     const double heading_scale = std::max(0.2, std::cos(abs_err));
-    cmd.speed_mps = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_mps_);
+    cmd.speed_mps    = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_mps_);
     cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
     return cmd;
 }
@@ -324,41 +368,47 @@ bool RcControlNode::publishStatus(const RcStatus& status) {
                   status.err_yaw,
                   status.battery);
 
-    const int rc = mosquitto_publish(mosq_,
-                                     nullptr,
-                                     topic_status_.c_str(),
-                                     static_cast<int>(std::strlen(buf)),
-                                     buf,
-                                     1,
-                                     false);
+    const int rc = mosquitto_publish(mosq_, nullptr, topic_status_.c_str(),
+                                     static_cast<int>(std::strlen(buf)), buf, 1, false);
     return (rc == MOSQ_ERR_SUCCESS);
 }
 
 void RcControlNode::sendCommandToRc(const RcCommand& cmd) const {
+    // 1초에 1번만 로그 출력
+    static auto last_cmd_log = std::chrono::steady_clock::time_point::min();
+    const auto now_log = std::chrono::steady_clock::now();
+    const bool do_log = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now_log - last_cmd_log).count() >= 1000;
+    if (do_log) last_cmd_log = now_log;
+
     if (!motor_ready_) {
-        std::cout << "[CMD] speed=" << cmd.speed_mps << " m/s, yaw_rate=" << cmd.yaw_rate_rps
-                  << " rad/s (motor driver not ready)\n";
+        if (do_log)
+            std::cout << "[CMD] speed=" << cmd.speed_mps
+                      << " m/s  yaw_rate=" << cmd.yaw_rate_rps
+                      << " rad/s  *** motor_ready_=false ***\n";
         return;
     }
 
-    double v_left = cmd.speed_mps - (cmd.yaw_rate_rps * track_width_m_ * 0.5);
+    double v_left  = cmd.speed_mps - (cmd.yaw_rate_rps * track_width_m_ * 0.5);
     double v_right = cmd.speed_mps + (cmd.yaw_rate_rps * track_width_m_ * 0.5);
 
-    if (std::fabs(v_left) < speed_deadband_mps_) v_left = 0.0;
+    if (std::fabs(v_left)  < speed_deadband_mps_) v_left  = 0.0;
     if (std::fabs(v_right) < speed_deadband_mps_) v_right = 0.0;
 
-    const int left_dir = (v_left > 0.0) ? FORWARD : (v_left < 0.0 ? BACKWARD : STOP);
-    const int right_dir = (v_right > 0.0) ? FORWARD : (v_right < 0.0 ? BACKWARD : STOP);
+    const int left_dir  = (v_left  > 0.0) ? FORWARD  : (v_left  < 0.0 ? BACKWARD : STOP);
+    const int right_dir = (v_right > 0.0) ? FORWARD  : (v_right < 0.0 ? BACKWARD : STOP);
 
-    const int left_pwm = speedToPwm(v_left);
+    const int left_pwm  = speedToPwm(v_left);
     const int right_pwm = speedToPwm(v_right);
 
-    setMotorControl(L_EN, L_IN1, L_IN2, left_pwm, left_dir);
+    setMotorControl(L_EN, L_IN1, L_IN2, left_pwm,  left_dir);
     setMotorControl(R_EN, R_IN1, R_IN2, right_pwm, right_dir);
 
-    std::cout << "[CMD] v=" << cmd.speed_mps << " w=" << cmd.yaw_rate_rps
-              << " | L(v,pwm,dir)=" << v_left << "," << left_pwm << "," << left_dir
-              << " R(v,pwm,dir)=" << v_right << "," << right_pwm << "," << right_dir << "\n";
+    if (do_log)
+        std::cout << "[CMD] v=" << cmd.speed_mps
+                  << " w=" << cmd.yaw_rate_rps
+                  << " | L(v=" << v_left  << " pwm=" << left_pwm  << " dir=" << left_dir  << ")"
+                  << " R(v=" << v_right << " pwm=" << right_pwm << " dir=" << right_dir << ")\n";
 }
 
 void RcControlNode::setupMotorDriver() {
@@ -378,7 +428,7 @@ void RcControlNode::setupMotorDriver() {
     pwmSetRange(PWM_HW_RANGE);
 
     auto setupOne = [](int en, int in1, int in2) -> bool {
-        pinMode(en, PWM_OUTPUT);
+        pinMode(en,  PWM_OUTPUT);
         pinMode(in1, OUTPUT);
         pinMode(in2, OUTPUT);
         pwmWrite(en, 0);
@@ -387,11 +437,14 @@ void RcControlNode::setupMotorDriver() {
         return true;
     };
 
-    const bool left_ok = setupOne(L_EN, L_IN1, L_IN2);
+    const bool left_ok  = setupOne(L_EN, L_IN1, L_IN2);
     const bool right_ok = setupOne(R_EN, R_IN1, R_IN2);
     motor_ready_ = left_ok && right_ok;
 
-    if (!motor_ready_) return;
+    if (!motor_ready_) {
+        std::cerr << "[ERR] motor pin setup failed.\n";
+        return;
+    }
     stopAllMotors();
     std::cout << "[OK] motor driver ready (HW PWM, L_EN=1, R_EN=24)\n";
 #endif
@@ -437,7 +490,7 @@ int RcControlNode::speedToPwm(double speed_mps) const {
 
 double RcControlNode::normalizeAngle(double rad) {
     constexpr double PI = 3.14159265358979323846;
-    while (rad > PI) rad -= 2.0 * PI;
+    while (rad >  PI) rad -= 2.0 * PI;
     while (rad < -PI) rad += 2.0 * PI;
     return rad;
 }
@@ -447,21 +500,21 @@ double RcControlNode::clamp(double v, double lo, double hi) {
 }
 
 bool RcControlNode::parseGoalJson(const std::string& payload, RcGoal& out_goal) {
-    if (!extractDouble(payload, "x", out_goal.x)) return false;
-    if (!extractDouble(payload, "y", out_goal.y)) return false;
+    if (!extractDouble(payload, "x",     out_goal.x))     return false;
+    if (!extractDouble(payload, "y",     out_goal.y))     return false;
     if (!extractString(payload, "frame", out_goal.frame)) return false;
-    if (!extractInt64(payload, "ts_ms", out_goal.ts_ms)) return false;
+    if (!extractInt64 (payload, "ts_ms", out_goal.ts_ms)) return false;
     out_goal.valid = true;
     return true;
 }
 
 bool RcControlNode::parsePoseJson(const std::string& payload, RcPose& out_pose) {
-    if (!extractDouble(payload, "x", out_pose.x)) return false;
-    if (!extractDouble(payload, "y", out_pose.y)) return false;
+    if (!extractDouble(payload, "x",   out_pose.x))   return false;
+    if (!extractDouble(payload, "y",   out_pose.y))   return false;
     if (!extractDouble(payload, "yaw", out_pose.yaw)) return false;
     if (!extractString(payload, "frame", out_pose.frame)) return false;
     if (!extractInt64(payload, "ts_ms", out_pose.ts_ms) &&
-        !extractInt64(payload, "ts", out_pose.ts_ms)) {
+        !extractInt64(payload, "ts",    out_pose.ts_ms)) {
         return false;
     }
     out_pose.valid = true;
@@ -470,21 +523,21 @@ bool RcControlNode::parsePoseJson(const std::string& payload, RcPose& out_pose) 
 
 bool RcControlNode::parseSafetyJson(const std::string& payload, RcSafety& out_safety) {
     bool ok = false;
-    ok = extractBool(payload, "estop", out_safety.estop) || ok;
+    ok = extractBool(payload, "estop",         out_safety.estop)         || ok;
     ok = extractBool(payload, "obstacle_stop", out_safety.obstacle_stop) || ok;
-    ok = extractBool(payload, "planner_fail", out_safety.planner_fail) || ok;
+    ok = extractBool(payload, "planner_fail",  out_safety.planner_fail)  || ok;
     return ok;
 }
 
 int main(int argc, char** argv) {
-    const std::string host = (argc > 1) ? argv[1] : "192.168.100.10";
-    const int port = (argc > 2) ? std::stoi(argv[2]) : 1883;
-    const std::string topic_goal = (argc > 3) ? argv[3] : "wiserisk/rc/goal";
-    const std::string topic_pose = (argc > 4) ? argv[4] : "wiserisk/p1/pose";
+    const std::string host        = (argc > 1) ? argv[1] : "192.168.100.10";
+    const int         port        = (argc > 2) ? std::stoi(argv[2]) : 1883;
+    const std::string topic_goal  = (argc > 3) ? argv[3] : "wiserisk/rc/goal";
+    const std::string topic_pose  = (argc > 4) ? argv[4] : "wiserisk/p1/pose";
     const std::string topic_safety = (argc > 5) ? argv[5] : "wiserisk/rc/safety";
     const std::string topic_status = (argc > 6) ? argv[6] : "wiserisk/rc/status";
 
-    std::signal(SIGINT, onSignal);
+    std::signal(SIGINT,  onSignal);
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);

@@ -144,6 +144,7 @@ int main(int argc, char** argv)
                 auto ip = id2img[id];
 
                 imgPts.push_back(ip);
+                std::cout << "[PT] id=" << id << " img=(" << ip.x << "," << ip.y << ") world=(" << wp.x << "," << wp.y << ")\n";
                 worldPts.push_back(cv::Point2f((float)wp.x, (float)wp.y));
             }
 

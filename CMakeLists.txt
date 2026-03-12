@@ -16,19 +16,23 @@ pkg_check_modules(GST REQUIRED
   gstreamer-video-1.0
   gstreamer-rtsp-server-1.0
 )
+pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 
 add_executable(eis eis.cpp)
 
 target_include_directories(eis PRIVATE
   ${OpenCV_INCLUDE_DIRS}
   ${GST_INCLUDE_DIRS}
+  ${LIBCAMERA_INCLUDE_DIRS}
 )
 
 target_compile_options(eis PRIVATE
   ${GST_CFLAGS_OTHER}
+  ${LIBCAMERA_CFLAGS_OTHER}
 )
 
 target_link_libraries(eis
   ${OpenCV_LIBS}
   ${GST_LIBRARIES}
+  ${LIBCAMERA_LIBRARIES}
 )

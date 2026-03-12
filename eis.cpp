@@ -67,6 +67,8 @@ static const int G_HEIGHT = 480;
 static const int G_FPS = 20;
 static const int64_t TARGET_FRAME_DURATION_US = 50000; // 20fps
 static const int64_t TARGET_EXPOSURE_US = 20000;       // 20ms
+static const int IMU_TARGET_HZ = 500;
+static const int64_t IMU_TARGET_PERIOD_NS = 1000000000LL / IMU_TARGET_HZ;
 
 // MPU-6050
 static const int IMU_ADDR = 0x68;
@@ -124,8 +126,8 @@ static const int IMU_SIGN_PITCH = 1;
 static const int IMU_SIGN_YAW = -1;
 static const int CALIB_SAMPLES = 300;
 static const bool DEFAULT_DEBUG_OVERLAY = false;
-static const int IMU_BUFFER_SIZE = 600; // 200Hz ?? 3? ??
-static const int IMU_STORE_SIZE = 800;  // ??????/?? ??
+static const int IMU_BUFFER_SIZE = 1500; // 500Hz ?? 3? ??
+static const int IMU_STORE_SIZE = 2500;  // ??????/?? ??
 
 // ??? ??????
 static const double OFFSET_CALIB_DURATION_MS = 8000.0;
@@ -135,8 +137,8 @@ static const double OFFSET_FINE_RANGE_MS = 5.0;
 static const double OFFSET_FINE_STEP_MS = 0.1;
 
 // IMU ?? ???(??? ??)
-static const double IMU_AVG_WINDOW_MS = 20.0;
-static const int IMU_AVG_MAX_SAMPLES = 20;
+static const double IMU_AVG_WINDOW_MS = 25.0; // +/-25ms => 50ms window
+static const int IMU_AVG_MAX_SAMPLES = 30;
 
 // ======================== 전역 변수 ========================
 
@@ -987,9 +989,10 @@ static void imu_loop() {
         return;
     }
 
-    i2c_write_byte(fd, 0x6B, 0x00);
-    i2c_write_byte(fd, 0x1B, 0x00);
-    i2c_write_byte(fd, 0x1A, 0x03);
+    i2c_write_byte(fd, 0x6B, 0x00); // wake
+    i2c_write_byte(fd, 0x1A, 0x03); // DLPF cfg
+    i2c_write_byte(fd, 0x19, 0x01); // SMPLRT_DIV=1 => 1kHz/(1+1)=500Hz
+    i2c_write_byte(fd, 0x1B, 0x00); // gyro full scale ±250dps
     usleep(100000);
 
     fprintf(stderr, "[IMU] Calibrating gyro (%d samples)...\n", CALIB_SAMPLES);
@@ -1015,11 +1018,12 @@ static void imu_loop() {
     double smooth_rr = 0, smooth_pr = 0, smooth_yr = 0;
     bool smooth_rate_init = false;
     g_imu_ready = true;
-    fprintf(stderr, "[IMU] Ready (target: 200Hz, buffer: %d samples)\n", IMU_BUFFER_SIZE);
+    fprintf(stderr, "[IMU] Ready (target: %dHz, buffer: %d samples)\n", IMU_TARGET_HZ, IMU_BUFFER_SIZE);
 
     int64_t last_time_ns = clock_ns(CLOCK_MONOTONIC_RAW);
 
     while (g_running) {
+        int64_t loop_start_ns = clock_ns(CLOCK_MONOTONIC_RAW);
         uint8_t buf[6];
         if (!i2c_read_bytes(fd, 0x43, buf, 6)) {
             usleep(500);
@@ -1077,7 +1081,14 @@ static void imu_loop() {
             double prev = g_imu_actual_hz.load();
             g_imu_actual_hz = (prev <= 0) ? hz : (prev * 0.9 + hz * 0.1);
         }
-        usleep(5000); // 200Hz (Pi CPU 부하 고려)
+        int64_t elapsed_ns = clock_ns(CLOCK_MONOTONIC_RAW) - loop_start_ns;
+        int64_t sleep_ns = IMU_TARGET_PERIOD_NS - elapsed_ns;
+        if (sleep_ns > 0) {
+            struct timespec ts;
+            ts.tv_sec = sleep_ns / 1000000000LL;
+            ts.tv_nsec = sleep_ns % 1000000000LL;
+            nanosleep(&ts, nullptr);
+        }
     }
     close(fd);
     fprintf(stderr, "[IMU] Thread exiting\n");

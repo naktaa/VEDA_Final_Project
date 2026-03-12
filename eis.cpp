@@ -55,6 +55,7 @@
 #include <libcamera/control_ids.h>
 #include <libcamera/framebuffer_allocator.h>
 #include <libcamera/formats.h>
+#include <libcamera/span.h>
 
 using namespace std;
 using namespace cv;
@@ -64,6 +65,8 @@ using namespace cv;
 static const int G_WIDTH = 640;
 static const int G_HEIGHT = 480;
 static const int G_FPS = 20;
+static const int64_t TARGET_FRAME_DURATION_US = 50000; // 20fps
+static const int64_t TARGET_EXPOSURE_US = 20000;       // 20ms
 
 // MPU-6050
 static const int IMU_ADDR = 0x68;
@@ -592,10 +595,20 @@ public:
 
         camera_->requestCompleted.connect(this, &LibcameraGrabber::request_complete);
 
-        if (camera_->start() != 0) {
+        libcamera::ControlList ctrls(camera_->controls());
+        {
+            int64_t limits[2] = {TARGET_FRAME_DURATION_US, TARGET_FRAME_DURATION_US};
+            ctrls.set(libcamera::controls::FrameDurationLimits,
+                      libcamera::Span<const int64_t, 2>(limits));
+            ctrls.set(libcamera::controls::ExposureTime, (int)TARGET_EXPOSURE_US);
+        }
+
+        if (camera_->start(&ctrls) != 0) {
             fprintf(stderr, "[LC] Camera start failed\n");
             return false;
         }
+        fprintf(stderr, "[LC] Controls set: FrameDuration=%lldus Exposure=%lldus\n",
+                (long long)TARGET_FRAME_DURATION_US, (long long)TARGET_EXPOSURE_US);
 
         for (auto &req : requests_) {
             if (camera_->queueRequest(req.get()) < 0) {

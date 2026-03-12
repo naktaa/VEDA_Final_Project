@@ -319,10 +319,11 @@
       const std::string mqttTopic = (argc > 4) ? argv[4] : "wiserisk/p1/pose";
       const std::string homographyYaml = (argc > 5)
           ? argv[5]
-          : "/home/pi/final_veda_test/map/build/H_img2world.yaml";
+          : "config/H_img2world.yaml";
       const std::string cameraYaml = (argc > 6)
           ? argv[6]
-          : "/home/pi/final_veda_test/map/build/camera.yaml";
+          : "config/camera.yaml";
+      // unit: meters (m)
       const double markerSize = (argc > 7) ? std::stod(argv[7]) : 0.17;
       const double cubeSize = (argc > 8) ? std::stod(argv[8]) : 0.17;
       const double rcOffsetX = (argc > 9) ? std::stod(argv[9]) : 0.0;

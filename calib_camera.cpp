@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
     const int boardW = (argc > 2) ? std::stoi(argv[2]) : 8;
     const int boardH = (argc > 3) ? std::stoi(argv[3]) : 6;
     const double squareSize = (argc > 4) ? std::stod(argv[4]) : 3.0;
-    const std::string outYaml = (argc > 5) ? argv[5] : "camera.yaml";
+    const std::string outYaml = (argc > 5) ? argv[5] : "config/camera.yaml";
 
     if (!std::filesystem::exists(imageDir)) {
         std::cerr << "[ERR] image_dir not found: " << imageDir << "\n";

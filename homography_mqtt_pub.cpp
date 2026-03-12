@@ -79,12 +79,13 @@
   }
 
   // Qt MqttSubscriber::onMapReceived() 형식: nodes/edges/polyline
+  // 단위: meters (m)
   static std::string buildMapPayload() {
       std::map<int, WorldPt> id2world = {
-          {10, {1.0, 330.0}},
-          {11, {95.0, 330.0}},
-          {12, {1.0, 1.0}},
-          {13, {95.0, 1.0}},
+          {10, {0.01, 3.30}},
+          {11, {0.95, 3.30}},
+          {12, {0.01, 0.01}},
+          {13, {0.95, 0.01}},
       };
 
       std::vector<std::pair<int, int>> edges = {
@@ -142,7 +143,7 @@
   }
 
   int main(int argc, char** argv) {
-      const std::string yamlPath        = (argc > 1) ? argv[1] : "H_img2world.yaml";
+      const std::string yamlPath        = (argc > 1) ? argv[1] : "config/H_img2world.yaml";
       const std::string mqttHost        = (argc > 2) ? argv[2] : "192.168.100.10";
       const int         mqttPort        = (argc > 3) ? std::stoi(argv[3]) : 1883;
       const std::string homographyTopic = (argc > 4) ? argv[4] : "wiserisk/map/H_img2world";

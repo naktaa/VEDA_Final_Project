@@ -25,6 +25,7 @@ std::chrono::steady_clock::time_point g_last_pose_log = std::chrono::steady_cloc
 constexpr int STOP = 0;
 constexpr int FORWARD = 1;
 constexpr int BACKWARD = 2;
+constexpr int POSE_TIMEOUT_MS = 800;
 
 // wiringPi pin numbers
 constexpr int L_IN1 = 28; // GPIO20, physical 38
@@ -251,7 +252,7 @@ void RcControlNode::controlStep() {
 
     const auto now = std::chrono::steady_clock::now();
     const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_pose_rx).count();
-    if (age_ms > 300) {
+    if (age_ms > POSE_TIMEOUT_MS) {
         status.mode = "POSE_TIMEOUT";
         status.reached = false;
         sendCommandToRc({0.0, 0.0});

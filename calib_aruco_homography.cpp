@@ -15,16 +15,17 @@ int main(int argc, char** argv)
         "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp";
 
     // 출력 파일
-    std::string outYaml = "H_img2world.yaml";
+    std::string outYaml = "config/H_img2world.yaml";
     if (argc >= 2) outYaml = argv[1]; // 예: ./calib ../H_img2world.yaml
 
     // ✅ 여기 ID 4개를 "바닥에 붙인 마커"로 맞춰서 사용
     // 예시: ID 10,11,12,13을 바닥 네 꼭짓점에 둔다.
+    // 단위: meters (m)
     std::map<int, WorldPt> id2world = {
-        {10, {1.0, 330.0}},
-        {11, {95.0, 330.0}},
-        {12, {1.0, 1.0}},
-        {13, {95.0, 1.0}},
+        {10, {0.01, 3.30}},
+        {11, {0.95, 3.30}},
+        {12, {0.01, 0.01}},
+        {13, {0.95, 0.01}},
     };
 
     // ---- open RTSP ----

@@ -30,12 +30,17 @@
 #include <cstring>
 #include <cmath>
 #include <cstdio>
+#include <cctype>
 #include <deque>
 #include <iostream>
 #include <mutex>
 #include <thread>
 #include <time.h>
+#include <utility>
 #include <vector>
+
+#include <poll.h>
+#include <termios.h>
 
 #include <linux/i2c-dev.h>
 #include <sys/ioctl.h>
@@ -49,7 +54,7 @@ using namespace cv;
 
 static const int G_WIDTH = 640;
 static const int G_HEIGHT = 480;
-static const int G_FPS = 24;
+static const int G_FPS = 20;
 
 // MPU-6050
 static const int IMU_ADDR = 0x68;
@@ -63,6 +68,7 @@ static const double YAW_GAIN = 1.0;
 static const double MAX_YAW_RAD = 10.0 * CV_PI / 180.0;  // 10deg clamp
 static const double MAX_ROLL_RAD = 8.0 * CV_PI / 180.0;  // 5→8도 (여유 확대)
 static const double MAX_PITCH_RAD = 5.0 * CV_PI / 180.0; // 3→5도 (여유 확대)
+static const double IMU_RATE_SMOOTH_ALPHA = 0.90;
 
 // 적응형 Alpha
 static const double ADAPT_THRESHOLD = 5.0 * CV_PI / 180.0;
@@ -102,7 +108,7 @@ static const int IMU_SIGN_ROLL = 1;
 static const int IMU_SIGN_PITCH = 1;
 static const int IMU_SIGN_YAW = 1;
 static const int CALIB_SAMPLES = 300;
-static const bool DEBUG_OVERLAY = false;
+static const bool DEFAULT_DEBUG_OVERLAY = false;
 static const int IMU_BUFFER_SIZE = 600; // 200Hz ?? 3? ??
 static const int IMU_STORE_SIZE = 800;  // ??????/?? ??
 
@@ -128,9 +134,38 @@ static GstAppSrc* g_stabsrc = nullptr;
 static std::mutex g_imu_mtx;
 static std::atomic<bool> g_imu_ready{false};
 
+enum class EisMode {
+    LK = 0,
+    GYRO = 1,
+    HYBRID = 2
+};
+
+enum class OutputMode {
+    BOTH = 0,
+    RAW_ONLY = 1,
+    CAM_ONLY = 2
+};
+
+enum class TsSourcePref {
+    AUTO = 0,
+    SENSOR = 1,
+    PTS = 2,
+    ARRIVAL = 3
+};
+
+static std::atomic<int> g_mode{(int)EisMode::LK};
+static std::atomic<int> g_output_mode{(int)OutputMode::BOTH};
+static std::atomic<bool> g_debug_overlay{DEFAULT_DEBUG_OVERLAY};
+static std::atomic<int> g_log_every_frames{-1};
+static std::atomic<int> g_ts_pref{(int)TsSourcePref::AUTO};
+static std::atomic<bool> g_offset_sweep{false};
+static double g_manual_imu_offset_ms = 0.0;
+
 struct ImuPose {
-    double roll, pitch, yaw;
-    double gyro_roll_rate, gyro_pitch_rate, gyro_yaw_rate;
+    double roll, pitch, yaw; // integrated angles (rad)
+    double gyro_roll_rate, gyro_pitch_rate, gyro_yaw_rate; // bias-corrected rates (rad/s)
+    double smooth_roll_rate, smooth_pitch_rate, smooth_yaw_rate; // EMA smoothed rates (rad/s)
+    double raw_gx, raw_gy, raw_gz; // raw sensor counts (LSB)
     double timestamp_ms; // monotonic raw ms
 };
 
@@ -261,7 +296,15 @@ static bool get_reference_timestamp_ns(GstBuffer* buffer, int64_t& out_ns) {
     return false;
 }
 
-static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_ms, double window_ms, int max_samples, ImuPose& out, double& err_ms) {
+static bool imu_average_from_seq(const std::deque<ImuPose>& buf,
+                                 double target_ms,
+                                 double window_ms,
+                                 int max_samples,
+                                 ImuPose& out,
+                                 double& err_ms,
+                                 int* out_count,
+                                 double* out_min_ts,
+                                 double* out_max_ts) {
     if (buf.empty() || window_ms <= 0) return false;
     const double t_lo = target_ms - window_ms;
     const double t_hi = target_ms + window_ms;
@@ -269,8 +312,11 @@ static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_m
     int count = 0;
     double sum_roll = 0, sum_pitch = 0;
     double sum_rr = 0, sum_pr = 0, sum_yr = 0;
+    double sum_srr = 0, sum_spr = 0, sum_syr = 0;
+    double sum_gx = 0, sum_gy = 0, sum_gz = 0;
     double sum_sin_y = 0, sum_cos_y = 0;
     double sum_ts = 0;
+    double min_ts = 1e18, max_ts = -1e18;
 
     // buffer is time-ordered
     for (const auto& s : buf) {
@@ -281,9 +327,17 @@ static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_m
         sum_rr += s.gyro_roll_rate;
         sum_pr += s.gyro_pitch_rate;
         sum_yr += s.gyro_yaw_rate;
+        sum_srr += s.smooth_roll_rate;
+        sum_spr += s.smooth_pitch_rate;
+        sum_syr += s.smooth_yaw_rate;
+        sum_gx += s.raw_gx;
+        sum_gy += s.raw_gy;
+        sum_gz += s.raw_gz;
         sum_sin_y += sin(s.yaw);
         sum_cos_y += cos(s.yaw);
         sum_ts += s.timestamp_ms;
+        min_ts = std::min(min_ts, s.timestamp_ms);
+        max_ts = std::max(max_ts, s.timestamp_ms);
         count++;
         if (max_samples > 0 && count >= max_samples) break;
     }
@@ -299,6 +353,9 @@ static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_m
         }
         out = *best;
         err_ms = target_ms - best->timestamp_ms;
+        if (out_count) *out_count = 1;
+        if (out_min_ts) *out_min_ts = best->timestamp_ms;
+        if (out_max_ts) *out_max_ts = best->timestamp_ms;
         return true;
     }
 
@@ -309,15 +366,28 @@ static bool imu_average_from_seq(const std::deque<ImuPose>& buf, double target_m
     out.gyro_roll_rate = sum_rr * inv;
     out.gyro_pitch_rate = sum_pr * inv;
     out.gyro_yaw_rate = sum_yr * inv;
+    out.smooth_roll_rate = sum_srr * inv;
+    out.smooth_pitch_rate = sum_spr * inv;
+    out.smooth_yaw_rate = sum_syr * inv;
+    out.raw_gx = sum_gx * inv;
+    out.raw_gy = sum_gy * inv;
+    out.raw_gz = sum_gz * inv;
     out.timestamp_ms = sum_ts * inv;
     err_ms = target_ms - out.timestamp_ms;
+    if (out_count) *out_count = count;
+    if (out_min_ts) *out_min_ts = min_ts;
+    if (out_max_ts) *out_max_ts = max_ts;
     return true;
 }
 
 
-static bool imu_sample_at(double target_ms, ImuPose& out, double& err_ms) {
+static bool imu_sample_at(double target_ms, ImuPose& out, double& err_ms,
+                          int* out_count = nullptr,
+                          double* out_min_ts = nullptr,
+                          double* out_max_ts = nullptr) {
     std::lock_guard<std::mutex> lk(g_imu_mtx);
-    return imu_average_from_seq(g_imu_buffer, target_ms, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES, out, err_ms);
+    return imu_average_from_seq(g_imu_buffer, target_ms, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
+                                out, err_ms, out_count, out_min_ts, out_max_ts);
 }
 
 static double unwrap_angle(double prev, double curr) {
@@ -378,6 +448,28 @@ static double required_scale_from_homography(const Mat& H, int w, int h) {
     return std::max(1.0, std::max(scale_x, scale_y));
 }
 
+static double compute_corr(const std::deque<std::pair<double, double>>& buf) {
+    if (buf.size() < 5) return 0.0;
+    double sum_x = 0, sum_y = 0;
+    for (const auto& p : buf) {
+        sum_x += p.first;
+        sum_y += p.second;
+    }
+    double mean_x = sum_x / buf.size();
+    double mean_y = sum_y / buf.size();
+    double num = 0, den_x = 0, den_y = 0;
+    for (const auto& p : buf) {
+        double dx = p.first - mean_x;
+        double dy = p.second - mean_y;
+        num += dx * dy;
+        den_x += dx * dx;
+        den_y += dy * dy;
+    }
+    double denom = sqrt(den_x * den_y);
+    if (denom < 1e-9) return 0.0;
+    return num / denom;
+}
+
 enum class TsSource {
     SENSOR = 0,
     PTS = 1,
@@ -390,6 +482,86 @@ static const char* ts_source_str(TsSource s) {
     case TsSource::PTS: return "PTS";
     default: return "ARRIVAL";
     }
+}
+
+static const char* mode_str(EisMode m) {
+    switch (m) {
+    case EisMode::LK: return "LK";
+    case EisMode::GYRO: return "GYRO";
+    default: return "HYBRID";
+    }
+}
+
+static const char* output_mode_str(OutputMode m) {
+    switch (m) {
+    case OutputMode::RAW_ONLY: return "RAW_ONLY";
+    case OutputMode::CAM_ONLY: return "CAM_ONLY";
+    default: return "BOTH";
+    }
+}
+
+static const char* ts_pref_str(TsSourcePref p) {
+    switch (p) {
+    case TsSourcePref::SENSOR: return "SENSOR";
+    case TsSourcePref::PTS: return "PTS";
+    case TsSourcePref::ARRIVAL: return "ARRIVAL";
+    default: return "AUTO";
+    }
+}
+
+static void keyboard_loop() {
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "[KEY] stdin is not a TTY. Keyboard control disabled.\n");
+        return;
+    }
+
+    termios oldt {};
+    if (tcgetattr(STDIN_FILENO, &oldt) != 0) {
+        perror("[KEY] tcgetattr");
+        return;
+    }
+    termios newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    newt.c_cc[VMIN] = 0;
+    newt.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &newt) != 0) {
+        perror("[KEY] tcsetattr");
+        return;
+    }
+
+    fprintf(stderr, "[KEY] 1=LK 2=Gyro 3=Hybrid 4=RawOnly 5=CamOnly\n");
+
+    pollfd pfd;
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
+
+    while (g_running) {
+        int r = poll(&pfd, 1, 100);
+        if (r > 0 && (pfd.revents & POLLIN)) {
+            char ch = 0;
+            ssize_t n = read(STDIN_FILENO, &ch, 1);
+            if (n == 1) {
+                if (ch == '1') {
+                    g_mode = (int)EisMode::LK;
+                    fprintf(stderr, "[MODE] %s\n", mode_str(EisMode::LK));
+                } else if (ch == '2') {
+                    g_mode = (int)EisMode::GYRO;
+                    fprintf(stderr, "[MODE] %s\n", mode_str(EisMode::GYRO));
+                } else if (ch == '3') {
+                    g_mode = (int)EisMode::HYBRID;
+                    fprintf(stderr, "[MODE] %s\n", mode_str(EisMode::HYBRID));
+                } else if (ch == '4') {
+                    g_output_mode = (int)OutputMode::RAW_ONLY;
+                    fprintf(stderr, "[OUT] %s\n", output_mode_str(OutputMode::RAW_ONLY));
+                } else if (ch == '5') {
+                    g_output_mode = (int)OutputMode::CAM_ONLY;
+                    fprintf(stderr, "[OUT] %s\n", output_mode_str(OutputMode::CAM_ONLY));
+                }
+            }
+        }
+    }
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
 }
 
 // ======================== RTSP 설정 ========================
@@ -470,6 +642,88 @@ static bool push_bgr(GstAppSrc* appsrc, const Mat& frame, guint64 idx, const cha
 
 static void sigint_handler(int) { g_running = false; }
 
+static void print_usage(const char* prog) {
+    fprintf(stderr, "Usage: %s [options]\n", prog);
+    fprintf(stderr, "  --mode {lk|gyro|hybrid}\n");
+    fprintf(stderr, "  --imu-offset-ms <double>\n");
+    fprintf(stderr, "  --offset-sweep\n");
+    fprintf(stderr, "  --overlay {0|1}\n");
+    fprintf(stderr, "  --log-every-frames <N>\n");
+    fprintf(stderr, "  --ts-source {auto|sensor|pts|arrival}\n");
+}
+
+static bool parse_args(int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto eat_value = [&](std::string& out) -> bool {
+            if (i + 1 >= argc) return false;
+            out = argv[++i];
+            return true;
+        };
+
+        std::string val;
+        if (a == "--help" || a == "-h") {
+            print_usage(argv[0]);
+            return false;
+        } else if (a == "--mode") {
+            if (!eat_value(val)) return false;
+        } else if (a.rfind("--mode=", 0) == 0) {
+            val = a.substr(7);
+        }
+
+        if (!val.empty()) {
+            std::string m = val;
+            std::transform(m.begin(), m.end(), m.begin(), ::tolower);
+            if (m == "lk") g_mode = (int)EisMode::LK;
+            else if (m == "gyro") g_mode = (int)EisMode::GYRO;
+            else if (m == "hybrid") g_mode = (int)EisMode::HYBRID;
+            else return false;
+            val.clear();
+            continue;
+        }
+
+        if (a == "--imu-offset-ms") {
+            if (!eat_value(val)) return false;
+            g_manual_imu_offset_ms = std::stod(val);
+        } else if (a.rfind("--imu-offset-ms=", 0) == 0) {
+            g_manual_imu_offset_ms = std::stod(a.substr(16));
+        } else if (a == "--offset-sweep") {
+            g_offset_sweep = true;
+        } else if (a == "--overlay") {
+            if (!eat_value(val)) return false;
+            g_debug_overlay = (std::stoi(val) != 0);
+        } else if (a.rfind("--overlay=", 0) == 0) {
+            g_debug_overlay = (std::stoi(a.substr(10)) != 0);
+        } else if (a == "--log-every-frames") {
+            if (!eat_value(val)) return false;
+            g_log_every_frames = std::max(0, std::stoi(val));
+        } else if (a.rfind("--log-every-frames=", 0) == 0) {
+            g_log_every_frames = std::max(0, std::stoi(a.substr(19)));
+        } else if (a == "--ts-source") {
+            if (!eat_value(val)) return false;
+            std::string s = val;
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            if (s == "auto") g_ts_pref = (int)TsSourcePref::AUTO;
+            else if (s == "sensor") g_ts_pref = (int)TsSourcePref::SENSOR;
+            else if (s == "pts") g_ts_pref = (int)TsSourcePref::PTS;
+            else if (s == "arrival") g_ts_pref = (int)TsSourcePref::ARRIVAL;
+            else return false;
+        } else if (a.rfind("--ts-source=", 0) == 0) {
+            std::string s = a.substr(12);
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            if (s == "auto") g_ts_pref = (int)TsSourcePref::AUTO;
+            else if (s == "sensor") g_ts_pref = (int)TsSourcePref::SENSOR;
+            else if (s == "pts") g_ts_pref = (int)TsSourcePref::PTS;
+            else if (s == "arrival") g_ts_pref = (int)TsSourcePref::ARRIVAL;
+            else return false;
+        } else {
+            fprintf(stderr, "[ERR] Unknown arg: %s\n", a.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
 // ======================== IMU 쓰레드 ========================
 
 static void imu_loop() {
@@ -509,6 +763,8 @@ static void imu_loop() {
     fprintf(stderr, "[IMU] Calibration done (bias: gx=%.1f gy=%.1f gz=%.1f)\n", bias_gx, bias_gy, bias_gz);
 
     double gyro_roll = 0, gyro_pitch = 0, gyro_yaw = 0;
+    double smooth_rr = 0, smooth_pr = 0, smooth_yr = 0;
+    bool smooth_rate_init = false;
     g_imu_ready = true;
     fprintf(stderr, "[IMU] Ready (target: 200Hz, buffer: %d samples)\n", IMU_BUFFER_SIZE);
 
@@ -528,9 +784,12 @@ static void imu_loop() {
             continue;
         }
 
-        double gx_rad = ((to_i16(buf[0], buf[1]) - bias_gx) / GYRO_SENSITIVITY) * (CV_PI / 180.0);
-        double gy_rad = ((to_i16(buf[2], buf[3]) - bias_gy) / GYRO_SENSITIVITY) * (CV_PI / 180.0);
-        double gz_rad = ((to_i16(buf[4], buf[5]) - bias_gz) / GYRO_SENSITIVITY) * (CV_PI / 180.0);
+        double raw_gx = (double)to_i16(buf[0], buf[1]);
+        double raw_gy = (double)to_i16(buf[2], buf[3]);
+        double raw_gz = (double)to_i16(buf[4], buf[5]);
+        double gx_rad = ((raw_gx - bias_gx) / GYRO_SENSITIVITY) * (CV_PI / 180.0);
+        double gy_rad = ((raw_gy - bias_gy) / GYRO_SENSITIVITY) * (CV_PI / 180.0);
+        double gz_rad = ((raw_gz - bias_gz) / GYRO_SENSITIVITY) * (CV_PI / 180.0);
 
         double roll_rate = IMU_SIGN_ROLL * pick_axis(IMU_AXIS_ROLL, gx_rad, gy_rad, gz_rad);
         double pitch_rate = IMU_SIGN_PITCH * pick_axis(IMU_AXIS_PITCH, gx_rad, gy_rad, gz_rad);
@@ -539,9 +798,24 @@ static void imu_loop() {
         gyro_pitch += pitch_rate * dt;
         gyro_yaw += yaw_rate * dt;
 
+        if (!smooth_rate_init) {
+            smooth_rr = roll_rate;
+            smooth_pr = pitch_rate;
+            smooth_yr = yaw_rate;
+            smooth_rate_init = true;
+        } else {
+            smooth_rr = IMU_RATE_SMOOTH_ALPHA * smooth_rr + (1.0 - IMU_RATE_SMOOTH_ALPHA) * roll_rate;
+            smooth_pr = IMU_RATE_SMOOTH_ALPHA * smooth_pr + (1.0 - IMU_RATE_SMOOTH_ALPHA) * pitch_rate;
+            smooth_yr = IMU_RATE_SMOOTH_ALPHA * smooth_yr + (1.0 - IMU_RATE_SMOOTH_ALPHA) * yaw_rate;
+        }
+
         // 샘플 준비 (lock 밖에서)
         double ts = now_ms();
-        ImuPose sample = {gyro_roll, gyro_pitch, gyro_yaw, roll_rate, pitch_rate, yaw_rate, ts};
+        ImuPose sample = {gyro_roll, gyro_pitch, gyro_yaw,
+                          roll_rate, pitch_rate, yaw_rate,
+                          smooth_rr, smooth_pr, smooth_yr,
+                          raw_gx, raw_gy, raw_gz,
+                          ts};
 
         { // 최소 임계구간: push + pop만
             std::lock_guard<std::mutex> lk(g_imu_mtx);
@@ -565,7 +839,9 @@ static void imu_loop() {
 static void capture_loop() {
     std::string cap_pipe =
         "libcamerasrc "
-        "! video/x-raw,format=RGBx,width=640,height=480,framerate=24/1 "
+        "! video/x-raw,format=RGBx,width=" + std::to_string(G_WIDTH) +
+        ",height=" + std::to_string(G_HEIGHT) +
+        ",framerate=" + std::to_string(G_FPS) + "/1 "
         "! videoconvert ! video/x-raw,format=BGR "
         "! appsink name=appsink drop=true max-buffers=1 sync=false";
 
@@ -609,6 +885,7 @@ static void capture_loop() {
     int64_t pts_first_ns = 0;
     int64_t pts_raw_base_ns = 0;
 
+    bool ts_pref_warned = false;
     auto pull_frame = [&](Mat& out, double& out_time_ms, TsSource& out_src) -> bool {
         GstSample* sample = gst_app_sink_try_pull_sample(appsink, 100000000);
         if (!sample) return false;
@@ -632,8 +909,12 @@ static void capture_loop() {
         out = frame.clone();
         gst_buffer_unmap(buffer, &map);
 
-        out_src = TsSource::ARRIVAL;
-        out_time_ms = now_ms();
+        double t_arrival = now_ms();
+        double t_sensor = t_arrival;
+        double t_pts = t_arrival;
+        bool have_sensor = false;
+        bool have_pts = false;
+
         int64_t ref_ns = 0;
         if (get_reference_timestamp_ns(buffer, ref_ns)) {
             if (!sensor_map_ready) {
@@ -642,9 +923,11 @@ static void capture_loop() {
                 sensor_raw_base_ns = clock_ns(CLOCK_MONOTONIC_RAW);
             }
             int64_t rel_ns = ref_ns - sensor_ts_first_ns;
-            out_time_ms = (sensor_raw_base_ns + rel_ns - g_time_origin_raw_ns) / 1e6;
-            out_src = TsSource::SENSOR;
-        } else if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))) {
+            t_sensor = (sensor_raw_base_ns + rel_ns - g_time_origin_raw_ns) / 1e6;
+            have_sensor = true;
+        }
+
+        if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))) {
             int64_t pts_ns = (int64_t)GST_BUFFER_PTS(buffer);
             if (!pts_map_ready) {
                 pts_map_ready = true;
@@ -652,29 +935,52 @@ static void capture_loop() {
                 pts_raw_base_ns = clock_ns(CLOCK_MONOTONIC_RAW);
             }
             int64_t rel_ns = pts_ns - pts_first_ns;
-            out_time_ms = (pts_raw_base_ns + rel_ns - g_time_origin_raw_ns) / 1e6;
-            out_src = TsSource::PTS;
+            t_pts = (pts_raw_base_ns + rel_ns - g_time_origin_raw_ns) / 1e6;
+            have_pts = true;
+        }
+
+        TsSourcePref pref = (TsSourcePref)g_ts_pref.load();
+        out_src = TsSource::ARRIVAL;
+        out_time_ms = t_arrival;
+        bool used_pref = true;
+
+        if (pref == TsSourcePref::AUTO) {
+            if (have_sensor) { out_src = TsSource::SENSOR; out_time_ms = t_sensor; }
+            else if (have_pts) { out_src = TsSource::PTS; out_time_ms = t_pts; }
+        } else if (pref == TsSourcePref::SENSOR) {
+            if (have_sensor) { out_src = TsSource::SENSOR; out_time_ms = t_sensor; }
+            else if (have_pts) { out_src = TsSource::PTS; out_time_ms = t_pts; used_pref = false; }
+            else used_pref = false;
+        } else if (pref == TsSourcePref::PTS) {
+            if (have_pts) { out_src = TsSource::PTS; out_time_ms = t_pts; }
+            else if (have_sensor) { out_src = TsSource::SENSOR; out_time_ms = t_sensor; used_pref = false; }
+            else used_pref = false;
+        } else if (pref == TsSourcePref::ARRIVAL) {
+            out_src = TsSource::ARRIVAL;
+            out_time_ms = t_arrival;
+        }
+
+        if (!used_pref && !ts_pref_warned) {
+            fprintf(stderr, "[TS] preferred %s not available -> fallback %s\n",
+                    ts_pref_str(pref), ts_source_str(out_src));
+            ts_pref_warned = true;
         }
 
         gst_sample_unref(sample);
         return !out.empty();
     };
 
-    const double cx_cam = G_WIDTH * 0.5;
-    const double cy_cam = G_HEIGHT * 0.5;
-    const double fx = G_WIDTH / (2.0 * tan(HFOV_DEG * CV_PI / 360.0));
-    const double fy = G_HEIGHT / (2.0 * tan(VFOV_DEG * CV_PI / 360.0));
-    Mat K = (Mat_<double>(3, 3) << fx, 0, cx_cam,
-                                  0, fy, cy_cam,
-                                  0, 0, 1);
-    Mat Kinv = K.inv();
+    const Point2f center((float)G_WIDTH * 0.5f, (float)G_HEIGHT * 0.5f);
 
     guint64 frameIdx = 0;
 
     GyroSmoothState gs = {0, 0, 0, false, 0, false};
 
-    Mat prev_gyro_gray;
-    int lk_count = 0;
+    Mat prev_gray;
+    Mat prev_frame;
+    int frame_count = 0;
+    double prev_frame_time_ms = 0.0;
+    bool prev_time_ok = false;
     KalmanState kf_theta, kf_tx, kf_ty;
     kalman_init(kf_theta, KF_Q, KF_R);
     kalman_init(kf_tx, KF_Q, KF_R);
@@ -683,8 +989,9 @@ static void capture_loop() {
     struct CalibFrame { double t_ms; double lk_da; };
     std::vector<CalibFrame> calib_frames;
     double calib_start_ms = -1.0;
-    bool offset_calibrated = false;
-    double time_offset_ms = 0.0;
+    bool do_offset_sweep = g_offset_sweep.load();
+    bool offset_calibrated = !do_offset_sweep;
+    double time_offset_ms = g_manual_imu_offset_ms;
     Mat prev_calib_gray;
     bool calib_prev_ok = false;
 
@@ -695,6 +1002,19 @@ static void capture_loop() {
     double imu_err_max = 0.0;
     int imu_err_cnt = 0;
     TsSource last_ts_src = TsSource::ARRIVAL;
+
+    std::deque<std::pair<double, double>> corr_buf;
+    double corr_val = 0.0;
+    const int corr_window = std::max(10, G_FPS);
+
+    EisMode last_mode = (EisMode)g_mode.load();
+
+    struct ImuSampleInfo {
+        int count = 0;
+        double min_ts = 0.0;
+        double max_ts = 0.0;
+        double err_ms = 0.0;
+    };
 
     while (g_running) {
         Mat frame;
@@ -707,10 +1027,32 @@ static void capture_loop() {
             last_ts_src = ts_src;
         }
 
+        EisMode mode = (EisMode)g_mode.load();
+        if (mode != last_mode) {
+            prev_gray.release();
+            prev_frame.release();
+            frame_count = 0;
+            kalman_init(kf_theta, KF_Q, KF_R);
+            kalman_init(kf_tx, KF_Q, KF_R);
+            kalman_init(kf_ty, KF_Q, KF_R);
+            gs.initialized = false;
+            gs.yaw_initialized = false;
+            prev_time_ok = false;
+            corr_buf.clear();
+            corr_val = 0.0;
+            crop_scales.clear();
+            smooth_crop_percent = FIXED_CROP_PERCENT;
+            imu_err_sum = 0.0;
+            imu_err_max = 0.0;
+            imu_err_cnt = 0;
+            last_mode = mode;
+            fprintf(stderr, "[MODE] switched to %s\n", mode_str(mode));
+        }
+
         Mat curr_gray;
         cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
 
-        if (g_imu_ready.load()) {
+        if (g_imu_ready.load() && do_offset_sweep) {
             if (calib_start_ms < 0.0) calib_start_ms = frame_time_ms;
 
             if (!offset_calibrated && (frame_time_ms - calib_start_ms) <= OFFSET_CALIB_DURATION_MS) {
@@ -747,7 +1089,9 @@ static void capture_loop() {
                     imu_copy = g_imu_buffer;
                 }
                 if (calib_frames.size() >= 8 && imu_copy.size() >= 10) {
-                    auto cost_for = [&](double off_ms) -> double {
+                    double base_off = g_manual_imu_offset_ms;
+                    auto cost_for = [&](double delta_ms) -> double {
+                        double off_ms = base_off + delta_ms;
                         double sum = 0.0;
                         int n = 0;
                         for (size_t i = 1; i < calib_frames.size(); ++i) {
@@ -755,8 +1099,10 @@ static void capture_loop() {
                             double t1 = calib_frames[i].t_ms + off_ms;
                             ImuPose p0, p1;
                             double err;
-                            if (!imu_average_from_seq(imu_copy, t0, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES, p0, err)) continue;
-                            if (!imu_average_from_seq(imu_copy, t1, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES, p1, err)) continue;
+                            if (!imu_average_from_seq(imu_copy, t0, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
+                                                      p0, err, nullptr, nullptr, nullptr)) continue;
+                            if (!imu_average_from_seq(imu_copy, t1, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
+                                                      p1, err, nullptr, nullptr, nullptr)) continue;
                             double imu_dyaw = p1.yaw - p0.yaw;
                             double diff = calib_frames[i].lk_da - imu_dyaw;
                             sum += diff * diff;
@@ -776,34 +1122,53 @@ static void capture_loop() {
                         double c = cost_for(off);
                         if (c < best_cost) { best_cost = c; best_off = off; }
                     }
-                    time_offset_ms = best_off;
+                    time_offset_ms = base_off + best_off;
                 } else {
-                    time_offset_ms = 0.0;
+                    time_offset_ms = g_manual_imu_offset_ms;
                 }
                 offset_calibrated = true;
-                fprintf(stderr, "[SYNC] offset=%.3f ms (frames=%zu)\n", time_offset_ms, calib_frames.size());
+                fprintf(stderr, "[SYNC] offset=%.3f ms (base=%.3f, frames=%zu)\n",
+                        time_offset_ms, g_manual_imu_offset_ms, calib_frames.size());
             }
         }
 
         ImuPose pose {};
+        ImuPose pose_prev {};
+        ImuSampleInfo info_curr {};
+        ImuSampleInfo info_prev {};
         bool imu_ok = false;
-        double imu_err_ms = 0.0;
+        bool imu_prev_ok = false;
+        double target_curr_ms = frame_time_ms + time_offset_ms;
+        double target_prev_ms = 0.0;
+        bool have_target_prev = false;
         if (g_imu_ready.load()) {
-            double target_ms = frame_time_ms + time_offset_ms;
-            imu_ok = imu_sample_at(target_ms, pose, imu_err_ms);
+            imu_ok = imu_sample_at(target_curr_ms, pose, info_curr.err_ms,
+                                   &info_curr.count, &info_curr.min_ts, &info_curr.max_ts);
             if (imu_ok) {
-                double err_abs = std::abs(imu_err_ms);
+                double err_abs = std::abs(info_curr.err_ms);
                 imu_err_sum += err_abs;
                 imu_err_max = std::max(imu_err_max, err_abs);
                 imu_err_cnt++;
             }
         }
 
-        Mat stabilized = frame.clone();
-        Mat H_total = Mat::eye(3, 3, CV_64F);
-        double jitter_roll = 0, jitter_pitch = 0, jitter_yaw = 0;
-        double lk_diff_dx = 0, lk_diff_dy = 0, lk_diff_da = 0;
+        double gyro_dyaw = 0.0;
+        bool gyro_delta_ok = false;
+        if (prev_time_ok && g_imu_ready.load()) {
+            target_prev_ms = prev_frame_time_ms + time_offset_ms;
+            have_target_prev = true;
+            imu_prev_ok = imu_sample_at(target_prev_ms, pose_prev, info_prev.err_ms,
+                                        &info_prev.count, &info_prev.min_ts, &info_prev.max_ts);
+            if (imu_prev_ok && imu_ok) {
+                double yaw1 = unwrap_angle(pose_prev.yaw, pose.yaw);
+                gyro_dyaw = yaw1 - pose_prev.yaw;
+                gyro_delta_ok = true;
+            }
+        }
+        prev_frame_time_ms = frame_time_ms;
+        prev_time_ok = true;
 
+        double jitter_roll = 0, jitter_pitch = 0, jitter_yaw = 0;
         if (imu_ok) {
             if (gs.yaw_initialized) {
                 pose.yaw = unwrap_angle(gs.last_yaw, pose.yaw);
@@ -831,77 +1196,128 @@ static void capture_loop() {
             jitter_roll = pose.roll - gs.smooth_roll;
             jitter_pitch = pose.pitch - gs.smooth_pitch;
             jitter_yaw = pose.yaw - gs.smooth_yaw;
-
-            double roll_corr = -std::clamp(jitter_roll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
-            double pitch_corr = -std::clamp(jitter_pitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
-            double yaw_corr = -std::clamp(jitter_yaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
-
-            Mat H_gyro = homography_from_angles(roll_corr, pitch_corr, yaw_corr, K, Kinv);
-
-            Mat gyro_frame;
-            warpPerspective(frame, gyro_frame, H_gyro, frame.size(), INTER_LINEAR, BORDER_CONSTANT);
-            Mat curr_gyro_gray;
-            cvtColor(gyro_frame, curr_gyro_gray, COLOR_BGR2GRAY);
-
-            Mat H_lk = Mat::eye(3, 3, CV_64F);
-            bool lk_ok = false;
-
-            if (!prev_gyro_gray.empty()) {
-                std::vector<Point2f> feat_prev, feat_curr;
-                goodFeaturesToTrack(prev_gyro_gray, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
-                if (feat_prev.size() >= 10) {
-                    std::vector<uchar> status;
-                    std::vector<float> err_vec;
-                    calcOpticalFlowPyrLK(prev_gyro_gray, curr_gyro_gray, feat_prev, feat_curr, status, err_vec);
-
-                    std::vector<Point2f> gp, gc;
-                    for (size_t i = 0; i < status.size(); i++) {
-                        if (status[i]) {
-                            gp.push_back(feat_prev[i]);
-                            gc.push_back(feat_curr[i]);
-                        }
-                    }
-                    if (gp.size() >= 6) {
-                        Mat affine = estimateAffinePartial2D(gp, gc);
-                        if (!affine.empty()) {
-                            double dx = affine.at<double>(0, 2);
-                            double dy = affine.at<double>(1, 2);
-                            double da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
-
-                            kalman_update(kf_theta, da);
-                            kalman_update(kf_tx, dx);
-                            kalman_update(kf_ty, dy);
-
-                            if (lk_count >= 1) {
-                                lk_diff_da = kalman_diff(kf_theta, MAX_DIFF_DA);
-                                lk_diff_dx = kalman_diff(kf_tx, MAX_DIFF_DX);
-                                lk_diff_dy = kalman_diff(kf_ty, MAX_DIFF_DY);
-                            }
-                            lk_count++;
-
-                            da += lk_diff_da;
-                            dx += lk_diff_dx;
-                            dy += lk_diff_dy;
-
-                            H_lk = (Mat_<double>(3, 3) << cos(da), -sin(da), dx,
-                                                            sin(da),  cos(da), dy,
-                                                            0,        0,       1);
-                            lk_ok = true;
-                        }
-                    }
-                }
-            }
-            prev_gyro_gray = curr_gyro_gray.clone();
-            if (!lk_ok && lk_count == 0) lk_count = 1;
-
-            H_total = H_lk * H_gyro;
-            warpPerspective(frame, stabilized, H_total, frame.size(), INTER_LINEAR, BORDER_CONSTANT);
         } else {
             gs.initialized = false;
             gs.yaw_initialized = false;
-            prev_gyro_gray.release();
-            lk_count = 0;
+        }
+
+        Mat prev_frame_for_warp = prev_frame;
+        double lk_dx = 0.0, lk_dy = 0.0, lk_da_raw = 0.0;
+        double lk_diff_dx = 0.0, lk_diff_dy = 0.0, lk_diff_da = 0.0;
+        double lk_da_used = 0.0;
+        bool lk_ok = false;
+        Mat H_lk = Mat::eye(3, 3, CV_64F);
+
+        if (frame_count == 0) {
+            prev_gray = curr_gray.clone();
+            prev_frame = frame.clone();
+            frame_count = 1;
+        } else {
+            std::vector<Point2f> features_prev, features_curr;
+            std::vector<uchar> status;
+            std::vector<float> err_vec;
+            goodFeaturesToTrack(prev_gray, features_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
+            if (features_prev.size() >= 10) {
+                calcOpticalFlowPyrLK(prev_gray, curr_gray, features_prev, features_curr, status, err_vec);
+                std::vector<Point2f> good_prev, good_curr;
+                for (size_t i = 0; i < status.size(); i++) {
+                    if (status[i]) {
+                        good_prev.push_back(features_prev[i]);
+                        good_curr.push_back(features_curr[i]);
+                    }
+                }
+                if (good_prev.size() >= 6) {
+                    Mat affine = estimateAffinePartial2D(good_prev, good_curr);
+                    if (!affine.empty()) {
+                        lk_dx = affine.at<double>(0, 2);
+                        lk_dy = affine.at<double>(1, 2);
+                        lk_da_raw = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+
+                        kalman_update(kf_theta, lk_da_raw);
+                        kalman_update(kf_tx, lk_dx);
+                        kalman_update(kf_ty, lk_dy);
+
+                        if (frame_count > 1) {
+                            lk_diff_da = kalman_diff(kf_theta, MAX_DIFF_DA);
+                            lk_diff_dx = kalman_diff(kf_tx, MAX_DIFF_DX);
+                            lk_diff_dy = kalman_diff(kf_ty, MAX_DIFF_DY);
+                        }
+                        if (frame_count == 1) frame_count++;
+
+                        lk_da_used = lk_da_raw + lk_diff_da;
+                        double dx = lk_dx + lk_diff_dx;
+                        double dy = lk_dy + lk_diff_dy;
+
+                        H_lk = (Mat_<double>(3, 3) << cos(lk_da_used), -sin(lk_da_used), dx,
+                                                    sin(lk_da_used),  cos(lk_da_used), dy,
+                                                    0,               0,              1);
+                        lk_ok = true;
+                    }
+                }
+            }
+
+            prev_gray = curr_gray.clone();
+            prev_frame = frame.clone();
+        }
+
+        if (lk_ok && gyro_delta_ok) {
+            corr_buf.emplace_back(lk_da_raw, gyro_dyaw);
+            if ((int)corr_buf.size() > corr_window) corr_buf.pop_front();
+            corr_val = compute_corr(corr_buf);
+        }
+
+        Mat H_gyro = Mat::eye(3, 3, CV_64F);
+        double yaw_corr = 0.0;
+        bool gyro_corr_ok = false;
+        if (imu_ok) {
+            yaw_corr = -std::clamp(jitter_yaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
+            if (std::abs(yaw_corr) > 1e-6) {
+                Mat R2 = getRotationMatrix2D(center, yaw_corr * 180.0 / CV_PI, 1.0);
+                H_gyro.at<double>(0, 0) = R2.at<double>(0, 0);
+                H_gyro.at<double>(0, 1) = R2.at<double>(0, 1);
+                H_gyro.at<double>(0, 2) = R2.at<double>(0, 2);
+                H_gyro.at<double>(1, 0) = R2.at<double>(1, 0);
+                H_gyro.at<double>(1, 1) = R2.at<double>(1, 1);
+                H_gyro.at<double>(1, 2) = R2.at<double>(1, 2);
+            }
+            gyro_corr_ok = true;
+        }
+
+        Mat stabilized = frame.clone();
+        Mat H_total = Mat::eye(3, 3, CV_64F);
+        Mat warp_src = frame;
+        bool apply_warp = false;
+
+        if (mode == EisMode::LK) {
+            if (lk_ok) {
+                H_total = H_lk;
+                warp_src = prev_frame_for_warp;
+                apply_warp = true;
+            }
+        } else if (mode == EisMode::GYRO) {
+            if (gyro_corr_ok) {
+                H_total = H_gyro;
+                warp_src = frame;
+                apply_warp = true;
+            }
+        } else { // HYBRID
+            if (lk_ok) {
+                H_total = H_lk;
+                warp_src = prev_frame_for_warp;
+                apply_warp = true;
+            }
+            if (gyro_corr_ok) {
+                H_total = H_gyro * H_total;
+                if (!lk_ok) warp_src = frame;
+                apply_warp = true;
+            }
+        }
+
+        if (apply_warp) {
+            warpPerspective(warp_src, stabilized, H_total, frame.size(), INTER_LINEAR, BORDER_CONSTANT);
+        } else {
             stabilized = frame.clone();
+            H_total = Mat::eye(3, 3, CV_64F);
         }
 
         if (DYNAMIC_CROP) {
@@ -920,26 +1336,61 @@ static void capture_loop() {
             stabilized = centerCropAndResize(stabilized, FIXED_CROP_PERCENT);
         }
 
-        if (DEBUG_OVERLAY) {
+        bool dbg = g_debug_overlay.load();
+        if (dbg) {
             char buf[256];
             const int font = FONT_HERSHEY_SIMPLEX;
-            snprintf(buf, sizeof(buf), "TS:%s off:%+.2fms imu_err:%+.2fms",
-                     ts_source_str(ts_src), time_offset_ms, imu_err_ms);
+            double imu_err_ms = imu_ok ? info_curr.err_ms : 0.0;
+            snprintf(buf, sizeof(buf), "TS:%s off:%+.2fms err:%+.2fms mode:%s out:%s",
+                     ts_source_str(ts_src), time_offset_ms, imu_err_ms,
+                     mode_str(mode), output_mode_str((OutputMode)g_output_mode.load()));
             putText(stabilized, buf, Point(8, 18), font, 0.4, Scalar(0, 255, 0), 1, LINE_AA);
 
-            snprintf(buf, sizeof(buf), "Gyro jit R:%+.2f P:%+.2f Y:%+.2f",
-                     jitter_roll * 180 / CV_PI, jitter_pitch * 180 / CV_PI, jitter_yaw * 180 / CV_PI);
+            snprintf(buf, sizeof(buf), "LK da:%+.2f  Gyro dy:%+.2f  corr:%+.2f",
+                     lk_da_raw * 180 / CV_PI, gyro_dyaw * 180 / CV_PI, corr_val);
             putText(stabilized, buf, Point(8, 33), font, 0.4, Scalar(255, 200, 0), 1, LINE_AA);
 
-            snprintf(buf, sizeof(buf), "LK dx:%+.1f dy:%+.1f da:%+.2f",
-                     lk_diff_dx, lk_diff_dy, lk_diff_da * 180 / CV_PI);
+            snprintf(buf, sizeof(buf), "Gyro jit Y:%+.2f",
+                     jitter_yaw * 180 / CV_PI);
             putText(stabilized, buf, Point(8, 48), font, 0.4, Scalar(0, 200, 255), 1, LINE_AA);
         }
 
-        if (imu_err_cnt > 0 && (frameIdx % (G_FPS * 2) == 0)) {
-            double avg_err = imu_err_sum / imu_err_cnt;
-            fprintf(stderr, "[SYNC] imu_err avg=%.3f ms max=%.3f ms offset=%.3f ms\n",
-                    avg_err, imu_err_max, time_offset_ms);
+        int log_every = g_log_every_frames.load();
+        if (log_every > 0 && (frameIdx % (guint64)log_every == 0)) {
+            if (imu_err_cnt > 0) {
+                double avg_err = imu_err_sum / imu_err_cnt;
+                fprintf(stderr, "[SYNC] imu_err avg=%.3f ms max=%.3f ms offset=%.3f ms\n",
+                        avg_err, imu_err_max, time_offset_ms);
+            }
+
+            if (imu_ok) {
+                fprintf(stderr,
+                        "[GYRO] raw(gx,gy,gz)=%.1f %.1f %.1f  rate(rad/s)=%.3f %.3f %.3f  "
+                        "smooth=%.3f %.3f %.3f  ang(deg)=%.2f %.2f %.2f  hz=%.1f\n",
+                        pose.raw_gx, pose.raw_gy, pose.raw_gz,
+                        pose.gyro_roll_rate, pose.gyro_pitch_rate, pose.gyro_yaw_rate,
+                        pose.smooth_roll_rate, pose.smooth_pitch_rate, pose.smooth_yaw_rate,
+                        pose.roll * 180 / CV_PI, pose.pitch * 180 / CV_PI, pose.yaw * 180 / CV_PI,
+                        g_imu_actual_hz.load());
+            }
+
+            fprintf(stderr,
+                    "[CMP] lk_da=%.3fdeg gyro_dyaw=%.3fdeg diff=%.3fdeg corr=%.3f\n",
+                    lk_da_raw * 180 / CV_PI,
+                    gyro_dyaw * 180 / CV_PI,
+                    (lk_da_raw - gyro_dyaw) * 180 / CV_PI,
+                    corr_val);
+
+            if (imu_prev_ok || imu_ok) {
+                double log_t0 = have_target_prev ? target_prev_ms : target_curr_ms;
+                fprintf(stderr,
+                        "[WIN] t0=%.2f err0=%+.2fms cnt0=%d range0=[%.2f,%.2f]  "
+                        "t1=%.2f err1=%+.2fms cnt1=%d range1=[%.2f,%.2f]\n",
+                        log_t0, info_prev.err_ms, info_prev.count,
+                        info_prev.min_ts, info_prev.max_ts,
+                        target_curr_ms, info_curr.err_ms, info_curr.count,
+                        info_curr.min_ts, info_curr.max_ts);
+            }
         }
 
         GstAppSrc *rawsrc, *stabsrc;
@@ -950,15 +1401,18 @@ static void capture_loop() {
         }
 
         Mat raw_out = frame.clone();
-        if (DEBUG_OVERLAY && imu_ok) {
-            char buf[140];
-            snprintf(buf, sizeof(buf), "R:%+.1f P:%+.1f Y:%+.1f off:%+.1fms",
-                     pose.roll * 180 / CV_PI, pose.pitch * 180 / CV_PI, pose.yaw * 180 / CV_PI, time_offset_ms);
+        if (dbg) {
+            char buf[160];
+            snprintf(buf, sizeof(buf), "mode:%s off:%+.1fms",
+                     mode_str(mode), time_offset_ms);
             putText(raw_out, buf, Point(8, 18), FONT_HERSHEY_SIMPLEX, 0.35, Scalar(0, 255, 0), 1, LINE_AA);
         }
 
-        push_bgr(rawsrc, raw_out, frameIdx, "raw");
-        push_bgr(stabsrc, stabilized, frameIdx, "cam");
+        OutputMode out_mode = (OutputMode)g_output_mode.load();
+        bool send_raw = (out_mode == OutputMode::BOTH || out_mode == OutputMode::RAW_ONLY);
+        bool send_cam = (out_mode == OutputMode::BOTH || out_mode == OutputMode::CAM_ONLY);
+        if (send_raw) push_bgr(rawsrc, raw_out, frameIdx, "raw");
+        if (send_cam) push_bgr(stabsrc, stabilized, frameIdx, "cam");
         frameIdx++;
     }
 
@@ -973,6 +1427,8 @@ static void capture_loop() {
 int main(int argc, char* argv[]) {
     system("fuser -k 8555/tcp 2>/dev/null");
     signal(SIGINT, sigint_handler);
+    if (!parse_args(argc, argv)) return 0;
+    if (g_log_every_frames.load() < 0) g_log_every_frames = G_FPS * 2;
     gst_init(&argc, &argv);
 
     GstRTSPServer* server = gst_rtsp_server_new();
@@ -995,14 +1451,20 @@ int main(int argc, char* argv[]) {
     }
 
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, " EIS - Gyro-first + LK residual\n");
+    fprintf(stderr, " EIS - LK 기반 + Gyro 정렬 검증\n");
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, "  Gyro: R/P/Y (alpha=%.3f)\n", SMOOTH_ALPHA);
-    fprintf(stderr, "  LK residual: Kalman Q=%.4f R=%.1f\n", KF_Q, KF_R);
+    fprintf(stderr, "  Mode: %s\n", mode_str((EisMode)g_mode.load()));
+    fprintf(stderr, "  IMU offset: %.3f ms  (sweep: %s)\n", g_manual_imu_offset_ms,
+            g_offset_sweep.load() ? "on" : "off");
+    fprintf(stderr, "  TS source: %s\n", ts_pref_str((TsSourcePref)g_ts_pref.load()));
+    fprintf(stderr, "  Gyro smoothing alpha=%.3f  rate-smooth=%.3f\n", SMOOTH_ALPHA, IMU_RATE_SMOOTH_ALPHA);
+    fprintf(stderr, "  LK Kalman Q=%.4f R=%.1f\n", KF_Q, KF_R);
     fprintf(stderr, "  Crop: %s (min %.0f%%)\n", DYNAMIC_CROP ? "dynamic" : "fixed", FIXED_CROP_PERCENT);
-    fprintf(stderr, "  rtsp://<PI_IP>:8555/raw | /cam\n");
+    fprintf(stderr, "  RTSP: rtsp://<PI_IP>:8555/raw | /cam\n");
+    fprintf(stderr, "  Keys: 1=LK 2=Gyro 3=Hybrid 4=RawOnly 5=CamOnly\n");
     fprintf(stderr, "==============================\n");
 
+    std::thread key_th(keyboard_loop);
     std::thread imu_th(imu_loop);
     std::thread cap_th(capture_loop);
 
@@ -1012,6 +1474,7 @@ int main(int argc, char* argv[]) {
     g_running = false;
     if (cap_th.joinable()) cap_th.join();
     if (imu_th.joinable()) imu_th.join();
+    if (key_th.joinable()) key_th.join();
     g_main_loop_unref(loop);
     return 0;
 }

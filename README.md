@@ -10,16 +10,43 @@ make
 
 ## 실행
 ```bash
-./eis
+./eis [옵션]
 ```
 
-실행하면 RTSP 서버가 `8555` 포트로 열립니다.
+기본 RTSP 포트는 `8555` 입니다.
+
+### 옵션
+```text
+--mode {lk|gyro|hybrid}
+--imu-offset-ms <double>
+--offset-sweep
+--overlay {0|1}
+--log-every-frames <N>
+--ts-source {auto|sensor|pts|arrival}
+```
+
+### 실행 중 키 입력
+```text
+1 = LK only
+2 = Gyro debug
+3 = LK + Gyro hybrid
+4 = raw 영상만 송출
+5 = cam 영상만 송출
+```
 
 ## VLC로 보기
-VLC에서 아래 주소로 접속합니다.
-
 ```text
-| rtsp://<기기_IP>:8555/raw | 원본 |
-| rtsp://<기기_IP>:8555/cam | 보정 |
+rtsp://<장치_IP>:8555/raw   (원본)
+rtsp://<장치_IP>:8555/cam   (보정)
 ```
 
+## 타임스탬프 정렬 검증 절차
+1. `./eis --mode gyro --offset-sweep --overlay 1`
+2. 콘솔 로그에서 `[SYNC] offset`, `[CMP] lk_da vs gyro_dyaw`, `corr` 확인
+3. 결과 오프셋을 `--imu-offset-ms <값>`으로 고정 후 재실행
+4. 실행 중 `3` 키로 hybrid 전환, LK only 대비 차이 확인
+
+## Drift / Bias 처리
+- 시작 시 정지 상태에서 gyro bias 자동 보정
+- bias 제거 후 적분
+- hybrid에서는 고주파 회전 성분만 보조로 사용

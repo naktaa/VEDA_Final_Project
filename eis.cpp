@@ -600,6 +600,7 @@ public:
             int64_t limits[2] = {TARGET_FRAME_DURATION_US, TARGET_FRAME_DURATION_US};
             ctrls.set(libcamera::controls::FrameDurationLimits,
                       libcamera::Span<const int64_t, 2>(limits));
+            ctrls.set(libcamera::controls::AeEnable, false);
             ctrls.set(libcamera::controls::ExposureTime, (int)TARGET_EXPOSURE_US);
         }
 
@@ -607,7 +608,7 @@ public:
             fprintf(stderr, "[LC] Camera start failed\n");
             return false;
         }
-        fprintf(stderr, "[LC] Controls set: FrameDuration=%lldus Exposure=%lldus\n",
+        fprintf(stderr, "[LC] Controls set: FrameDuration=%lldus Exposure=%lldus AE=off\n",
                 (long long)TARGET_FRAME_DURATION_US, (long long)TARGET_EXPOSURE_US);
 
         for (auto &req : requests_) {

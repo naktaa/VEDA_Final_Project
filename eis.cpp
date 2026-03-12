@@ -669,11 +669,13 @@ public:
         out = frame.clone();
 
         const libcamera::ControlList &meta = request->metadata();
-        if (meta.contains(libcamera::controls::SensorTimestamp)) {
-            out_sensor_ts_ns = meta.get(libcamera::controls::SensorTimestamp);
+        if (meta.contains(libcamera::controls::SensorTimestamp.id())) {
+            auto ts = meta.get(libcamera::controls::SensorTimestamp);
+            if (ts) out_sensor_ts_ns = *ts;
         }
-        if (meta.contains(libcamera::controls::ExposureTime)) {
-            out_exp_us = meta.get(libcamera::controls::ExposureTime);
+        if (meta.contains(libcamera::controls::ExposureTime.id())) {
+            auto exp = meta.get(libcamera::controls::ExposureTime);
+            if (exp) out_exp_us = *exp;
         }
 
         if (out_sensor_ts_ns > 0) {

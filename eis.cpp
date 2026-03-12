@@ -116,7 +116,7 @@ static const int IMU_BUFFER_SIZE = 600; // 200Hz ?? 3? ??
 static const int IMU_STORE_SIZE = 800;  // ??????/?? ??
 
 // ??? ??????
-static const double OFFSET_CALIB_DURATION_MS = 2500.0;
+static const double OFFSET_CALIB_DURATION_MS = 8000.0;
 static const double OFFSET_COARSE_RANGE_MS = 50.0;
 static const double OFFSET_COARSE_STEP_MS = 0.5;
 static const double OFFSET_FINE_RANGE_MS = 5.0;
@@ -998,6 +998,10 @@ static void capture_loop() {
     Mat prev_calib_gray;
     bool calib_prev_ok = false;
 
+    // Sweep quality gates
+    const double SWEEP_MAX_ERR_MS = 8.0;
+    const int SWEEP_MIN_SAMPLES = 5;
+
     std::deque<double> crop_scales;
     double smooth_crop_percent = FIXED_CROP_PERCENT;
 
@@ -1095,21 +1099,25 @@ static void capture_loop() {
                     std::lock_guard<std::mutex> lk(g_imu_mtx);
                     imu_copy = g_imu_buffer;
                 }
-                if (calib_frames.size() >= 8 && imu_copy.size() >= 10) {
-                    double base_off = g_manual_imu_offset_ms;
-                    auto cost_for = [&](double delta_ms) -> double {
-                        double off_ms = base_off + delta_ms;
-                        double sum = 0.0;
-                        int n = 0;
+                    if (calib_frames.size() >= 8 && imu_copy.size() >= 10) {
+                        double base_off = g_manual_imu_offset_ms;
+                        auto cost_for = [&](double delta_ms) -> double {
+                            double off_ms = base_off + delta_ms;
+                            double sum = 0.0;
+                            int n = 0;
                         for (size_t i = 1; i < calib_frames.size(); ++i) {
                             double t0 = calib_frames[i - 1].t_ms + off_ms;
                             double t1 = calib_frames[i].t_ms + off_ms;
                             ImuPose p0, p1;
                             double err;
+                            int c0 = 0, c1 = 0;
+                            double r0_min = 0.0, r0_max = 0.0, r1_min = 0.0, r1_max = 0.0;
                             if (!imu_average_from_seq(imu_copy, t0, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
-                                                      p0, err, nullptr, nullptr, nullptr)) continue;
+                                                      p0, err, &c0, &r0_min, &r0_max)) continue;
+                            if (c0 < SWEEP_MIN_SAMPLES || std::abs(err) > SWEEP_MAX_ERR_MS) continue;
                             if (!imu_average_from_seq(imu_copy, t1, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
-                                                      p1, err, nullptr, nullptr, nullptr)) continue;
+                                                      p1, err, &c1, &r1_min, &r1_max)) continue;
+                            if (c1 < SWEEP_MIN_SAMPLES || std::abs(err) > SWEEP_MAX_ERR_MS) continue;
                             double imu_dyaw = p1.yaw - p0.yaw;
                             double diff = calib_frames[i].lk_da - imu_dyaw;
                             sum += diff * diff;
@@ -1119,20 +1127,25 @@ static void capture_loop() {
                         return sum / n;
                     };
 
-                    double best_off = 0.0;
-                    double best_cost = 1e18;
-                    for (double off = -OFFSET_COARSE_RANGE_MS; off <= OFFSET_COARSE_RANGE_MS; off += OFFSET_COARSE_STEP_MS) {
-                        double c = cost_for(off);
-                        if (c < best_cost) { best_cost = c; best_off = off; }
+                        double best_off = 0.0;
+                        double best_cost = 1e18;
+                        for (double off = -OFFSET_COARSE_RANGE_MS; off <= OFFSET_COARSE_RANGE_MS; off += OFFSET_COARSE_STEP_MS) {
+                            double c = cost_for(off);
+                            if (c < best_cost) { best_cost = c; best_off = off; }
+                        }
+                        for (double off = best_off - OFFSET_FINE_RANGE_MS; off <= best_off + OFFSET_FINE_RANGE_MS; off += OFFSET_FINE_STEP_MS) {
+                            double c = cost_for(off);
+                            if (c < best_cost) { best_cost = c; best_off = off; }
+                        }
+                        if (best_cost < 1e17) {
+                            time_offset_ms = base_off + best_off;
+                        } else {
+                            time_offset_ms = base_off;
+                            fprintf(stderr, "[SYNC] sweep failed (insufficient valid samples)\n");
+                        }
+                    } else {
+                        time_offset_ms = g_manual_imu_offset_ms;
                     }
-                    for (double off = best_off - OFFSET_FINE_RANGE_MS; off <= best_off + OFFSET_FINE_RANGE_MS; off += OFFSET_FINE_STEP_MS) {
-                        double c = cost_for(off);
-                        if (c < best_cost) { best_cost = c; best_off = off; }
-                    }
-                    time_offset_ms = base_off + best_off;
-                } else {
-                    time_offset_ms = g_manual_imu_offset_ms;
-                }
                 offset_calibrated = true;
                 fprintf(stderr, "[SYNC] offset=%.3f ms (base=%.3f, frames=%zu)\n",
                         time_offset_ms, g_manual_imu_offset_ms, calib_frames.size());

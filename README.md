@@ -43,9 +43,10 @@ rtsp://<장치_IP>:8555/cam   (보정)
 
 ## 타임스탬프 정렬 검증 절차
 1. `./eis --mode gyro --offset-sweep --overlay 1`
-2. 콘솔 로그에서 `[SYNC] offset`, `[CMP] lk_da vs gyro_dyaw`, `corr` 확인
-3. 결과 오프셋을 `--imu-offset-ms <값>`으로 고정 후 재실행
-4. 실행 중 `3` 키로 hybrid 전환, LK only 대비 차이 확인
+2. `[IMU] Ready` 직후 6~8초 동안 yaw로 2~3회 좌우 회전
+3. 콘솔 로그에서 `[SYNC] offset`, `[CMP] lk_da vs gyro_dyaw`, `corr` 확인
+4. 결과 오프셋을 `--imu-offset-ms <값>`으로 고정 후 재실행
+5. 실행 중 `3` 키로 hybrid 전환, LK only 대비 차이 확인
 
 ## Drift / Bias 처리
 - 시작 시 정지 상태에서 gyro bias 자동 보정

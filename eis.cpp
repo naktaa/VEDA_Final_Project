@@ -96,6 +96,9 @@ static const double CROP_SMOOTH_ALPHA = 0.90;
 static const double CROP_MIN_PERCENT = 5.0;
 static const double CROP_MAX_PERCENT = 40.0;
 
+// Test environment: camera is vertically flipped
+static const bool FLIP_VERTICAL = true;
+
 // 카메라 FOV
 static const double HFOV_DEG = 62.2;
 static const double VFOV_DEG = 48.8;
@@ -1021,6 +1024,10 @@ static void capture_loop() {
         double frame_time_ms = 0.0;
         TsSource ts_src = TsSource::ARRIVAL;
         if (!pull_frame(frame, frame_time_ms, ts_src) || frame.empty()) continue;
+
+        if (FLIP_VERTICAL) {
+            cv::flip(frame, frame, 0);
+        }
 
         if (ts_src != last_ts_src) {
             fprintf(stderr, "[TS] source=%s\n", ts_source_str(ts_src));

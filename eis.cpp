@@ -55,7 +55,7 @@
 #include <libcamera/control_ids.h>
 #include <libcamera/framebuffer_allocator.h>
 #include <libcamera/formats.h>
-#include <libcamera/span.h>
+#include <libcamera/base/span.h>
 
 using namespace std;
 using namespace cv;

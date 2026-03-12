@@ -26,6 +26,7 @@ constexpr int STOP = 0;
 constexpr int FORWARD = 1;
 constexpr int BACKWARD = 2;
 constexpr int POSE_TIMEOUT_MS = 800;
+constexpr double CM_TO_M = 0.01;
 
 // wiringPi pin numbers
 constexpr int L_IN1 = 28; // GPIO20, physical 38
@@ -202,6 +203,9 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
     if (topic == topic_goal_) {
         RcGoal g;
         if (parseGoalJson(payload, g) && g.frame == "world") {
+            // Incoming goal is in centimeters; convert to meters for control.
+            g.x *= CM_TO_M;
+            g.y *= CM_TO_M;
             goal_ = g;
             std::cout << "[GOAL] x=" << g.x << " y=" << g.y << " ts_ms=" << g.ts_ms << "\n";
         } else {
@@ -210,6 +214,9 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
     } else if (topic == topic_pose_) {
         RcPose p;
         if (parsePoseJson(payload, p) && p.frame == "world") {
+            // Incoming pose is in centimeters; convert to meters for control.
+            p.x *= CM_TO_M;
+            p.y *= CM_TO_M;
             pose_ = p;
             last_pose_rx_ = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(last_pose_rx_ - g_last_pose_log).count() >= 500) {

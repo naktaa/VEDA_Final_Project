@@ -701,7 +701,8 @@ public:
                 sensor_raw_base_ns_ = clock_ns(CLOCK_MONOTONIC_RAW);
             }
             int64_t rel_ns = out_sensor_ts_ns - sensor_ts_first_ns_;
-            out_time_ms = (sensor_raw_base_ns_ + rel_ns - g_time_origin_raw_ns) / 1e6;
+            int64_t exposure_ns = (int64_t)out_exp_us * 1000LL;
+            out_time_ms = (sensor_raw_base_ns_ + rel_ns + exposure_ns / 2 - g_time_origin_raw_ns) / 1e6;
             out_src = TsSource::SENSOR;
         }
 

@@ -4,6 +4,7 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <cstdlib>
 
 // ---------- 설정: 4개 마커 ID와 월드좌표(m) ----------
 struct WorldPt { double x,y; };
@@ -28,9 +29,27 @@ int main(int argc, char** argv)
         {13, {0.95, 0.01}},
     };
 
-    // ---- open RTSP ----
-    cv::VideoCapture cap(rtsp);
-    if (!cap.isOpened()) {
+    // ---- open RTSP (prefer GStreamer TCP, fallback to FFmpeg TCP) ----
+    auto openRtspCapture = [](const std::string& rtspUrl, cv::VideoCapture& cap) -> bool {
+        const std::string gst =
+            "rtspsrc location=" + rtspUrl +
+            " protocols=tcp latency=200 drop-on-latency=true do-rtsp-keep-alive=true tcp-timeout=5000000 ! "
+            "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! queue leaky=downstream max-size-buffers=1 ! "
+            "appsink sync=false max-buffers=1 drop=true";
+
+        if (cap.open(gst, cv::CAP_GSTREAMER)) return true;
+
+        setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+               "rtsp_transport;tcp|fflags;nobuffer|max_delay;500000|stimeout;5000000", 1);
+        if (cap.open(rtspUrl, cv::CAP_FFMPEG)) {
+            cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+            return true;
+        }
+        return false;
+    };
+
+    cv::VideoCapture cap;
+    if (!openRtspCapture(rtsp, cap)) {
         std::cerr << "[ERR] RTSP open failed\n";
         return 1;
     }

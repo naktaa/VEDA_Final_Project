@@ -75,14 +75,13 @@ static const int IMU_ADDR = 0x68;
 static const double GYRO_SENSITIVITY = 131.0;
 
 // ---- 자이로 고주파 필터 (2단계: 추가 회전 보정) ----
-// Debug preset: make gyro-only effect visible
-static const double SMOOTH_ALPHA = 0.93;
-static const double ROLL_GAIN = 1.3;
-static const double PITCH_GAIN = 1.3;
-static const double YAW_GAIN = 1.3;
-static const double MAX_YAW_RAD = 12.0 * CV_PI / 180.0;  // 12deg clamp
-static const double MAX_ROLL_RAD = 8.0 * CV_PI / 180.0;  // 8deg clamp
-static const double MAX_PITCH_RAD = 8.0 * CV_PI / 180.0; // 8deg clamp
+static const double SMOOTH_ALPHA = 0.97;
+static const double ROLL_GAIN = 0.7;
+static const double PITCH_GAIN = 0.6;
+static const double YAW_GAIN = 0.8;
+static const double MAX_YAW_RAD = 8.0 * CV_PI / 180.0;   // 8deg clamp
+static const double MAX_ROLL_RAD = 4.0 * CV_PI / 180.0;  // 4deg clamp
+static const double MAX_PITCH_RAD = 3.0 * CV_PI / 180.0; // 3deg clamp
 static const double IMU_RATE_SMOOTH_ALPHA = 0.90;
 
 // 적응형 Alpha
@@ -171,12 +170,18 @@ enum class TsSourcePref {
     ARRIVAL = 3
 };
 
+enum class GyroWarpMode {
+    JITTER = 0,
+    DELTA = 1
+};
+
 static std::atomic<int> g_mode{(int)EisMode::LK};
 static std::atomic<int> g_output_mode{(int)OutputMode::BOTH};
 static std::atomic<bool> g_debug_overlay{DEFAULT_DEBUG_OVERLAY};
 static std::atomic<int> g_log_every_frames{-1};
 static std::atomic<int> g_ts_pref{(int)TsSourcePref::AUTO};
 static std::atomic<bool> g_offset_sweep{false};
+static std::atomic<int> g_gyro_warp_mode{(int)GyroWarpMode::JITTER};
 static double g_manual_imu_offset_ms = 0.0;
 
 struct ImuPose {
@@ -537,6 +542,13 @@ static const char* ts_pref_str(TsSourcePref p) {
     case TsSourcePref::PTS: return "PTS";
     case TsSourcePref::ARRIVAL: return "ARRIVAL";
     default: return "AUTO";
+    }
+}
+
+static const char* gyro_warp_str(GyroWarpMode m) {
+    switch (m) {
+    case GyroWarpMode::DELTA: return "DELTA";
+    default: return "JITTER";
     }
 }
 
@@ -916,6 +928,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --overlay {0|1}\n");
     fprintf(stderr, "  --log-every-frames <N>\n");
     fprintf(stderr, "  --ts-source {auto|sensor|pts|arrival}\n");
+    fprintf(stderr, "  --gyro-warp {jitter|delta}\n");
 }
 
 static bool parse_args(int argc, char* argv[]) {
@@ -981,6 +994,19 @@ static bool parse_args(int argc, char* argv[]) {
             else if (s == "sensor") g_ts_pref = (int)TsSourcePref::SENSOR;
             else if (s == "pts") g_ts_pref = (int)TsSourcePref::PTS;
             else if (s == "arrival") g_ts_pref = (int)TsSourcePref::ARRIVAL;
+            else return false;
+        } else if (a == "--gyro-warp") {
+            if (!eat_value(val)) return false;
+            std::string s = val;
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            if (s == "jitter") g_gyro_warp_mode = (int)GyroWarpMode::JITTER;
+            else if (s == "delta") g_gyro_warp_mode = (int)GyroWarpMode::DELTA;
+            else return false;
+        } else if (a.rfind("--gyro-warp=", 0) == 0) {
+            std::string s = a.substr(12);
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            if (s == "jitter") g_gyro_warp_mode = (int)GyroWarpMode::JITTER;
+            else if (s == "delta") g_gyro_warp_mode = (int)GyroWarpMode::DELTA;
             else return false;
         } else {
             fprintf(stderr, "[ERR] Unknown arg: %s\n", a.c_str());
@@ -1504,6 +1530,8 @@ static void capture_loop() {
             }
         }
 
+        double gyro_droll = 0.0;
+        double gyro_dpitch = 0.0;
         double gyro_dyaw = 0.0;
         bool gyro_delta_ok = false;
         if (prev_time_ok && g_imu_ready.load()) {
@@ -1512,7 +1540,11 @@ static void capture_loop() {
             imu_prev_ok = imu_sample_at(target_prev_ms, pose_prev, info_prev.err_ms,
                                         &info_prev.count, &info_prev.min_ts, &info_prev.max_ts);
             if (imu_prev_ok && imu_ok) {
+                double roll1 = unwrap_angle(pose_prev.roll, pose.roll);
+                double pitch1 = unwrap_angle(pose_prev.pitch, pose.pitch);
                 double yaw1 = unwrap_angle(pose_prev.yaw, pose.yaw);
+                gyro_droll = roll1 - pose_prev.roll;
+                gyro_dpitch = pitch1 - pose_prev.pitch;
                 gyro_dyaw = yaw1 - pose_prev.yaw;
                 gyro_delta_ok = true;
             }
@@ -1623,10 +1655,17 @@ static void capture_loop() {
         double pitch_corr = 0.0;
         double yaw_corr = 0.0;
         bool gyro_corr_ok = false;
+        GyroWarpMode gyro_mode = (GyroWarpMode)g_gyro_warp_mode.load();
         if (imu_ok) {
-            roll_corr = -std::clamp(jitter_roll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
-            pitch_corr = -std::clamp(jitter_pitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
-            yaw_corr = -std::clamp(jitter_yaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
+            if (gyro_mode == GyroWarpMode::DELTA && gyro_delta_ok) {
+                roll_corr = -std::clamp(gyro_droll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
+                pitch_corr = -std::clamp(gyro_dpitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
+                yaw_corr = -std::clamp(gyro_dyaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
+            } else {
+                roll_corr = -std::clamp(jitter_roll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
+                pitch_corr = -std::clamp(jitter_pitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
+                yaw_corr = -std::clamp(jitter_yaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
+            }
             H_gyro = homography_from_angles(roll_corr, pitch_corr, yaw_corr, K, Kinv);
             gyro_corr_ok = true;
         }
@@ -1689,9 +1728,10 @@ static void capture_loop() {
             char buf[256];
             const int font = FONT_HERSHEY_SIMPLEX;
             double imu_err_ms = imu_ok ? info_curr.err_ms : 0.0;
-            snprintf(buf, sizeof(buf), "TS:%s off:%+.2fms err:%+.2fms mode:%s out:%s",
+            snprintf(buf, sizeof(buf), "TS:%s off:%+.2fms err:%+.2fms mode:%s out:%s gy:%s",
                      ts_source_str(ts_src), time_offset_ms, imu_err_ms,
-                     mode_str(mode), output_mode_str((OutputMode)g_output_mode.load()));
+                     mode_str(mode), output_mode_str((OutputMode)g_output_mode.load()),
+                     gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
             putText(stabilized, buf, Point(8, 18), font, 0.4, Scalar(0, 255, 0), 1, LINE_AA);
 
             snprintf(buf, sizeof(buf), "LK da:%+.2f  Gyro dy:%+.2f  corr:%+.2f",

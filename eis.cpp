@@ -75,13 +75,14 @@ static const int IMU_ADDR = 0x68;
 static const double GYRO_SENSITIVITY = 131.0;
 
 // ---- 자이로 고주파 필터 (2단계: 추가 회전 보정) ----
-static const double SMOOTH_ALPHA = 0.97;
-static const double ROLL_GAIN = 0.7;
-static const double PITCH_GAIN = 0.6;
-static const double YAW_GAIN = 0.8;
-static const double MAX_YAW_RAD = 8.0 * CV_PI / 180.0;   // 8deg clamp
-static const double MAX_ROLL_RAD = 4.0 * CV_PI / 180.0;  // 4deg clamp
-static const double MAX_PITCH_RAD = 3.0 * CV_PI / 180.0; // 3deg clamp
+// Debug preset: make gyro-only effect visible
+static const double SMOOTH_ALPHA = 0.93;
+static const double ROLL_GAIN = 1.3;
+static const double PITCH_GAIN = 1.3;
+static const double YAW_GAIN = 1.3;
+static const double MAX_YAW_RAD = 12.0 * CV_PI / 180.0;  // 12deg clamp
+static const double MAX_ROLL_RAD = 8.0 * CV_PI / 180.0;  // 8deg clamp
+static const double MAX_PITCH_RAD = 8.0 * CV_PI / 180.0; // 8deg clamp
 static const double IMU_RATE_SMOOTH_ALPHA = 0.90;
 
 // 적응형 Alpha

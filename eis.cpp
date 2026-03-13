@@ -1346,7 +1346,7 @@ static void capture_loop() {
         uint64_t cap_index = cap.index;
 
         if (FLIP_VERTICAL) {
-            cv::flip(frame, frame, 0);
+            cv::flip(frame, frame, -1);
         }
 
         if (ts_src != last_ts_src) {

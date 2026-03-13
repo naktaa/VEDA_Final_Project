@@ -103,8 +103,8 @@ static const double MAX_DIFF_DY = 9999.0;                // pixels
 static const double MAX_DIFF_DA = 999.0 * CV_PI / 180.0; // radians (~4도)
 
 // 크롭
-static const double FIXED_CROP_PERCENT = 5.0;  // min crop percent
-static const bool DYNAMIC_CROP = true;
+static const double FIXED_CROP_PERCENT = 20.0;  // fixed crop percent
+static const bool DYNAMIC_CROP = false;
 static const int CROP_WINDOW = 10;
 static const double CROP_SMOOTH_ALPHA = 0.90;
 static const double CROP_MIN_PERCENT = 5.0;
@@ -272,7 +272,7 @@ static Mat ensureBGR(const Mat& in) {
     if (in.empty()) return Mat();
     Mat out = in;
     if (out.type() == CV_8UC4)
-        cvtColor(out, out, COLOR_BGRA2BGR);
+        cvtColor(out, out, COLOR_RGBA2BGR);
     else if (out.type() == CV_8UC1)
         cvtColor(out, out, COLOR_GRAY2BGR);
     else if (out.type() != CV_8UC3) {

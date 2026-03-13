@@ -417,7 +417,7 @@ int main(int argc, char** argv)
             const cv::Matx33d R_world_cube = R_world_cam * R_cam_cube;
 
             const cv::Vec3d forward = R_world_cube * cv::Vec3d(0.0, 1.0, 0.0);
-            const double yaw = normalizeAngle(std::atan2(forward[1], forward[0]));
+            const double yaw = normalizeAngle(-std::atan2(forward[1], forward[0]));
             const long long ts = nowMs();
 
             char buf[256];

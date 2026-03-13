@@ -438,6 +438,19 @@ static Mat homography_from_angles(double roll, double pitch, double yaw, const M
     return K * R * Kinv;
 }
 
+static Mat camera_matrix_from_fov(int w, int h, double hfov_deg, double vfov_deg) {
+    double hfov = hfov_deg * CV_PI / 180.0;
+    double vfov = vfov_deg * CV_PI / 180.0;
+    double cx = w * 0.5;
+    double cy = h * 0.5;
+    double fx = (w * 0.5) / tan(hfov * 0.5);
+    double fy = (h * 0.5) / tan(vfov * 0.5);
+    Mat K = (Mat_<double>(3, 3) << fx, 0, cx,
+                                  0, fy, cy,
+                                  0, 0, 1);
+    return K;
+}
+
 static double required_scale_from_homography(const Mat& H, int w, int h) {
     std::vector<Point2f> corners;
     corners.emplace_back(0.0f, 0.0f);
@@ -1284,6 +1297,8 @@ static void capture_loop() {
     };
 
     const Point2f center((float)G_WIDTH * 0.5f, (float)G_HEIGHT * 0.5f);
+    Mat K = camera_matrix_from_fov(G_WIDTH, G_HEIGHT, HFOV_DEG, VFOV_DEG);
+    Mat Kinv = K.inv();
 
     guint64 frameIdx = 0;
 
@@ -1603,19 +1618,15 @@ static void capture_loop() {
         }
 
         Mat H_gyro = Mat::eye(3, 3, CV_64F);
+        double roll_corr = 0.0;
+        double pitch_corr = 0.0;
         double yaw_corr = 0.0;
         bool gyro_corr_ok = false;
         if (imu_ok) {
+            roll_corr = -std::clamp(jitter_roll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
+            pitch_corr = -std::clamp(jitter_pitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
             yaw_corr = -std::clamp(jitter_yaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
-            if (std::abs(yaw_corr) > 1e-6) {
-                Mat R2 = getRotationMatrix2D(center, yaw_corr * 180.0 / CV_PI, 1.0);
-                H_gyro.at<double>(0, 0) = R2.at<double>(0, 0);
-                H_gyro.at<double>(0, 1) = R2.at<double>(0, 1);
-                H_gyro.at<double>(0, 2) = R2.at<double>(0, 2);
-                H_gyro.at<double>(1, 0) = R2.at<double>(1, 0);
-                H_gyro.at<double>(1, 1) = R2.at<double>(1, 1);
-                H_gyro.at<double>(1, 2) = R2.at<double>(1, 2);
-            }
+            H_gyro = homography_from_angles(roll_corr, pitch_corr, yaw_corr, K, Kinv);
             gyro_corr_ok = true;
         }
 
@@ -1686,7 +1697,9 @@ static void capture_loop() {
                      lk_da_raw * 180 / CV_PI, gyro_dyaw * 180 / CV_PI, corr_val);
             putText(stabilized, buf, Point(8, 33), font, 0.4, Scalar(255, 200, 0), 1, LINE_AA);
 
-            snprintf(buf, sizeof(buf), "Gyro jit Y:%+.2f",
+            snprintf(buf, sizeof(buf), "Gyro jit R:%+.2f P:%+.2f Y:%+.2f",
+                     jitter_roll * 180 / CV_PI,
+                     jitter_pitch * 180 / CV_PI,
                      jitter_yaw * 180 / CV_PI);
             putText(stabilized, buf, Point(8, 48), font, 0.4, Scalar(0, 200, 255), 1, LINE_AA);
         }

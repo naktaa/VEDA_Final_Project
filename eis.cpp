@@ -1755,7 +1755,7 @@ static void capture_loop() {
             stabsrc = g_stabsrc;
         }
 
-        Mat raw_out = frame.clone();
+        Mat raw_out = dbg ? frame.clone() : frame;
         if (dbg) {
             char buf[160];
             snprintf(buf, sizeof(buf), "mode:%s off:%+.1fms",
@@ -1787,7 +1787,9 @@ int main(int argc, char* argv[]) {
     system("fuser -k 8555/tcp 2>/dev/null");
     signal(SIGINT, sigint_handler);
     if (!parse_args(argc, argv)) return 0;
-    if (g_log_every_frames.load() < 0) g_log_every_frames = G_FPS * 2;
+    if (g_log_every_frames.load() < 0) {
+        g_log_every_frames = g_debug_overlay.load() ? (G_FPS * 2) : 0;
+    }
     gst_init(&argc, &argv);
 
     GstRTSPServer* server = gst_rtsp_server_new();

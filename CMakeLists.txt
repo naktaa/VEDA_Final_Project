@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(USE_SMS_STS "Use SMS_STS series (OFF uses SCSCL)" ON)
 
 # Path to SCServo_Linux (override with -DSCSERVO_ROOT=/path/to/SCServo_Linux)
-set(SCSERVO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../SCServo_Linux" CACHE PATH "Path to SCServo_Linux")
+set(SCSERVO_ROOT "${CMAKE_CURRENT_LIST_DIR}/SCServo_Linux" CACHE PATH "Path to SCServo_Linux")
 
 if(NOT EXISTS "${SCSERVO_ROOT}/SCS.cpp")
     message(FATAL_ERROR "SCServo_Linux not found. Set -DSCSERVO_ROOT=/path/to/SCServo_Linux (missing: ${SCSERVO_ROOT}/SCS.cpp)")

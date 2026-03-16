@@ -96,7 +96,7 @@ private:
     double k_yaw_             = 1.2;
     double max_speed_mps_     = 0.8;
     double max_yaw_rate_rps_  = 1.5;
-    double tolerance_m_       = 0.25;  // ★ 25cm
+    double tolerance_m_       = 0.10;  // ★ 10cm
 
     struct mosquitto* mosq_ = nullptr;
     std::atomic<bool> running_{false};
@@ -108,10 +108,13 @@ private:
     std::chrono::steady_clock::time_point last_pose_rx_;
 
     bool motor_ready_          = false;
+    mutable bool rotating_     = false;  // hysteresis 상태
+    mutable bool reached_      = false;  // 도착 후 새 goal 올 때까지 정지
+    mutable RcGoal last_goal_;           // goal 변경 감지용
     double track_width_m_      = 0.22;
-    double wheel_max_speed_mps_ = 0.4;
+    double wheel_max_speed_mps_ = 1.0;
     double speed_deadband_mps_ = 0.03;
-    int pwm_min_effective_     = 60;
+    int pwm_min_effective_     = 120;
     int pwm_max_               = 255;
 
 };

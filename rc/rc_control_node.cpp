@@ -338,7 +338,8 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
                                          const RcGoal& goal,
                                          RcStatus& out_status) const {
     constexpr double PI = 3.14159265358979323846;
-    constexpr double ROTATE_IN_PLACE_TH = 25.0 * PI / 180.0;
+    constexpr double ROTATE_ENTER_TH = 25.0 * PI / 180.0;  // 25도 초과 → 회전 모드
+    constexpr double ROTATE_EXIT_TH  = 10.0 * PI / 180.0;  // 10도 이내 → 전진 모드
 
     const double dx   = goal.x - pose.x;
     const double dy   = goal.y - pose.y;
@@ -348,25 +349,50 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
     const double err_yaw        = normalizeAngle(target_heading - pose.yaw);
 
     RcCommand cmd{};
-    out_status.mode     = "TRACKING";
     out_status.err_dist = dist;
     out_status.err_yaw  = err_yaw;
 
-    if (dist <= tolerance_m_) {
+    // 새 goal이 오면 reached 리셋
+    if (goal.ts_ms != last_goal_.ts_ms) {
+        last_goal_ = goal;
+        reached_   = false;
+        rotating_  = false;
+        std::cout << "[SM] NEW GOAL -> reset\n";
+    }
+
+    // 한번 도착하면 새 goal 올 때까지 정지
+    if (reached_) {
         out_status.mode    = "REACHED";
         out_status.reached = true;
         return cmd;
     }
 
+    out_status.mode = "TRACKING";
+
+    if (dist <= tolerance_m_) {
+        reached_           = true;
+        rotating_          = false;
+        out_status.mode    = "REACHED";
+        out_status.reached = true;
+        std::cout << "[SM] REACHED dist=" << dist << "\n";
+        return cmd;
+    }
+
     const double abs_err = std::fabs(err_yaw);
-    if (abs_err > ROTATE_IN_PLACE_TH) {
-        // 각도 오차 25도 초과 -> 제자리 회전만
+
+    // hysteresis: 25도 초과면 회전 모드 진입, 10도 이내면 전진 모드 진입
+    if (abs_err > ROTATE_ENTER_TH) rotating_ = true;
+    if (abs_err < ROTATE_EXIT_TH)  rotating_ = false;
+
+    if (rotating_) {
+        // 제자리 회전만
+        out_status.mode  = "ROTATE";
         cmd.speed_mps    = 0.0;
         cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
         return cmd;
     }
 
-    // 각도 오차 작으면 전진 + 미세 조향
+    // 전진 + 미세 조향
     const double heading_scale = std::max(0.2, std::cos(abs_err));
     cmd.speed_mps    = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_mps_);
     cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
@@ -538,7 +564,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);
-    node.setControlParams(0.8, 2.5, 0.4, 3.0, 0.25);
+    node.setControlParams(0.8, 1.0, 0.4, 1.5, 25.0);
 
     if (!node.start()) return 1;
     node.run();

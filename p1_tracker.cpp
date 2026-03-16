@@ -184,7 +184,7 @@ static bool openRtspCapture(const std::string& rtspUrl, cv::VideoCapture& cap)
 {
     const std::string gst =
         "rtspsrc location=" + rtspUrl +
-        " protocols=tcp latency=200 drop-on-latency=true do-rtsp-keep-alive=true tcp-timeout=5000000 ! "
+        " protocols=tcp latency=50 drop-on-latency=true do-rtsp-keep-alive=true tcp-timeout=5000000 ! "
         "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! queue leaky=downstream max-size-buffers=1 ! "
         "appsink sync=false max-buffers=1 drop=true";
 

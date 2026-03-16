@@ -12,6 +12,7 @@
 
 // ===== CONFIG (edit here) =====
 static const char* DEV = "/dev/serial0";
+// If AUTO_BAUD_SCAN is true, BAUD is used only as fallback.
 static const int BAUD = 115200;
 
 static const int PAN_ID = 1;
@@ -34,6 +35,10 @@ static const int SCSCL_SPEED = 1500;
 // SMS_STS params
 static const int STS_SPEED = 2400;
 static const int STS_ACC   = 50;
+
+// Try multiple baud rates before running control (common values).
+static const bool AUTO_BAUD_SCAN = true;
+static const int BAUD_CANDIDATES[] = {115200, 1000000, 500000, 250000, 230400};
 // ===============================
 
 #ifndef USE_SMS_STS
@@ -87,10 +92,32 @@ int main() {
 #else
     SCSCL servo;
 #endif
+    int activeBaud = BAUD;
+    bool opened = false;
+    if (AUTO_BAUD_SCAN) {
+        std::cout << "Auto baud scan...\n";
+        for (int b : BAUD_CANDIDATES) {
+            if (!servo.begin(b, DEV)) {
+                std::cout << "  baud " << b << " open failed\n";
+                continue;
+            }
+            int ping1 = servo.Ping(PAN_ID);
+            int ping2 = servo.Ping(TILT_ID);
+            std::cout << "  baud " << b << " ping: PAN_ID=" << ping1 << " TILT_ID=" << ping2 << "\n";
+            if (ping1 != -1 || ping2 != -1) {
+                activeBaud = b;
+                opened = true;
+                break;
+            }
+        }
+    }
 
-    if (!servo.begin(BAUD, DEV)) {
-        std::cerr << "Failed to open " << DEV << "\n";
-        return 1;
+    if (!opened) {
+        if (!servo.begin(BAUD, DEV)) {
+            std::cerr << "Failed to open " << DEV << "\n";
+            return 1;
+        }
+        activeBaud = BAUD;
     }
 
     TerminalRawMode rawMode;
@@ -107,6 +134,7 @@ int main() {
 #else
     std::cout << "Mode: SCSCL\n";
 #endif
+    std::cout << "Baud: " << activeBaud << "\n";
     std::cout << "W/S tilt, A/D pan, SPACE center, P print, Q quit\n";
 
     auto sendPan = [&](int v) {

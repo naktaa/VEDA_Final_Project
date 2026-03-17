@@ -104,6 +104,12 @@ enum class GyroWarpMode {
     DELTA = 1
 };
 
+enum class RunProfile {
+    RUN = 0,
+    CALIB = 1,
+    DEBUG = 2
+};
+
 // ======================== String helpers ========================
 
 inline const char* ts_source_str(TsSource s) {
@@ -143,5 +149,13 @@ inline const char* gyro_warp_str(GyroWarpMode m) {
     switch (m) {
     case GyroWarpMode::DELTA: return "DELTA";
     default: return "JITTER";
+    }
+}
+
+inline const char* profile_str(RunProfile p) {
+    switch (p) {
+    case RunProfile::CALIB: return "CALIB";
+    case RunProfile::DEBUG: return "DEBUG";
+    default: return "RUN";
     }
 }

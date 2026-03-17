@@ -19,6 +19,7 @@ std::atomic<int> g_ts_pref{(int)TsSourcePref::AUTO};
 std::atomic<bool> g_offset_sweep{false};
 std::atomic<int> g_gyro_warp_mode{(int)GyroWarpMode::JITTER};
 double g_manual_imu_offset_ms = 0.0;
+std::atomic<int> g_profile{(int)RunProfile::RUN};
 
 int64_t clock_ns(clockid_t id) {
     struct timespec ts;

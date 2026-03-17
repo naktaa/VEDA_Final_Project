@@ -282,6 +282,11 @@ void capture_loop() {
 
     GyroEIS gyro_eis(intr, cfg, &g_gyro_buffer);
 
+    RunProfile profile = (RunProfile)g_profile.load();
+    const bool profile_run = (profile == RunProfile::RUN);
+    const bool profile_calib = (profile == RunProfile::CALIB);
+    const bool profile_debug = (profile == RunProfile::DEBUG);
+
     auto estimate_lk_transform = [&](const Mat& prev, const Mat& curr,
                                      double& out_dx, double& out_dy, double& out_da) -> bool {
         std::vector<Point2f> feat_prev, feat_curr;
@@ -328,7 +333,7 @@ void capture_loop() {
     struct CalibFrame { double t_ms; double lk_da; };
     std::vector<CalibFrame> calib_frames;
     double calib_start_ms = -1.0;
-    bool do_offset_sweep = g_offset_sweep.load();
+    bool do_offset_sweep = profile_calib ? true : (profile_debug ? g_offset_sweep.load() : false);
     bool offset_calibrated = !do_offset_sweep;
     double time_offset_ms = g_manual_imu_offset_ms;
 
@@ -381,7 +386,7 @@ void capture_loop() {
             prev_time_ok = false;
             calib_frames.clear();
             calib_start_ms = -1.0;
-            do_offset_sweep = g_offset_sweep.load();
+            do_offset_sweep = profile_calib ? true : (profile_debug ? g_offset_sweep.load() : false);
             offset_calibrated = !do_offset_sweep;
             time_offset_ms = g_manual_imu_offset_ms;
             imu_err_sum = 0.0;
@@ -399,8 +404,8 @@ void capture_loop() {
             lk_disabled_warned = true;
         }
 
-        int log_every = g_log_every_frames.load();
-        bool dbg = g_debug_overlay.load();
+        int log_every = profile_debug ? g_log_every_frames.load() : 0;
+        bool dbg = profile_debug && g_debug_overlay.load();
         bool need_lk = do_offset_sweep || dbg || (log_every > 0);
 
         Mat curr_gray;
@@ -493,7 +498,7 @@ void capture_loop() {
         GyroEISDebug dbginfo{};
         Mat gyro_out = frame;
         bool gyro_ok = false;
-        if (mode != EisMode::LK) {
+        if (!profile_calib && mode != EisMode::LK) {
             gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, &dbginfo);
         }
 
@@ -501,7 +506,7 @@ void capture_loop() {
         bool trans_ok = false;
         double trans_dx = 0.0, trans_dy = 0.0, trans_da = 0.0;
         double corr_x = 0.0, corr_y = 0.0;
-        if (mode == EisMode::HYBRID || mode == EisMode::LK) {
+        if (!profile_calib && (mode == EisMode::HYBRID || mode == EisMode::LK)) {
             const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
             Mat curr_trans_gray;
             cvtColor(trans_base, curr_trans_gray, COLOR_BGR2GRAY);
@@ -642,7 +647,7 @@ void capture_loop() {
             }
         }
 
-        if (FIXED_CROP_PERCENT > 0.0) {
+        if (!profile_calib && FIXED_CROP_PERCENT > 0.0) {
             stabilized = centerCropAndResize(stabilized, FIXED_CROP_PERCENT);
         }
 

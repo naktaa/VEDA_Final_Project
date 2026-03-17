@@ -24,9 +24,11 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --log-every-frames <N>\n");
     fprintf(stderr, "  --ts-source {auto|sensor|pts|arrival}\n");
     fprintf(stderr, "  --gyro-warp {jitter|delta}\n");
+    fprintf(stderr, "  --profile {run|calib|debug}\n");
 }
 
 static bool parse_args(int argc, char* argv[]) {
+    bool profile_set = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto eat_value = [&](std::string& out) -> bool {
@@ -103,10 +105,31 @@ static bool parse_args(int argc, char* argv[]) {
             if (s == "jitter") g_gyro_warp_mode = (int)GyroWarpMode::JITTER;
             else if (s == "delta") g_gyro_warp_mode = (int)GyroWarpMode::DELTA;
             else return false;
+        } else if (a == "--profile") {
+            if (!eat_value(val)) return false;
+            std::string s = val;
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            if (s == "run") g_profile = (int)RunProfile::RUN;
+            else if (s == "calib") g_profile = (int)RunProfile::CALIB;
+            else if (s == "debug") g_profile = (int)RunProfile::DEBUG;
+            else return false;
+            profile_set = true;
+        } else if (a.rfind("--profile=", 0) == 0) {
+            std::string s = a.substr(10);
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            if (s == "run") g_profile = (int)RunProfile::RUN;
+            else if (s == "calib") g_profile = (int)RunProfile::CALIB;
+            else if (s == "debug") g_profile = (int)RunProfile::DEBUG;
+            else return false;
+            profile_set = true;
         } else {
             fprintf(stderr, "[ERR] Unknown arg: %s\n", a.c_str());
             return false;
         }
+    }
+
+    if (!profile_set && g_offset_sweep.load()) {
+        g_profile = (int)RunProfile::CALIB;
     }
     return true;
 }
@@ -115,8 +138,16 @@ int main(int argc, char* argv[]) {
     system("fuser -k 8555/tcp 2>/dev/null");
     signal(SIGINT, sigint_handler);
     if (!parse_args(argc, argv)) return 0;
+    RunProfile profile = (RunProfile)g_profile.load();
     if (g_log_every_frames.load() < 0) {
         g_log_every_frames = g_debug_overlay.load() ? (G_FPS * 2) : 0;
+    }
+    if (profile == RunProfile::RUN || profile == RunProfile::CALIB) {
+        g_debug_overlay = false;
+        g_log_every_frames = 0;
+        if (profile == RunProfile::RUN) {
+            g_offset_sweep = false;
+        }
     }
 
     gst_init(&argc, &argv);
@@ -143,6 +174,7 @@ int main(int argc, char* argv[]) {
             mode_str((EisMode)g_mode.load()));
     fprintf(stderr, "  IMU offset: %.3f ms  (sweep: %s)\n", g_manual_imu_offset_ms,
             g_offset_sweep.load() ? "on" : "off");
+    fprintf(stderr, "  Profile: %s\n", profile_str((RunProfile)g_profile.load()));
     fprintf(stderr, "  TS source: %s\n", ts_pref_str((TsSourcePref)g_ts_pref.load()));
     fprintf(stderr, "  GyroEIS smooth alpha=%.3f  warp=%s\n",
             SMOOTH_ALPHA, gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));

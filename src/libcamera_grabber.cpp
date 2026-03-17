@@ -1,6 +1,7 @@
 #include "libcamera_grabber.hpp"
 
 #include <cstdio>
+#include <sys/mman.h>
 
 #include "eis_globals.hpp"
 
@@ -210,4 +211,3 @@ void LibcameraGrabber::request_complete(libcamera::Request *request) {
     queue_.push_back(request);
     cv_.notify_one();
 }
-

@@ -121,11 +121,15 @@ static const double HFOV_DEG = 62.2;
 static const double VFOV_DEG = 48.8;
 
 // IMU 축 매핑
-static const int IMU_AXIS_ROLL = 0;
-static const int IMU_AXIS_PITCH = 1;
-static const int IMU_AXIS_YAW = 2;
+// Axis mapping (from gyro_axis_plot test):
+// Yaw right  -> gy negative
+// Pitch up   -> gx negative
+// Roll CW    -> gz positive
+static const int IMU_AXIS_ROLL = 2;   // gz
+static const int IMU_AXIS_PITCH = 0;  // gx
+static const int IMU_AXIS_YAW = 1;    // gy
 static const int IMU_SIGN_ROLL = 1;
-static const int IMU_SIGN_PITCH = 1;
+static const int IMU_SIGN_PITCH = -1;
 static const int IMU_SIGN_YAW = -1;
 static const int CALIB_SAMPLES = 300;
 static const bool DEFAULT_DEBUG_OVERLAY = false;

@@ -28,6 +28,9 @@ namespace {
     int g_pwm = 200;
     int g_left_cmd = 0;
     int g_right_cmd = 0;
+    int g_last_print_l = 999;
+    int g_last_print_r = 999;
+    int g_last_print_pwm = -1;
     std::chrono::steady_clock::time_point g_last_motion;
     const int motion_hold_timeout_ms = 200;
 
@@ -180,8 +183,13 @@ bool handle_key(char ch) {
     if (consumed) {
         g_last_motion = std::chrono::steady_clock::now();
         applyDrive(g_left_cmd, g_right_cmd, g_pwm);
-        fprintf(stderr, "[TANK] L=%d R=%d PWM=%d\n", g_left_cmd, g_right_cmd, g_pwm);
-        fflush(stderr);
+        if (g_left_cmd != g_last_print_l || g_right_cmd != g_last_print_r || g_pwm != g_last_print_pwm) {
+            fprintf(stderr, "[TANK] L=%d R=%d PWM=%d\n", g_left_cmd, g_right_cmd, g_pwm);
+            fflush(stderr);
+            g_last_print_l = g_left_cmd;
+            g_last_print_r = g_right_cmd;
+            g_last_print_pwm = g_pwm;
+        }
     }
     return consumed;
 }
@@ -196,8 +204,9 @@ void tick() {
         applyDrive(g_left_cmd, g_right_cmd, g_pwm);
         fprintf(stderr, "[TANK] auto-stop (idle)\n");
         fflush(stderr);
+        g_last_print_l = g_left_cmd;
+        g_last_print_r = g_right_cmd;
     }
 }
 
 } // namespace tank_drive
-

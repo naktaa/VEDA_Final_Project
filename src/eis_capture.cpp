@@ -29,6 +29,16 @@ struct CapturedFrame {
     uint64_t index = 0;
 };
 
+static cv::Mat centerCropAndResize(const cv::Mat& in, double cropPercent) {
+    if (in.empty() || cropPercent <= 0.0) return in;
+    int cw = (int)(in.cols * cropPercent / 200.0);
+    int ch = (int)(in.rows * cropPercent / 200.0);
+    cv::Rect roi(cw, ch, in.cols - 2 * cw, in.rows - 2 * ch);
+    cv::Mat out;
+    cv::resize(in(roi), out, in.size(), 0, 0, cv::INTER_LINEAR);
+    return out;
+}
+
 static cv::Mat ensureBGR(const cv::Mat& in) {
     if (in.empty()) return cv::Mat();
     cv::Mat out = in;
@@ -258,7 +268,7 @@ void capture_loop() {
     cfg.max_pitch_rad = MAX_PITCH_RAD;
     cfg.max_yaw_rad = MAX_YAW_RAD;
     cfg.crop_percent = FIXED_CROP_PERCENT;
-    cfg.enable_crop = (FIXED_CROP_PERCENT > 0.0);
+    cfg.enable_crop = false; // crop after all warps
 
     GyroEIS gyro_eis(intr, cfg, &g_gyro_buffer);
 
@@ -297,6 +307,9 @@ void capture_loop() {
         double smooth_x = 0.0;
         double smooth_y = 0.0;
         bool smooth_init = false;
+        int frame_count = 0;
+        double last_corr_x = 0.0;
+        double last_corr_y = 0.0;
     };
     TransState trans;
 
@@ -476,7 +489,9 @@ void capture_loop() {
             const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
             Mat curr_trans_gray;
             cvtColor(trans_base, curr_trans_gray, COLOR_BGR2GRAY);
-            if (trans.ok) {
+            trans.frame_count++;
+            bool do_lk = (trans.frame_count % std::max(1, LK_TRANS_EVERY_N) == 0);
+            if (trans.ok && do_lk) {
                 trans_ok = estimate_lk_transform(trans.prev_gray, curr_trans_gray,
                                                  trans_dx, trans_dy, trans_da);
                 if (trans_ok) {
@@ -492,13 +507,20 @@ void capture_loop() {
                     }
                     corr_x = std::clamp(trans.smooth_x - trans.path_x, -LK_TRANS_MAX_CORR_PX, LK_TRANS_MAX_CORR_PX);
                     corr_y = std::clamp(trans.smooth_y - trans.path_y, -LK_TRANS_MAX_CORR_PX, LK_TRANS_MAX_CORR_PX);
-                    Mat Ht = (Mat_<double>(3, 3) << 1, 0, corr_x,
-                                                   0, 1, corr_y,
-                                                   0, 0, 1);
-                    warpPerspective(trans_base, stabilized, Ht, trans_base.size(), INTER_LINEAR, BORDER_CONSTANT);
+                    trans.last_corr_x = corr_x;
+                    trans.last_corr_y = corr_y;
                 } else {
-                    stabilized = trans_base;
+                    trans.last_corr_x = 0.0;
+                    trans.last_corr_y = 0.0;
                 }
+            }
+
+            corr_x = trans.last_corr_x;
+            corr_y = trans.last_corr_y;
+            if (std::abs(corr_x) > 1e-6 || std::abs(corr_y) > 1e-6) {
+                Mat Ht = (Mat_<double>(2, 3) << 1, 0, corr_x,
+                                               0, 1, corr_y);
+                warpAffine(trans_base, stabilized, Ht, trans_base.size(), INTER_LINEAR, BORDER_REPLICATE);
             } else {
                 stabilized = trans_base;
             }
@@ -589,6 +611,10 @@ void capture_loop() {
                         "[TRANS] dx=%.2f dy=%.2f corr=%.2f %.2f\n",
                         trans_dx, trans_dy, corr_x, corr_y);
             }
+        }
+
+        if (FIXED_CROP_PERCENT > 0.0) {
+            stabilized = centerCropAndResize(stabilized, FIXED_CROP_PERCENT);
         }
 
         GstAppSrc *rawsrc, *stabsrc;

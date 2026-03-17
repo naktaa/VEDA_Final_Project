@@ -33,6 +33,7 @@ inline constexpr double LK_MIN_DIST = 30.0;
 inline constexpr int LK_TRANS_MIN_FEATURES = 12;
 inline constexpr double LK_TRANS_ALPHA = 0.90;
 inline constexpr double LK_TRANS_MAX_CORR_PX = 30.0;
+inline constexpr int LK_TRANS_EVERY_N = 2; // run LK translation every N frames
 
 // Crop
 inline constexpr double FIXED_CROP_PERCENT = 20.0;

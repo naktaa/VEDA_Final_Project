@@ -301,6 +301,7 @@ void capture_loop() {
 
     struct TransState {
         Mat prev_gray;
+        Mat prev_small;
         bool ok = false;
         double path_x = 0.0;
         double path_y = 0.0;
@@ -310,6 +311,7 @@ void capture_loop() {
         int frame_count = 0;
         double last_corr_x = 0.0;
         double last_corr_y = 0.0;
+        double scale = 0.5;
     };
     TransState trans;
 
@@ -489,12 +491,24 @@ void capture_loop() {
             const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
             Mat curr_trans_gray;
             cvtColor(trans_base, curr_trans_gray, COLOR_BGR2GRAY);
+            Mat curr_small;
+            if (trans.scale > 0.0 && trans.scale < 1.0) {
+                cv::resize(curr_trans_gray, curr_small, cv::Size(), trans.scale, trans.scale, cv::INTER_LINEAR);
+            } else {
+                curr_small = curr_trans_gray;
+            }
             trans.frame_count++;
             bool do_lk = (trans.frame_count % std::max(1, LK_TRANS_EVERY_N) == 0);
             if (trans.ok && do_lk) {
-                trans_ok = estimate_lk_transform(trans.prev_gray, curr_trans_gray,
+                const Mat& prev_use = trans.prev_small.empty() ? trans.prev_gray : trans.prev_small;
+                const Mat& curr_use = curr_small;
+                trans_ok = estimate_lk_transform(prev_use, curr_use,
                                                  trans_dx, trans_dy, trans_da);
                 if (trans_ok) {
+                    if (!trans.prev_small.empty() && trans.scale > 0.0) {
+                        trans_dx /= trans.scale;
+                        trans_dy /= trans.scale;
+                    }
                     trans.path_x += trans_dx;
                     trans.path_y += trans_dy;
                     if (!trans.smooth_init) {
@@ -525,6 +539,7 @@ void capture_loop() {
                 stabilized = trans_base;
             }
             trans.prev_gray = curr_trans_gray.clone();
+            trans.prev_small = curr_small.clone();
             trans.ok = true;
         }
 

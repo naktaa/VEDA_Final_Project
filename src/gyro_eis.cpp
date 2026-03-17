@@ -340,7 +340,7 @@ bool GyroEIS::process(const cv::Mat& frame, double frame_time_ms, double imu_off
 
     cv::Mat H = warp_.homography_from_quat(q_corr);
 
-    cv::warpPerspective(frame, out, H, frame.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+    cv::warpPerspective(frame, out, H, frame.size(), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
 
     if (cfg_.enable_crop && cfg_.crop_percent > 0.0) {
         int cw = (int)(out.cols * cfg_.crop_percent / 200.0);

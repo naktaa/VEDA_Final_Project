@@ -18,22 +18,22 @@ inline constexpr int IMU_ADDR = 0x68;
 inline constexpr double GYRO_SENSITIVITY = 131.0;
 
 // Gyro smoothing / clamp (gyro-first path)
-inline constexpr double SMOOTH_ALPHA = 0.985;
-inline constexpr double ROLL_GAIN = 0.9;
-inline constexpr double PITCH_GAIN = 0.8;
-inline constexpr double YAW_GAIN = 0.9;
-inline constexpr double MAX_YAW_RAD = 10.0 * CV_PI / 180.0;
-inline constexpr double MAX_ROLL_RAD = 6.0 * CV_PI / 180.0;
-inline constexpr double MAX_PITCH_RAD = 5.0 * CV_PI / 180.0;
+inline constexpr double SMOOTH_ALPHA = 0.95;
+inline constexpr double ROLL_GAIN = 1.0;
+inline constexpr double PITCH_GAIN = 1.0;
+inline constexpr double YAW_GAIN = 1.0;
+inline constexpr double MAX_YAW_RAD = 8.0 * CV_PI / 180.0;
+inline constexpr double MAX_ROLL_RAD = 5.0 * CV_PI / 180.0;
+inline constexpr double MAX_PITCH_RAD = 4.0 * CV_PI / 180.0;
 
 // LK (offset sweep/debug only)
-inline constexpr int LK_MAX_FEATURES = 200;
+inline constexpr int LK_MAX_FEATURES = 150;
 inline constexpr double LK_QUALITY = 0.01;
 inline constexpr double LK_MIN_DIST = 30.0;
 inline constexpr int LK_TRANS_MIN_FEATURES = 12;
-inline constexpr double LK_TRANS_ALPHA = 0.90;
-inline constexpr double LK_TRANS_MAX_CORR_PX = 30.0;
-inline constexpr int LK_TRANS_EVERY_N = 2; // run LK translation every N frames
+inline constexpr double LK_TRANS_ALPHA = 0.70;
+inline constexpr double LK_TRANS_MAX_CORR_PX = 20.0;
+inline constexpr int LK_TRANS_EVERY_N = 3; // run LK translation every N frames
 
 // Crop
 inline constexpr double FIXED_CROP_PERCENT = 20.0;

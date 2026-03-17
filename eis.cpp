@@ -1,18 +1,19 @@
 /**
- * eis_opus_test.cpp — 하이브리드 EIS (LK OptFlow + 동적 칼만 + 자이로 고주파 부스트)
+ * eis.cpp - Gyro-first EIS (Quaternion)
  *
- * 보정 원리 (2단계):
- *   1단계: LK Optical Flow + 동적 칼만 필터 → prev_frame에 smoothed 변환 적용
- *          - 큰 움직임: Q↑ R↓ (빠르게 따라감 → 여백 최소화)
- *          - 작은 떨림: Q↓ R↑ (강하게 평활 → 부드러운 영상)
- *          - 시그모이드 블렌딩으로 부드러운 전환
- *   2단계: 자이로 고주파 필터 → 1단계 결과에 추가 회전 보정
- *          (30fps 사이의 고주파 진동만 잡음)
+ * Main path:
+ *   - Gyro 3-axis integration (quaternion)
+ *   - Virtual camera smoothing (slerp)
+ *   - Correction rotation -> H = K * R_corr * K^-1
+ *   - warpPerspective + center crop
  *
- * RTSP 출력:
- *   /raw  — 원본 영상
- *   /cam  — EIS 보정 영상
+ * LK optical flow is kept only for offset sweep/debug comparison.
+ *
+ * RTSP outputs:
+ *   /raw  original
+ *   /cam  stabilized
  */
+
 
 #include <opencv2/opencv.hpp>
 
@@ -56,6 +57,8 @@
 #include <libcamera/framebuffer_allocator.h>
 #include <libcamera/formats.h>
 #include <libcamera/base/span.h>
+
+#include "gyro_eis.hpp"
 
 using namespace std;
 using namespace cv;
@@ -175,7 +178,7 @@ enum class GyroWarpMode {
     DELTA = 1
 };
 
-static std::atomic<int> g_mode{(int)EisMode::LK};
+static std::atomic<int> g_mode{(int)EisMode::GYRO};
 static std::atomic<int> g_output_mode{(int)OutputMode::BOTH};
 static std::atomic<bool> g_debug_overlay{DEFAULT_DEBUG_OVERLAY};
 static std::atomic<int> g_log_every_frames{-1};
@@ -184,16 +187,8 @@ static std::atomic<bool> g_offset_sweep{false};
 static std::atomic<int> g_gyro_warp_mode{(int)GyroWarpMode::JITTER};
 static double g_manual_imu_offset_ms = 0.0;
 
-struct ImuPose {
-    double roll, pitch, yaw; // integrated angles (rad)
-    double gyro_roll_rate, gyro_pitch_rate, gyro_yaw_rate; // bias-corrected rates (rad/s)
-    double smooth_roll_rate, smooth_pitch_rate, smooth_yaw_rate; // EMA smoothed rates (rad/s)
-    double raw_gx, raw_gy, raw_gz; // raw sensor counts (LSB)
-    double timestamp_ms; // monotonic raw ms
-};
-
-// IMU 링버퍼: 최근 샘플 저장 (타임스탬프 포함)
-static std::deque<ImuPose> g_imu_buffer;
+static GyroBuffer g_gyro_buffer(IMU_STORE_SIZE);
+static GyroSample g_last_gyro_sample;
 static std::atomic<double> g_imu_actual_hz{0}; // 실측 샘플링 레이트 (atomic → lock 불필요)
 
 // 프로그램 시작 시점 기준 ms 반환
@@ -319,111 +314,55 @@ static bool get_reference_timestamp_ns(GstBuffer* buffer, int64_t& out_ns) {
     return false;
 }
 
-static bool imu_average_from_seq(const std::deque<ImuPose>& buf,
-                                 double target_ms,
-                                 double window_ms,
-                                 int max_samples,
-                                 ImuPose& out,
-                                 double& err_ms,
-                                 int* out_count,
-                                 double* out_min_ts,
-                                 double* out_max_ts) {
-    if (buf.empty() || window_ms <= 0) return false;
-    const double t_lo = target_ms - window_ms;
-    const double t_hi = target_ms + window_ms;
-
-    int count = 0;
-    double sum_roll = 0, sum_pitch = 0;
-    double sum_rr = 0, sum_pr = 0, sum_yr = 0;
-    double sum_srr = 0, sum_spr = 0, sum_syr = 0;
-    double sum_gx = 0, sum_gy = 0, sum_gz = 0;
-    double sum_sin_y = 0, sum_cos_y = 0;
-    double sum_ts = 0;
-    double min_ts = 1e18, max_ts = -1e18;
-
-    // buffer is time-ordered
-    for (const auto& s : buf) {
-        if (s.timestamp_ms < t_lo) continue;
-        if (s.timestamp_ms > t_hi) break;
-        sum_roll += s.roll;
-        sum_pitch += s.pitch;
-        sum_rr += s.gyro_roll_rate;
-        sum_pr += s.gyro_pitch_rate;
-        sum_yr += s.gyro_yaw_rate;
-        sum_srr += s.smooth_roll_rate;
-        sum_spr += s.smooth_pitch_rate;
-        sum_syr += s.smooth_yaw_rate;
-        sum_gx += s.raw_gx;
-        sum_gy += s.raw_gy;
-        sum_gz += s.raw_gz;
-        sum_sin_y += sin(s.yaw);
-        sum_cos_y += cos(s.yaw);
-        sum_ts += s.timestamp_ms;
-        min_ts = std::min(min_ts, s.timestamp_ms);
-        max_ts = std::max(max_ts, s.timestamp_ms);
-        count++;
-        if (max_samples > 0 && count >= max_samples) break;
+static bool integrate_gyro_delta(const GyroBuffer& buf, double t0_ms, double t1_ms,
+                                 cv::Vec3d& out_delta, GyroRangeInfo* info = nullptr) {
+    out_delta = cv::Vec3d(0, 0, 0);
+    if (t1_ms <= t0_ms) return false;
+    std::vector<GyroSample> samples;
+    GyroRangeInfo tmp;
+    if (!buf.get_range(t0_ms, t1_ms, samples, &tmp)) {
+        if (info) *info = tmp;
+        return false;
     }
-
-    if (count == 0) {
-        // fallback to nearest sample
-        const ImuPose* best = &buf.front();
-        double best_err = std::abs(target_ms - best->timestamp_ms);
-        for (const auto& s : buf) {
-            double e = std::abs(target_ms - s.timestamp_ms);
-            if (e < best_err) { best_err = e; best = &s; }
-            if (s.timestamp_ms > target_ms && e > best_err) break;
-        }
-        out = *best;
-        err_ms = target_ms - best->timestamp_ms;
-        if (out_count) *out_count = 1;
-        if (out_min_ts) *out_min_ts = best->timestamp_ms;
-        if (out_max_ts) *out_max_ts = best->timestamp_ms;
-        return true;
+    double t_prev = t0_ms;
+    cv::Vec3d w_prev = samples.front().w_rad;
+    int used = 0;
+    for (const auto& s : samples) {
+        double t = std::clamp(s.t_ms, t0_ms, t1_ms);
+        if (t <= t_prev) { w_prev = s.w_rad; continue; }
+        double dt = (t - t_prev) / 1000.0;
+        out_delta += w_prev * dt;
+        t_prev = t;
+        w_prev = s.w_rad;
+        used++;
     }
-
-    double inv = 1.0 / count;
-    out.roll = sum_roll * inv;
-    out.pitch = sum_pitch * inv;
-    out.yaw = atan2(sum_sin_y, sum_cos_y);
-    out.gyro_roll_rate = sum_rr * inv;
-    out.gyro_pitch_rate = sum_pr * inv;
-    out.gyro_yaw_rate = sum_yr * inv;
-    out.smooth_roll_rate = sum_srr * inv;
-    out.smooth_pitch_rate = sum_spr * inv;
-    out.smooth_yaw_rate = sum_syr * inv;
-    out.raw_gx = sum_gx * inv;
-    out.raw_gy = sum_gy * inv;
-    out.raw_gz = sum_gz * inv;
-    out.timestamp_ms = sum_ts * inv;
-    err_ms = target_ms - out.timestamp_ms;
-    if (out_count) *out_count = count;
-    if (out_min_ts) *out_min_ts = min_ts;
-    if (out_max_ts) *out_max_ts = max_ts;
+    if (t_prev < t1_ms) {
+        double dt = (t1_ms - t_prev) / 1000.0;
+        out_delta += w_prev * dt;
+    }
+    if (info) {
+        *info = tmp;
+        info->used = used;
+    }
     return true;
 }
 
+static cv::Vec3d quat_to_euler_deg(const Quaternion& q) {
+    // ZYX (yaw-pitch-roll)
+    double sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z);
+    double cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
+    double roll = std::atan2(sinr_cosp, cosr_cosp);
 
-static bool imu_sample_at(double target_ms, ImuPose& out, double& err_ms,
-                          int* out_count = nullptr,
-                          double* out_min_ts = nullptr,
-                          double* out_max_ts = nullptr) {
-    std::lock_guard<std::mutex> lk(g_imu_mtx);
-    return imu_average_from_seq(g_imu_buffer, target_ms, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
-                                out, err_ms, out_count, out_min_ts, out_max_ts);
-}
+    double sinp = 2.0 * (q.w * q.y - q.z * q.x);
+    double pitch = 0.0;
+    if (std::abs(sinp) >= 1.0) pitch = std::copysign(CV_PI / 2.0, sinp);
+    else pitch = std::asin(sinp);
 
-static double unwrap_angle(double prev, double curr) {
-    double diff = curr - prev;
-    while (diff > CV_PI) {
-        curr -= 2.0 * CV_PI;
-        diff = curr - prev;
-    }
-    while (diff < -CV_PI) {
-        curr += 2.0 * CV_PI;
-        diff = curr - prev;
-    }
-    return curr;
+    double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+    double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    double yaw = std::atan2(siny_cosp, cosy_cosp);
+
+    return cv::Vec3d(roll, pitch, yaw) * (180.0 / CV_PI);
 }
 
 static Mat homography_from_angles(double roll, double pitch, double yaw, const Mat& K, const Mat& Kinv) {
@@ -1055,11 +994,8 @@ static void imu_loop() {
     }
     fprintf(stderr, "[IMU] Calibration done (bias: gx=%.1f gy=%.1f gz=%.1f)\n", bias_gx, bias_gy, bias_gz);
 
-    double gyro_roll = 0, gyro_pitch = 0, gyro_yaw = 0;
-    double smooth_rr = 0, smooth_pr = 0, smooth_yr = 0;
-    bool smooth_rate_init = false;
     g_imu_ready = true;
-    fprintf(stderr, "[IMU] Ready (target: %dHz, buffer: %d samples)\n", IMU_TARGET_HZ, IMU_BUFFER_SIZE);
+    fprintf(stderr, "[IMU] Ready (target: %dHz, buffer: %d samples)\n", IMU_TARGET_HZ, IMU_STORE_SIZE);
 
     int64_t last_time_ns = clock_ns(CLOCK_MONOTONIC_RAW);
 
@@ -1088,35 +1024,14 @@ static void imu_loop() {
         double roll_rate = IMU_SIGN_ROLL * pick_axis(IMU_AXIS_ROLL, gx_rad, gy_rad, gz_rad);
         double pitch_rate = IMU_SIGN_PITCH * pick_axis(IMU_AXIS_PITCH, gx_rad, gy_rad, gz_rad);
         double yaw_rate = IMU_SIGN_YAW * pick_axis(IMU_AXIS_YAW, gx_rad, gy_rad, gz_rad);
-        gyro_roll += roll_rate * dt;
-        gyro_pitch += pitch_rate * dt;
-        gyro_yaw += yaw_rate * dt;
-
-        if (!smooth_rate_init) {
-            smooth_rr = roll_rate;
-            smooth_pr = pitch_rate;
-            smooth_yr = yaw_rate;
-            smooth_rate_init = true;
-        } else {
-            smooth_rr = IMU_RATE_SMOOTH_ALPHA * smooth_rr + (1.0 - IMU_RATE_SMOOTH_ALPHA) * roll_rate;
-            smooth_pr = IMU_RATE_SMOOTH_ALPHA * smooth_pr + (1.0 - IMU_RATE_SMOOTH_ALPHA) * pitch_rate;
-            smooth_yr = IMU_RATE_SMOOTH_ALPHA * smooth_yr + (1.0 - IMU_RATE_SMOOTH_ALPHA) * yaw_rate;
-        }
-
-        // 샘플 준비 (lock 밖에서)
         double ts = now_ms();
-        ImuPose sample = {gyro_roll, gyro_pitch, gyro_yaw,
-                          roll_rate, pitch_rate, yaw_rate,
-                          smooth_rr, smooth_pr, smooth_yr,
-                          raw_gx, raw_gy, raw_gz,
-                          ts};
+        GyroSample sample;
+        sample.t_ms = ts;
+        sample.w_rad = cv::Vec3d(roll_rate, pitch_rate, yaw_rate);
+        sample.raw = cv::Vec3d(raw_gx, raw_gy, raw_gz);
+        g_gyro_buffer.push(sample);
+        g_last_gyro_sample = sample;
 
-        { // 최소 임계구간: push + pop만
-            std::lock_guard<std::mutex> lk(g_imu_mtx);
-            g_imu_buffer.push_back(sample);
-            if ((int)g_imu_buffer.size() > IMU_STORE_SIZE)
-                g_imu_buffer.pop_front();
-        }
         if (dt > 0) {
             double hz = 1.0 / dt;
             double prev = g_imu_actual_hz.load();
@@ -1323,23 +1238,43 @@ static void capture_loop() {
         return use_libcamera ? pull_frame_lc(out) : pull_frame_gst(out);
     };
 
-    const Point2f center((float)G_WIDTH * 0.5f, (float)G_HEIGHT * 0.5f);
-    Mat K = camera_matrix_from_fov(G_WIDTH, G_HEIGHT, HFOV_DEG, VFOV_DEG);
-    Mat Kinv = K.inv();
+    CameraIntrinsics intr = CameraIntrinsics::from_fov(G_WIDTH, G_HEIGHT, HFOV_DEG, VFOV_DEG);
+    EISConfig cfg;
+    cfg.smooth_alpha = SMOOTH_ALPHA;
+    cfg.roll_gain = ROLL_GAIN;
+    cfg.pitch_gain = PITCH_GAIN;
+    cfg.yaw_gain = YAW_GAIN;
+    cfg.max_roll_rad = MAX_ROLL_RAD;
+    cfg.max_pitch_rad = MAX_PITCH_RAD;
+    cfg.max_yaw_rad = MAX_YAW_RAD;
+    cfg.crop_percent = FIXED_CROP_PERCENT;
+    cfg.enable_crop = (FIXED_CROP_PERCENT > 0.0);
+
+    GyroEIS gyro_eis(intr, cfg, &g_gyro_buffer);
+
+    auto estimate_lk_da = [&](const Mat& prev, const Mat& curr, double& out_da) -> bool {
+        std::vector<Point2f> feat_prev, feat_curr;
+        std::vector<uchar> status;
+        std::vector<float> err_vec;
+        goodFeaturesToTrack(prev, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
+        if (feat_prev.size() < 10) return false;
+        calcOpticalFlowPyrLK(prev, curr, feat_prev, feat_curr, status, err_vec);
+        std::vector<Point2f> gp, gc;
+        for (size_t i = 0; i < status.size(); ++i) {
+            if (status[i]) { gp.push_back(feat_prev[i]); gc.push_back(feat_curr[i]); }
+        }
+        if (gp.size() < 6) return false;
+        Mat affine = estimateAffinePartial2D(gp, gc);
+        if (affine.empty()) return false;
+        out_da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+        return true;
+    };
 
     guint64 frameIdx = 0;
-
-    GyroSmoothState gs = {0, 0, 0, false, 0, false};
-
-    Mat prev_gray;
-    Mat prev_frame;
-    int frame_count = 0;
+    Mat prev_lk_gray;
+    bool prev_lk_ok = false;
     double prev_frame_time_ms = 0.0;
     bool prev_time_ok = false;
-    KalmanState kf_theta, kf_tx, kf_ty;
-    kalman_init(kf_theta, KF_Q, KF_R);
-    kalman_init(kf_tx, KF_Q, KF_R);
-    kalman_init(kf_ty, KF_Q, KF_R);
 
     struct CalibFrame { double t_ms; double lk_da; };
     std::vector<CalibFrame> calib_frames;
@@ -1347,15 +1282,10 @@ static void capture_loop() {
     bool do_offset_sweep = g_offset_sweep.load();
     bool offset_calibrated = !do_offset_sweep;
     double time_offset_ms = g_manual_imu_offset_ms;
-    Mat prev_calib_gray;
-    bool calib_prev_ok = false;
 
     // Sweep quality gates
     const double SWEEP_MAX_ERR_MS = 8.0;
     const int SWEEP_MIN_SAMPLES = 5;
-
-    std::deque<double> crop_scales;
-    double smooth_crop_percent = FIXED_CROP_PERCENT;
 
     double imu_err_sum = 0.0;
     double imu_err_max = 0.0;
@@ -1367,13 +1297,7 @@ static void capture_loop() {
     const int corr_window = std::max(10, G_FPS);
 
     EisMode last_mode = (EisMode)g_mode.load();
-
-    struct ImuSampleInfo {
-        int count = 0;
-        double min_ts = 0.0;
-        double max_ts = 0.0;
-        double err_ms = 0.0;
-    };
+    bool lk_disabled_warned = false;
 
     while (g_running) {
         CapturedFrame cap;
@@ -1398,85 +1322,69 @@ static void capture_loop() {
 
         EisMode mode = (EisMode)g_mode.load();
         if (mode != last_mode) {
-            prev_gray.release();
-            prev_frame.release();
-            frame_count = 0;
-            kalman_init(kf_theta, KF_Q, KF_R);
-            kalman_init(kf_tx, KF_Q, KF_R);
-            kalman_init(kf_ty, KF_Q, KF_R);
-            gs.initialized = false;
-            gs.yaw_initialized = false;
+            gyro_eis.reset();
+            prev_lk_gray.release();
+            prev_lk_ok = false;
             prev_time_ok = false;
-            corr_buf.clear();
-            corr_val = 0.0;
-            crop_scales.clear();
-            smooth_crop_percent = FIXED_CROP_PERCENT;
+            calib_frames.clear();
+            calib_start_ms = -1.0;
+            do_offset_sweep = g_offset_sweep.load();
+            offset_calibrated = !do_offset_sweep;
+            time_offset_ms = g_manual_imu_offset_ms;
             imu_err_sum = 0.0;
             imu_err_max = 0.0;
             imu_err_cnt = 0;
+            corr_buf.clear();
+            corr_val = 0.0;
+            lk_disabled_warned = false;
             last_mode = mode;
             fprintf(stderr, "[MODE] switched to %s\n", mode_str(mode));
         }
 
+        if (mode != EisMode::GYRO && !lk_disabled_warned) {
+            fprintf(stderr, "[MODE] %s requested -> gyro-first stage uses GYRO only\n", mode_str(mode));
+            lk_disabled_warned = true;
+        }
+
+        int log_every = g_log_every_frames.load();
+        bool dbg = g_debug_overlay.load();
+        bool need_lk = do_offset_sweep || dbg || (log_every > 0);
+
         Mat curr_gray;
-        cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
+        double lk_da = 0.0;
+        bool lk_ok = false;
+        if (need_lk) {
+            cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
+            if (prev_lk_ok) {
+                lk_ok = estimate_lk_da(prev_lk_gray, curr_gray, lk_da);
+            }
+            prev_lk_gray = curr_gray.clone();
+            prev_lk_ok = true;
+        }
 
         if (g_imu_ready.load() && do_offset_sweep) {
             if (calib_start_ms < 0.0) calib_start_ms = frame_time_ms;
 
             if (!offset_calibrated && (frame_time_ms - calib_start_ms) <= OFFSET_CALIB_DURATION_MS) {
-                if (calib_prev_ok) {
-                    std::vector<Point2f> feat_prev, feat_curr;
-                    goodFeaturesToTrack(prev_calib_gray, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
-                    if (feat_prev.size() >= 10) {
-                        std::vector<uchar> status;
-                        std::vector<float> err_vec;
-                        calcOpticalFlowPyrLK(prev_calib_gray, curr_gray, feat_prev, feat_curr, status, err_vec);
-
-                        std::vector<Point2f> gp, gc;
-                        for (size_t i = 0; i < status.size(); i++) {
-                            if (status[i]) {
-                                gp.push_back(feat_prev[i]);
-                                gc.push_back(feat_curr[i]);
-                            }
-                        }
-                        if (gp.size() >= 6) {
-                            Mat affine = estimateAffinePartial2D(gp, gc);
-                            if (!affine.empty()) {
-                                double da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
-                                calib_frames.push_back({frame_time_ms, da});
-                            }
-                        }
-                    }
-                }
-                prev_calib_gray = curr_gray.clone();
-                calib_prev_ok = true;
+                if (lk_ok) calib_frames.push_back({frame_time_ms, lk_da});
             } else if (!offset_calibrated && (frame_time_ms - calib_start_ms) > OFFSET_CALIB_DURATION_MS) {
-                std::deque<ImuPose> imu_copy;
-                {
-                    std::lock_guard<std::mutex> lk(g_imu_mtx);
-                    imu_copy = g_imu_buffer;
-                }
-                    if (calib_frames.size() >= 8 && imu_copy.size() >= 10) {
-                        double base_off = g_manual_imu_offset_ms;
-                        auto cost_for = [&](double delta_ms) -> double {
-                            double off_ms = base_off + delta_ms;
-                            double sum = 0.0;
-                            int n = 0;
+                if (calib_frames.size() >= 8 && g_gyro_buffer.size() >= 10) {
+                    double base_off = g_manual_imu_offset_ms;
+                    auto cost_for = [&](double delta_ms) -> double {
+                        double off_ms = base_off + delta_ms;
+                        double sum = 0.0;
+                        int n = 0;
                         for (size_t i = 1; i < calib_frames.size(); ++i) {
                             double t0 = calib_frames[i - 1].t_ms + off_ms;
                             double t1 = calib_frames[i].t_ms + off_ms;
-                            ImuPose p0, p1;
-                            double err;
-                            int c0 = 0, c1 = 0;
-                            double r0_min = 0.0, r0_max = 0.0, r1_min = 0.0, r1_max = 0.0;
-                            if (!imu_average_from_seq(imu_copy, t0, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
-                                                      p0, err, &c0, &r0_min, &r0_max)) continue;
-                            if (c0 < SWEEP_MIN_SAMPLES || std::abs(err) > SWEEP_MAX_ERR_MS) continue;
-                            if (!imu_average_from_seq(imu_copy, t1, IMU_AVG_WINDOW_MS, IMU_AVG_MAX_SAMPLES,
-                                                      p1, err, &c1, &r1_min, &r1_max)) continue;
-                            if (c1 < SWEEP_MIN_SAMPLES || std::abs(err) > SWEEP_MAX_ERR_MS) continue;
-                            double imu_dyaw = p1.yaw - p0.yaw;
+                            cv::Vec3d delta;
+                            GyroRangeInfo rinfo;
+                            if (!integrate_gyro_delta(g_gyro_buffer, t0, t1, delta, &rinfo)) continue;
+                            if (rinfo.used < SWEEP_MIN_SAMPLES) continue;
+                            double err0 = std::abs(t0 - rinfo.min_ts);
+                            double err1 = std::abs(t1 - rinfo.max_ts);
+                            if (err0 > SWEEP_MAX_ERR_MS || err1 > SWEEP_MAX_ERR_MS) continue;
+                            double imu_dyaw = delta[2];
                             double diff = calib_frames[i].lk_da - imu_dyaw;
                             sum += diff * diff;
                             n++;
@@ -1485,267 +1393,87 @@ static void capture_loop() {
                         return sum / n;
                     };
 
-                        double best_off = 0.0;
-                        double best_cost = 1e18;
-                        for (double off = -OFFSET_COARSE_RANGE_MS; off <= OFFSET_COARSE_RANGE_MS; off += OFFSET_COARSE_STEP_MS) {
-                            double c = cost_for(off);
-                            if (c < best_cost) { best_cost = c; best_off = off; }
-                        }
-                        for (double off = best_off - OFFSET_FINE_RANGE_MS; off <= best_off + OFFSET_FINE_RANGE_MS; off += OFFSET_FINE_STEP_MS) {
-                            double c = cost_for(off);
-                            if (c < best_cost) { best_cost = c; best_off = off; }
-                        }
-                        if (best_cost < 1e17) {
-                            time_offset_ms = base_off + best_off;
-                        } else {
-                            time_offset_ms = base_off;
-                            fprintf(stderr, "[SYNC] sweep failed (insufficient valid samples)\n");
-                        }
-                    } else {
-                        time_offset_ms = g_manual_imu_offset_ms;
+                    double best_off = 0.0;
+                    double best_cost = 1e18;
+                    for (double off = -OFFSET_COARSE_RANGE_MS; off <= OFFSET_COARSE_RANGE_MS; off += OFFSET_COARSE_STEP_MS) {
+                        double c = cost_for(off);
+                        if (c < best_cost) { best_cost = c; best_off = off; }
                     }
+                    for (double off = best_off - OFFSET_FINE_RANGE_MS; off <= best_off + OFFSET_FINE_RANGE_MS; off += OFFSET_FINE_STEP_MS) {
+                        double c = cost_for(off);
+                        if (c < best_cost) { best_cost = c; best_off = off; }
+                    }
+                    if (best_cost < 1e17) {
+                        time_offset_ms = base_off + best_off;
+                    } else {
+                        time_offset_ms = base_off;
+                        fprintf(stderr, "[SYNC] sweep failed (insufficient valid samples)\n");
+                    }
+                } else {
+                    time_offset_ms = g_manual_imu_offset_ms;
+                }
                 offset_calibrated = true;
+                gyro_eis.reset();
+                prev_time_ok = false;
                 fprintf(stderr, "[SYNC] offset=%.3f ms (base=%.3f, frames=%zu)\n",
                         time_offset_ms, g_manual_imu_offset_ms, calib_frames.size());
             }
         }
 
-        ImuPose pose {};
-        ImuPose pose_prev {};
-        ImuSampleInfo info_curr {};
-        ImuSampleInfo info_prev {};
-        bool imu_ok = false;
-        bool imu_prev_ok = false;
         double target_curr_ms = frame_time_ms + time_offset_ms;
         double target_prev_ms = 0.0;
         bool have_target_prev = false;
-        if (g_imu_ready.load()) {
-            imu_ok = imu_sample_at(target_curr_ms, pose, info_curr.err_ms,
-                                   &info_curr.count, &info_curr.min_ts, &info_curr.max_ts);
-            if (imu_ok) {
-                double err_abs = std::abs(info_curr.err_ms);
-                imu_err_sum += err_abs;
-                imu_err_max = std::max(imu_err_max, err_abs);
-                imu_err_cnt++;
-            }
-        }
-
-        double gyro_droll = 0.0;
-        double gyro_dpitch = 0.0;
-        double gyro_dyaw = 0.0;
+        cv::Vec3d gyro_delta(0, 0, 0);
+        GyroRangeInfo delta_range;
         bool gyro_delta_ok = false;
         if (prev_time_ok && g_imu_ready.load()) {
             target_prev_ms = prev_frame_time_ms + time_offset_ms;
             have_target_prev = true;
-            imu_prev_ok = imu_sample_at(target_prev_ms, pose_prev, info_prev.err_ms,
-                                        &info_prev.count, &info_prev.min_ts, &info_prev.max_ts);
-            if (imu_prev_ok && imu_ok) {
-                double roll1 = unwrap_angle(pose_prev.roll, pose.roll);
-                double pitch1 = unwrap_angle(pose_prev.pitch, pose.pitch);
-                double yaw1 = unwrap_angle(pose_prev.yaw, pose.yaw);
-                gyro_droll = roll1 - pose_prev.roll;
-                gyro_dpitch = pitch1 - pose_prev.pitch;
-                gyro_dyaw = yaw1 - pose_prev.yaw;
-                gyro_delta_ok = true;
-            }
+            gyro_delta_ok = integrate_gyro_delta(g_gyro_buffer, target_prev_ms, target_curr_ms, gyro_delta, &delta_range);
         }
         prev_frame_time_ms = frame_time_ms;
         prev_time_ok = true;
 
-        double jitter_roll = 0, jitter_pitch = 0, jitter_yaw = 0;
-        if (imu_ok) {
-            if (gs.yaw_initialized) {
-                pose.yaw = unwrap_angle(gs.last_yaw, pose.yaw);
-            }
-            gs.last_yaw = pose.yaw;
-            gs.yaw_initialized = true;
+        gyro_eis.set_warp_mode((GyroWarpMode)g_gyro_warp_mode.load());
+        GyroEISDebug dbginfo{};
+        Mat gyro_out;
+        bool gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, &dbginfo);
 
-            if (!gs.initialized) {
-                gs.smooth_roll = pose.roll;
-                gs.smooth_pitch = pose.pitch;
-                gs.smooth_yaw = pose.yaw;
-                gs.initialized = true;
-            } else {
-                double diff_r = pose.roll - gs.smooth_roll;
-                double diff_p = pose.pitch - gs.smooth_pitch;
-                double diff_y = pose.yaw - gs.smooth_yaw;
-                double alpha_r = adaptiveAlpha(SMOOTH_ALPHA, diff_r, ADAPT_THRESHOLD, ADAPT_RATE, ADAPT_MIN_ALPHA);
-                double alpha_p = adaptiveAlpha(SMOOTH_ALPHA, diff_p, ADAPT_THRESHOLD, ADAPT_RATE, ADAPT_MIN_ALPHA);
-                double alpha_y = adaptiveAlpha(SMOOTH_ALPHA, diff_y, ADAPT_THRESHOLD, ADAPT_RATE, ADAPT_MIN_ALPHA);
-                gs.smooth_roll = alpha_r * gs.smooth_roll + (1.0 - alpha_r) * pose.roll;
-                gs.smooth_pitch = alpha_p * gs.smooth_pitch + (1.0 - alpha_p) * pose.pitch;
-                gs.smooth_yaw = alpha_y * gs.smooth_yaw + (1.0 - alpha_y) * pose.yaw;
-            }
-
-            jitter_roll = pose.roll - gs.smooth_roll;
-            jitter_pitch = pose.pitch - gs.smooth_pitch;
-            jitter_yaw = pose.yaw - gs.smooth_yaw;
-        } else {
-            gs.initialized = false;
-            gs.yaw_initialized = false;
+        Mat stabilized = gyro_out;
+        if (mode == EisMode::LK) {
+            stabilized = frame;
         }
 
-        Mat prev_frame_for_warp = prev_frame;
-        double lk_dx = 0.0, lk_dy = 0.0, lk_da_raw = 0.0;
-        double lk_diff_dx = 0.0, lk_diff_dy = 0.0, lk_diff_da = 0.0;
-        double lk_da_used = 0.0;
-        bool lk_ok = false;
-        Mat H_lk = Mat::eye(3, 3, CV_64F);
-
-        if (frame_count == 0) {
-            prev_gray = curr_gray.clone();
-            prev_frame = frame.clone();
-            frame_count = 1;
-        } else {
-            std::vector<Point2f> features_prev, features_curr;
-            std::vector<uchar> status;
-            std::vector<float> err_vec;
-            goodFeaturesToTrack(prev_gray, features_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
-            if (features_prev.size() >= 10) {
-                calcOpticalFlowPyrLK(prev_gray, curr_gray, features_prev, features_curr, status, err_vec);
-                std::vector<Point2f> good_prev, good_curr;
-                for (size_t i = 0; i < status.size(); i++) {
-                    if (status[i]) {
-                        good_prev.push_back(features_prev[i]);
-                        good_curr.push_back(features_curr[i]);
-                    }
-                }
-                if (good_prev.size() >= 6) {
-                    Mat affine = estimateAffinePartial2D(good_prev, good_curr);
-                    if (!affine.empty()) {
-                        lk_dx = affine.at<double>(0, 2);
-                        lk_dy = affine.at<double>(1, 2);
-                        lk_da_raw = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
-
-                        kalman_update(kf_theta, lk_da_raw);
-                        kalman_update(kf_tx, lk_dx);
-                        kalman_update(kf_ty, lk_dy);
-
-                        if (frame_count > 1) {
-                            lk_diff_da = kalman_diff(kf_theta, MAX_DIFF_DA);
-                            lk_diff_dx = kalman_diff(kf_tx, MAX_DIFF_DX);
-                            lk_diff_dy = kalman_diff(kf_ty, MAX_DIFF_DY);
-                        }
-                        if (frame_count == 1) frame_count++;
-
-                        lk_da_used = lk_da_raw + lk_diff_da;
-                        double dx = lk_dx + lk_diff_dx;
-                        double dy = lk_dy + lk_diff_dy;
-
-                        H_lk = (Mat_<double>(3, 3) << cos(lk_da_used), -sin(lk_da_used), dx,
-                                                    sin(lk_da_used),  cos(lk_da_used), dy,
-                                                    0,               0,              1);
-                        lk_ok = true;
-                    }
-                }
-            }
-
-            prev_gray = curr_gray.clone();
-            prev_frame = frame.clone();
+        double imu_err_ms = 0.0;
+        if (gyro_ok && dbginfo.range.used > 0) {
+            imu_err_ms = target_curr_ms - dbginfo.range.max_ts;
+            double err_abs = std::abs(imu_err_ms);
+            imu_err_sum += err_abs;
+            imu_err_max = std::max(imu_err_max, err_abs);
+            imu_err_cnt++;
         }
 
         if (lk_ok && gyro_delta_ok) {
-            corr_buf.emplace_back(lk_da_raw, gyro_dyaw);
+            corr_buf.emplace_back(lk_da, gyro_delta[2]);
             if ((int)corr_buf.size() > corr_window) corr_buf.pop_front();
             corr_val = compute_corr(corr_buf);
         }
 
-        Mat H_gyro = Mat::eye(3, 3, CV_64F);
-        double roll_corr = 0.0;
-        double pitch_corr = 0.0;
-        double yaw_corr = 0.0;
-        bool gyro_corr_ok = false;
-        GyroWarpMode gyro_mode = (GyroWarpMode)g_gyro_warp_mode.load();
-        if (imu_ok) {
-            if (gyro_mode == GyroWarpMode::DELTA && gyro_delta_ok) {
-                roll_corr = -std::clamp(gyro_droll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
-                pitch_corr = -std::clamp(gyro_dpitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
-                yaw_corr = -std::clamp(gyro_dyaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
-            } else {
-                roll_corr = -std::clamp(jitter_roll * ROLL_GAIN, -MAX_ROLL_RAD, MAX_ROLL_RAD);
-                pitch_corr = -std::clamp(jitter_pitch * PITCH_GAIN, -MAX_PITCH_RAD, MAX_PITCH_RAD);
-                yaw_corr = -std::clamp(jitter_yaw * YAW_GAIN, -MAX_YAW_RAD, MAX_YAW_RAD);
-            }
-            H_gyro = homography_from_angles(roll_corr, pitch_corr, yaw_corr, K, Kinv);
-            gyro_corr_ok = true;
-        }
-
-        Mat stabilized = frame.clone();
-        Mat H_total = Mat::eye(3, 3, CV_64F);
-        Mat warp_src = frame;
-        bool apply_warp = false;
-
-        if (mode == EisMode::LK) {
-            if (lk_ok) {
-                H_total = H_lk;
-                warp_src = prev_frame_for_warp;
-                apply_warp = true;
-            }
-        } else if (mode == EisMode::GYRO) {
-            if (gyro_corr_ok) {
-                H_total = H_gyro;
-                warp_src = frame;
-                apply_warp = true;
-            }
-        } else { // HYBRID
-            if (lk_ok) {
-                H_total = H_lk;
-                warp_src = prev_frame_for_warp;
-                apply_warp = true;
-            }
-            if (gyro_corr_ok) {
-                H_total = H_gyro * H_total;
-                if (!lk_ok) warp_src = frame;
-                apply_warp = true;
-            }
-        }
-
-        if (apply_warp) {
-            warpPerspective(warp_src, stabilized, H_total, frame.size(), INTER_LINEAR, BORDER_CONSTANT);
-        } else {
-            stabilized = frame.clone();
-            H_total = Mat::eye(3, 3, CV_64F);
-        }
-
-        if (DYNAMIC_CROP) {
-            double scale = required_scale_from_homography(H_total, frame.cols, frame.rows);
-            crop_scales.push_back(scale);
-            if ((int)crop_scales.size() > CROP_WINDOW) crop_scales.pop_front();
-
-            double max_scale = 1.0;
-            for (double s : crop_scales) max_scale = std::max(max_scale, s);
-            double target_crop = (1.0 - 1.0 / max_scale) * 100.0;
-            target_crop = std::clamp(target_crop, CROP_MIN_PERCENT, CROP_MAX_PERCENT);
-
-            smooth_crop_percent = CROP_SMOOTH_ALPHA * smooth_crop_percent + (1.0 - CROP_SMOOTH_ALPHA) * target_crop;
-            stabilized = centerCropAndResize(stabilized, smooth_crop_percent);
-        } else {
-            stabilized = centerCropAndResize(stabilized, FIXED_CROP_PERCENT);
-        }
-
-        bool dbg = g_debug_overlay.load();
         if (dbg) {
             char buf[256];
             const int font = FONT_HERSHEY_SIMPLEX;
-            double imu_err_ms = imu_ok ? info_curr.err_ms : 0.0;
             snprintf(buf, sizeof(buf), "TS:%s off:%+.2fms err:%+.2fms mode:%s out:%s gy:%s",
                      ts_source_str(ts_src), time_offset_ms, imu_err_ms,
                      mode_str(mode), output_mode_str((OutputMode)g_output_mode.load()),
                      gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
             putText(stabilized, buf, Point(8, 18), font, 0.4, Scalar(0, 255, 0), 1, LINE_AA);
 
-            snprintf(buf, sizeof(buf), "LK da:%+.2f  Gyro dy:%+.2f  corr:%+.2f",
-                     lk_da_raw * 180 / CV_PI, gyro_dyaw * 180 / CV_PI, corr_val);
+            cv::Vec3d e_corr = quat_to_euler_deg(dbginfo.q_corr);
+            snprintf(buf, sizeof(buf), "Gyro corr R:%+.2f P:%+.2f Y:%+.2f  crop:%.1f%%",
+                     e_corr[0], e_corr[1], e_corr[2], dbginfo.crop_percent);
             putText(stabilized, buf, Point(8, 33), font, 0.4, Scalar(255, 200, 0), 1, LINE_AA);
-
-            snprintf(buf, sizeof(buf), "Gyro jit R:%+.2f P:%+.2f Y:%+.2f",
-                     jitter_roll * 180 / CV_PI,
-                     jitter_pitch * 180 / CV_PI,
-                     jitter_yaw * 180 / CV_PI);
-            putText(stabilized, buf, Point(8, 48), font, 0.4, Scalar(0, 200, 255), 1, LINE_AA);
         }
 
-        int log_every = g_log_every_frames.load();
         if (log_every > 0 && (frameIdx % (guint64)log_every == 0)) {
             if (imu_err_cnt > 0) {
                 double avg_err = imu_err_sum / imu_err_cnt;
@@ -1759,33 +1487,39 @@ static void capture_loop() {
                         (unsigned long long)cap_index);
             }
 
-            if (imu_ok) {
+            GyroSample last = g_last_gyro_sample;
+            cv::Vec3d e_phys = quat_to_euler_deg(dbginfo.q_phys);
+            cv::Vec3d e_virt = quat_to_euler_deg(dbginfo.q_virtual);
+            cv::Vec3d e_corr = quat_to_euler_deg(dbginfo.q_corr);
+            fprintf(stderr,
+                    "[GYRO] raw(gx,gy,gz)=%.1f %.1f %.1f  rate(rad/s)=%.3f %.3f %.3f  "
+                    "phys(deg)=%.2f %.2f %.2f  virt(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  hz=%.1f\n",
+                    last.raw[0], last.raw[1], last.raw[2],
+                    last.w_rad[0], last.w_rad[1], last.w_rad[2],
+                    e_phys[0], e_phys[1], e_phys[2],
+                    e_virt[0], e_virt[1], e_virt[2],
+                    e_corr[0], e_corr[1], e_corr[2],
+                    g_imu_actual_hz.load());
+
+            if (lk_ok && gyro_delta_ok) {
                 fprintf(stderr,
-                        "[GYRO] raw(gx,gy,gz)=%.1f %.1f %.1f  rate(rad/s)=%.3f %.3f %.3f  "
-                        "smooth=%.3f %.3f %.3f  ang(deg)=%.2f %.2f %.2f  hz=%.1f\n",
-                        pose.raw_gx, pose.raw_gy, pose.raw_gz,
-                        pose.gyro_roll_rate, pose.gyro_pitch_rate, pose.gyro_yaw_rate,
-                        pose.smooth_roll_rate, pose.smooth_pitch_rate, pose.smooth_yaw_rate,
-                        pose.roll * 180 / CV_PI, pose.pitch * 180 / CV_PI, pose.yaw * 180 / CV_PI,
-                        g_imu_actual_hz.load());
+                        "[CMP] lk_da=%.3fdeg gyro_dyaw=%.3fdeg diff=%.3fdeg corr=%.3f\n",
+                        lk_da * 180 / CV_PI,
+                        gyro_delta[2] * 180 / CV_PI,
+                        (lk_da - gyro_delta[2]) * 180 / CV_PI,
+                        corr_val);
             }
 
-            fprintf(stderr,
-                    "[CMP] lk_da=%.3fdeg gyro_dyaw=%.3fdeg diff=%.3fdeg corr=%.3f\n",
-                    lk_da_raw * 180 / CV_PI,
-                    gyro_dyaw * 180 / CV_PI,
-                    (lk_da_raw - gyro_dyaw) * 180 / CV_PI,
-                    corr_val);
-
-            if (imu_prev_ok || imu_ok) {
-                double log_t0 = have_target_prev ? target_prev_ms : target_curr_ms;
+            if (gyro_ok) {
                 fprintf(stderr,
-                        "[WIN] t0=%.2f err0=%+.2fms cnt0=%d range0=[%.2f,%.2f]  "
-                        "t1=%.2f err1=%+.2fms cnt1=%d range1=[%.2f,%.2f]\n",
-                        log_t0, info_prev.err_ms, info_prev.count,
-                        info_prev.min_ts, info_prev.max_ts,
-                        target_curr_ms, info_curr.err_ms, info_curr.count,
-                        info_curr.min_ts, info_curr.max_ts);
+                        "[WIN] t0=%.2f t1=%.2f used=%d range=[%.2f,%.2f]\n",
+                        dbginfo.range.t0, dbginfo.range.t1, dbginfo.range.used,
+                        dbginfo.range.min_ts, dbginfo.range.max_ts);
+            } else if (have_target_prev) {
+                fprintf(stderr,
+                        "[WIN] t0=%.2f t1=%.2f used=%d range=[%.2f,%.2f]\n",
+                        delta_range.t0, delta_range.t1, delta_range.used,
+                        delta_range.min_ts, delta_range.max_ts);
             }
         }
 
@@ -1811,7 +1545,6 @@ static void capture_loop() {
         if (send_cam) push_bgr(stabsrc, stabilized, frameIdx, "cam");
         frameIdx++;
     }
-
     if (use_libcamera) {
         lc.shutdown();
     } else {
@@ -1853,15 +1586,16 @@ int main(int argc, char* argv[]) {
     }
 
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, " EIS - LK 기반 + Gyro 정렬 검증\n");
+    fprintf(stderr, " EIS - Gyro-first (Quaternion)\n");
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, "  Mode: %s\n", mode_str((EisMode)g_mode.load()));
+    fprintf(stderr, "  Mode: %s (LK/HYBRID are mapped to gyro-only in this stage)\n",
+            mode_str((EisMode)g_mode.load()));
     fprintf(stderr, "  IMU offset: %.3f ms  (sweep: %s)\n", g_manual_imu_offset_ms,
             g_offset_sweep.load() ? "on" : "off");
     fprintf(stderr, "  TS source: %s\n", ts_pref_str((TsSourcePref)g_ts_pref.load()));
-    fprintf(stderr, "  Gyro smoothing alpha=%.3f  rate-smooth=%.3f\n", SMOOTH_ALPHA, IMU_RATE_SMOOTH_ALPHA);
-    fprintf(stderr, "  LK Kalman Q=%.4f R=%.1f\n", KF_Q, KF_R);
-    fprintf(stderr, "  Crop: %s (min %.0f%%)\n", DYNAMIC_CROP ? "dynamic" : "fixed", FIXED_CROP_PERCENT);
+    fprintf(stderr, "  GyroEIS smooth alpha=%.3f  warp=%s\n",
+            SMOOTH_ALPHA, gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
+    fprintf(stderr, "  Crop: fixed %.0f%%\n", FIXED_CROP_PERCENT);
     fprintf(stderr, "  RTSP: rtsp://<PI_IP>:8555/raw | /cam\n");
     fprintf(stderr, "  Keys: 1=LK 2=Gyro 3=Hybrid 4=RawOnly 5=CamOnly\n");
     fprintf(stderr, "==============================\n");

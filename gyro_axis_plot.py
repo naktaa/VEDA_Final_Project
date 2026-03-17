@@ -94,12 +94,15 @@ line_ax, = ax2.plot([], [], label="angle x (deg)")
 line_ay, = ax2.plot([], [], label="angle y (deg)")
 line_az, = ax2.plot([], [], label="angle z (deg)")
 
-ax1.set_ylim(-300, 300)
+RATE_YLIM = 80   # 좁게 보기 (deg/s)
+ANG_YLIM = 30    # 좁게 보기 (deg)
+
+ax1.set_ylim(-RATE_YLIM, RATE_YLIM)
 ax1.set_ylabel("gyro rate (deg/s)")
 ax1.grid(True)
 ax1.legend()
 
-ax2.set_ylim(-180, 180)
+ax2.set_ylim(-ANG_YLIM, ANG_YLIM)
 ax2.set_xlabel("sample index")
 ax2.set_ylabel("integrated angle (deg)")
 ax2.grid(True)

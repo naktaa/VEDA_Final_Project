@@ -18,7 +18,7 @@ pkg_check_modules(GST REQUIRED
 )
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 
-add_executable(eis eis.cpp)
+add_executable(eis eis.cpp gyro_eis.cpp)
 
 target_include_directories(eis PRIVATE
   ${OpenCV_INCLUDE_DIRS}

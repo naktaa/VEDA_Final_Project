@@ -42,8 +42,12 @@ static cv::Mat centerCropAndResize(const cv::Mat& in, double cropPercent) {
 static cv::Mat ensureBGR(const cv::Mat& in) {
     if (in.empty()) return cv::Mat();
     cv::Mat out = in;
-    if (out.type() == CV_8UC4)
-        cv::cvtColor(out, out, cv::COLOR_BGRA2BGR);
+    if (out.type() == CV_8UC4) {
+        cv::Mat tmp(out.rows, out.cols, CV_8UC3);
+        int from_to[] = {1, 0, 2, 1, 3, 2}; // XBGR -> BGR
+        cv::mixChannels(&out, 1, &tmp, 1, from_to, 3);
+        out = tmp;
+    }
     else if (out.type() == CV_8UC1)
         cv::cvtColor(out, out, cv::COLOR_GRAY2BGR);
     else if (out.type() != CV_8UC3) {
@@ -336,8 +340,12 @@ void capture_loop() {
 
     EisMode last_mode = (EisMode)g_mode.load();
     bool lk_disabled_warned = false;
+    double last_cost_ms = 0.0;
 
     while (g_running) {
+        int64_t frame_start_ns = clock_ns(CLOCK_MONOTONIC_RAW);
+        const double budget_ms = 1000.0 / std::max(1, G_FPS);
+        bool skip_heavy = (last_cost_ms > budget_ms);
         CapturedFrame cap;
         if (!pull_frame(cap) || cap.frame.empty()) continue;
 
@@ -479,7 +487,7 @@ void capture_loop() {
         GyroEISDebug dbginfo{};
         Mat gyro_out = frame;
         bool gyro_ok = false;
-        if (mode != EisMode::LK) {
+        if (!skip_heavy && mode != EisMode::LK) {
             gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, &dbginfo);
         }
 
@@ -487,7 +495,7 @@ void capture_loop() {
         bool trans_ok = false;
         double trans_dx = 0.0, trans_dy = 0.0, trans_da = 0.0;
         double corr_x = 0.0, corr_y = 0.0;
-        if (mode == EisMode::HYBRID || mode == EisMode::LK) {
+        if (!skip_heavy && (mode == EisMode::HYBRID || mode == EisMode::LK)) {
             const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
             Mat curr_trans_gray;
             cvtColor(trans_base, curr_trans_gray, COLOR_BGR2GRAY);
@@ -628,7 +636,7 @@ void capture_loop() {
             }
         }
 
-        if (FIXED_CROP_PERCENT > 0.0) {
+        if (!skip_heavy && FIXED_CROP_PERCENT > 0.0) {
             stabilized = centerCropAndResize(stabilized, FIXED_CROP_PERCENT);
         }
 
@@ -647,12 +655,11 @@ void capture_loop() {
             putText(raw_out, buf, Point(8, 18), FONT_HERSHEY_SIMPLEX, 0.35, Scalar(0, 255, 0), 1, LINE_AA);
         }
 
-        OutputMode out_mode = (OutputMode)g_output_mode.load();
-        bool send_raw = (out_mode == OutputMode::BOTH || out_mode == OutputMode::RAW_ONLY);
-        bool send_cam = (out_mode == OutputMode::BOTH || out_mode == OutputMode::CAM_ONLY);
-        if (send_raw) push_bgr(rawsrc, raw_out, frameIdx, "raw");
-        if (send_cam) push_bgr(stabsrc, stabilized, frameIdx, "cam");
+        // CAM only for now (raw disabled to reduce load)
+        push_bgr(stabsrc, stabilized, frameIdx, "cam");
         frameIdx++;
+
+        last_cost_ms = (clock_ns(CLOCK_MONOTONIC_RAW) - frame_start_ns) / 1e6;
     }
 
     if (use_libcamera) {

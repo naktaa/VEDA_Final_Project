@@ -125,10 +125,6 @@ int main(int argc, char* argv[]) {
     gst_rtsp_server_set_service(server, "8555");
     GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(server);
 
-    GstRTSPMediaFactory* f_raw = make_factory("rawsrc");
-    g_signal_connect(f_raw, "media-configure", (GCallback)on_media_configure, (gpointer) "raw");
-    gst_rtsp_mount_points_add_factory(mounts, "/raw", f_raw);
-
     GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
     g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer) "stab");
     gst_rtsp_mount_points_add_factory(mounts, "/cam", f_stab);
@@ -151,8 +147,8 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  GyroEIS smooth alpha=%.3f  warp=%s\n",
             SMOOTH_ALPHA, gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
     fprintf(stderr, "  Crop: fixed %.0f%%\n", FIXED_CROP_PERCENT);
-    fprintf(stderr, "  RTSP: rtsp://<PI_IP>:8555/raw | /cam\n");
-    fprintf(stderr, "  Keys: 1=LK 2=Gyro 3=Hybrid 4=RawOnly 5=CamOnly\n");
+    fprintf(stderr, "  RTSP: rtsp://<PI_IP>:8555/cam\n");
+    fprintf(stderr, "  Keys: 1=LK 2=Gyro 3=Hybrid (output fixed to CAM)\n");
     fprintf(stderr, "==============================\n");
 
     std::thread key_th(keyboard_loop);

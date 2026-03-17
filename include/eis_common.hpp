@@ -27,7 +27,7 @@ inline constexpr double MAX_ROLL_RAD = 5.0 * CV_PI / 180.0;
 inline constexpr double MAX_PITCH_RAD = 4.0 * CV_PI / 180.0;
 
 // LK (offset sweep/debug only)
-inline constexpr int LK_MAX_FEATURES = 150;
+inline constexpr int LK_MAX_FEATURES = 100;
 inline constexpr double LK_QUALITY = 0.01;
 inline constexpr double LK_MIN_DIST = 30.0;
 inline constexpr int LK_TRANS_MIN_FEATURES = 12;

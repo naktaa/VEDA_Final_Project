@@ -30,7 +30,7 @@ void keyboard_loop() {
 
     tank_drive::init();
 
-    fprintf(stderr, "[KEY] 1=LK 2=Gyro 3=Hybrid 4=RawOnly 5=CamOnly\n");
+    fprintf(stderr, "[KEY] 1=LK 2=Gyro 3=Hybrid (output fixed to CAM)\n");
     fprintf(stderr, "[KEY] WASD/QE + Space/X for tank, +/- speed, H help\n");
 
     pollfd pfd;
@@ -56,14 +56,6 @@ void keyboard_loop() {
                     g_mode = (int)EisMode::HYBRID;
                     fprintf(stderr, "[MODE] %s\n", mode_str(EisMode::HYBRID));
                     consumed = true;
-                } else if (ch == '4') {
-                    g_output_mode = (int)OutputMode::RAW_ONLY;
-                    fprintf(stderr, "[OUT] %s\n", output_mode_str(OutputMode::RAW_ONLY));
-                    consumed = true;
-                } else if (ch == '5') {
-                    g_output_mode = (int)OutputMode::CAM_ONLY;
-                    fprintf(stderr, "[OUT] %s\n", output_mode_str(OutputMode::CAM_ONLY));
-                    consumed = true;
                 }
 
                 if (!consumed) {
@@ -77,4 +69,3 @@ void keyboard_loop() {
     tank_drive::shutdown();
     tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
 }
-

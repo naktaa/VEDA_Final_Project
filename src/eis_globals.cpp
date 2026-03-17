@@ -12,7 +12,7 @@ GyroSample g_last_gyro_sample;
 std::atomic<double> g_imu_actual_hz{0};
 
 std::atomic<int> g_mode{(int)EisMode::GYRO};
-std::atomic<int> g_output_mode{(int)OutputMode::BOTH};
+std::atomic<int> g_output_mode{(int)OutputMode::CAM_ONLY};
 std::atomic<bool> g_debug_overlay{DEFAULT_DEBUG_OVERLAY};
 std::atomic<int> g_log_every_frames{-1};
 std::atomic<int> g_ts_pref{(int)TsSourcePref::AUTO};
@@ -31,4 +31,3 @@ int64_t g_time_origin_raw_ns = clock_ns(CLOCK_MONOTONIC_RAW);
 double now_ms() {
     return (clock_ns(CLOCK_MONOTONIC_RAW) - g_time_origin_raw_ns) / 1e6;
 }
-

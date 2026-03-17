@@ -12,17 +12,16 @@ static cv::Mat ensureBGR(const cv::Mat& in) {
     if (in.empty()) return cv::Mat();
     cv::Mat out = in;
     if (out.type() == CV_8UC4) {
-        cv::Mat tmp(out.rows, out.cols, CV_8UC3);
         if (LIBCAMERA_XRGB) {
+            cv::Mat tmp(out.rows, out.cols, CV_8UC3);
             // XRGB -> BGR (X,R,G,B)
             int from_to[] = {3, 0, 2, 1, 1, 2};
             cv::mixChannels(&out, 1, &tmp, 1, from_to, 3);
+            out = tmp;
         } else {
-            // XBGR -> BGR (X,B,G,R)
-            int from_to[] = {1, 0, 2, 1, 3, 2};
-            cv::mixChannels(&out, 1, &tmp, 1, from_to, 3);
+            // XBGR8888 in memory is typically B,G,R,X -> BGRA
+            cv::cvtColor(out, out, cv::COLOR_BGRA2BGR);
         }
-        out = tmp;
     }
     else if (out.type() == CV_8UC1)
         cv::cvtColor(out, out, cv::COLOR_GRAY2BGR);

@@ -47,7 +47,7 @@ inline constexpr double VFOV_DEG = 48.8;
 
 // Libcamera 4-channel packing (XRGB vs XBGR)
 // Set true if colors look red-tinted (XRGB), false if XBGR.
-inline constexpr bool LIBCAMERA_XRGB = true;
+inline constexpr bool LIBCAMERA_XRGB = false;
 
 // IMU axis mapping (from gyro_axis_plot test)
 // Yaw right  -> gy negative

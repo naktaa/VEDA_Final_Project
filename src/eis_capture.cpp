@@ -493,7 +493,7 @@ void capture_loop() {
         GyroEISDebug dbginfo{};
         Mat gyro_out = frame;
         bool gyro_ok = false;
-        if (!skip_heavy && mode != EisMode::LK) {
+        if (mode != EisMode::LK) {
             gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, &dbginfo);
         }
 
@@ -501,7 +501,7 @@ void capture_loop() {
         bool trans_ok = false;
         double trans_dx = 0.0, trans_dy = 0.0, trans_da = 0.0;
         double corr_x = 0.0, corr_y = 0.0;
-        if (!skip_heavy && (mode == EisMode::HYBRID || mode == EisMode::LK)) {
+        if (mode == EisMode::HYBRID || mode == EisMode::LK) {
             const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
             Mat curr_trans_gray;
             cvtColor(trans_base, curr_trans_gray, COLOR_BGR2GRAY);
@@ -513,7 +513,7 @@ void capture_loop() {
             }
             trans.frame_count++;
             bool do_lk = (trans.frame_count % std::max(1, LK_TRANS_EVERY_N) == 0);
-            if (trans.ok && do_lk) {
+            if (!skip_heavy && trans.ok && do_lk) {
                 const Mat& prev_use = trans.prev_small.empty() ? trans.prev_gray : trans.prev_small;
                 const Mat& curr_use = curr_small;
                 trans_ok = estimate_lk_transform(prev_use, curr_use,
@@ -642,7 +642,7 @@ void capture_loop() {
             }
         }
 
-        if (!skip_heavy && FIXED_CROP_PERCENT > 0.0) {
+        if (FIXED_CROP_PERCENT > 0.0) {
             stabilized = centerCropAndResize(stabilized, FIXED_CROP_PERCENT);
         }
 

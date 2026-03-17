@@ -3,6 +3,39 @@
 #include <algorithm>
 #include <cmath>
 
+static cv::Vec3d quat_to_euler(const Quaternion& q) {
+    double sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z);
+    double cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
+    double roll = std::atan2(sinr_cosp, cosr_cosp);
+
+    double sinp = 2.0 * (q.w * q.y - q.z * q.x);
+    double pitch = 0.0;
+    if (std::abs(sinp) >= 1.0) pitch = std::copysign(CV_PI / 2.0, sinp);
+    else pitch = std::asin(sinp);
+
+    double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+    double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    double yaw = std::atan2(siny_cosp, cosy_cosp);
+    return cv::Vec3d(roll, pitch, yaw);
+}
+
+static Quaternion quat_from_euler(double roll, double pitch, double yaw) {
+    double cy = std::cos(yaw * 0.5);
+    double sy = std::sin(yaw * 0.5);
+    double cp = std::cos(pitch * 0.5);
+    double sp = std::sin(pitch * 0.5);
+    double cr = std::cos(roll * 0.5);
+    double sr = std::sin(roll * 0.5);
+
+    Quaternion q;
+    q.w = cr * cp * cy + sr * sp * sy;
+    q.x = sr * cp * cy - cr * sp * sy;
+    q.y = cr * sp * cy + sr * cp * sy;
+    q.z = cr * cp * sy - sr * sp * cy;
+    q.normalize();
+    return q;
+}
+
 // ---------------- CameraIntrinsics ----------------
 
 cv::Mat CameraIntrinsics::K() const {
@@ -297,6 +330,14 @@ bool GyroEIS::process(const cv::Mat& frame, double frame_time_ms, double imu_off
     }
 
     Quaternion q_corr = q_virtual * q_phys.conjugate();
+
+    // clamp correction (prevent 180deg flip + slow recovery on large turns)
+    cv::Vec3d e = quat_to_euler(q_corr);
+    e[0] = std::clamp(e[0] * cfg_.roll_gain, -cfg_.max_roll_rad, cfg_.max_roll_rad);
+    e[1] = std::clamp(e[1] * cfg_.pitch_gain, -cfg_.max_pitch_rad, cfg_.max_pitch_rad);
+    e[2] = std::clamp(e[2] * cfg_.yaw_gain, -cfg_.max_yaw_rad, cfg_.max_yaw_rad);
+    q_corr = quat_from_euler(e[0], e[1], e[2]);
+
     cv::Mat H = warp_.homography_from_quat(q_corr);
 
     cv::warpPerspective(frame, out, H, frame.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT);

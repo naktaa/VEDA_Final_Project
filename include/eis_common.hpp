@@ -45,6 +45,10 @@ inline constexpr bool FLIP_VERTICAL = true;
 inline constexpr double HFOV_DEG = 62.2;
 inline constexpr double VFOV_DEG = 48.8;
 
+// Libcamera 4-channel packing (XRGB vs XBGR)
+// Set true if colors look red-tinted (XRGB), false if XBGR.
+inline constexpr bool LIBCAMERA_XRGB = true;
+
 // IMU axis mapping (from gyro_axis_plot test)
 // Yaw right  -> gy negative
 // Pitch up   -> gx negative

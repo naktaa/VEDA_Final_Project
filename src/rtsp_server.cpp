@@ -13,8 +13,15 @@ static cv::Mat ensureBGR(const cv::Mat& in) {
     cv::Mat out = in;
     if (out.type() == CV_8UC4) {
         cv::Mat tmp(out.rows, out.cols, CV_8UC3);
-        int from_to[] = {1, 0, 2, 1, 3, 2}; // XBGR -> BGR
-        cv::mixChannels(&out, 1, &tmp, 1, from_to, 3);
+        if (LIBCAMERA_XRGB) {
+            // XRGB -> BGR (X,R,G,B)
+            int from_to[] = {3, 0, 2, 1, 1, 2};
+            cv::mixChannels(&out, 1, &tmp, 1, from_to, 3);
+        } else {
+            // XBGR -> BGR (X,B,G,R)
+            int from_to[] = {1, 0, 2, 1, 3, 2};
+            cv::mixChannels(&out, 1, &tmp, 1, from_to, 3);
+        }
         out = tmp;
     }
     else if (out.type() == CV_8UC1)

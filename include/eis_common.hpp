@@ -18,13 +18,13 @@ inline constexpr int IMU_ADDR = 0x68;
 inline constexpr double GYRO_SENSITIVITY = 131.0;
 
 // Gyro smoothing / clamp (gyro-first path)
-inline constexpr double SMOOTH_ALPHA = 0.97;
-inline constexpr double ROLL_GAIN = 0.7;
-inline constexpr double PITCH_GAIN = 0.6;
-inline constexpr double YAW_GAIN = 0.8;
-inline constexpr double MAX_YAW_RAD = 8.0 * CV_PI / 180.0;
-inline constexpr double MAX_ROLL_RAD = 4.0 * CV_PI / 180.0;
-inline constexpr double MAX_PITCH_RAD = 3.0 * CV_PI / 180.0;
+inline constexpr double SMOOTH_ALPHA = 0.985;
+inline constexpr double ROLL_GAIN = 0.9;
+inline constexpr double PITCH_GAIN = 0.8;
+inline constexpr double YAW_GAIN = 0.9;
+inline constexpr double MAX_YAW_RAD = 10.0 * CV_PI / 180.0;
+inline constexpr double MAX_ROLL_RAD = 6.0 * CV_PI / 180.0;
+inline constexpr double MAX_PITCH_RAD = 5.0 * CV_PI / 180.0;
 
 // LK (offset sweep/debug only)
 inline constexpr int LK_MAX_FEATURES = 200;
@@ -137,4 +137,3 @@ inline const char* gyro_warp_str(GyroWarpMode m) {
     default: return "JITTER";
     }
 }
-

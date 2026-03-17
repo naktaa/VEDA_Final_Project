@@ -18,9 +18,20 @@ pkg_check_modules(GST REQUIRED
 )
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 
-add_executable(eis eis.cpp gyro_eis.cpp)
+add_executable(eis
+  src/main.cpp
+  src/eis_globals.cpp
+  src/eis_input.cpp
+  src/eis_imu.cpp
+  src/eis_capture.cpp
+  src/libcamera_grabber.cpp
+  src/rtsp_server.cpp
+  src/tank_drive.cpp
+  src/gyro_eis.cpp
+)
 
 target_include_directories(eis PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${OpenCV_INCLUDE_DIRS}
   ${GST_INCLUDE_DIRS}
   ${LIBCAMERA_INCLUDE_DIRS}
@@ -35,4 +46,5 @@ target_link_libraries(eis
   ${OpenCV_LIBS}
   ${GST_LIBRARIES}
   ${LIBCAMERA_LIBRARIES}
+  wiringPi
 )

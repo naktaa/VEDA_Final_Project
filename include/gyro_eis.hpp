@@ -5,6 +5,8 @@
 #include <mutex>
 #include <vector>
 
+#include "eis_common.hpp"
+
 struct GyroSample {
     double t_ms = 0.0;        // CLOCK_MONOTONIC_RAW 기준 ms
     cv::Vec3d w_rad = {0, 0, 0}; // rad/s (bias 보정 후)
@@ -102,11 +104,6 @@ private:
     bool valid_ = false;
     cv::Mat K_;
     cv::Mat Kinv_;
-};
-
-enum class GyroWarpMode {
-    JITTER = 0,
-    DELTA = 1
 };
 
 struct GyroEISDebug {

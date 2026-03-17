@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1583</width>
-    <height>736</height>
+    <height>750</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -20,7 +20,7 @@
       <x>10</x>
       <y>0</y>
       <width>1561</width>
-      <height>701</height>
+      <height>711</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="horizontalLayout_root">
@@ -72,281 +72,6 @@
                  </property>
                  <property name="plainText">
                   <string/>
-                 </property>
-                </widget>
-               </item>
-              </layout>
-             </widget>
-            </widget>
-           </item>
-          </layout>
-         </widget>
-        </widget>
-       </item>
-       <item row="0" column="0" rowspan="2">
-        <widget class="QWidget" name="panelCenter" native="true">
-         <widget class="QWidget" name="verticalLayoutWidget_2">
-          <property name="geometry">
-           <rect>
-            <x>0</x>
-            <y>0</y>
-            <width>811</width>
-            <height>691</height>
-           </rect>
-          </property>
-          <layout class="QVBoxLayout" name="verticalLayout_center">
-           <item>
-            <widget class="QGroupBox" name="groupCentral">
-             <property name="baseSize">
-              <size>
-               <width>2</width>
-               <height>0</height>
-              </size>
-             </property>
-             <property name="title">
-              <string/>
-             </property>
-             <widget class="QWidget" name="verticalLayoutWidget_6">
-              <property name="geometry">
-               <rect>
-                <x>10</x>
-                <y>20</y>
-                <width>791</width>
-                <height>611</height>
-               </rect>
-              </property>
-              <layout class="QVBoxLayout" name="verticalLayout_central">
-               <item>
-                <widget class="QWidget" name="centralOverlayHost" native="true">
-                 <widget class="MiniMapWidget" name="labelCentralMap" native="true">
-                  <property name="geometry">
-                   <rect>
-                    <x>0</x>
-                    <y>21</y>
-                    <width>789</width>
-                    <height>571</height>
-                   </rect>
-                  </property>
-                 </widget>
-                 <widget class="GstVideoWidget" name="labelCentralView" native="true">
-                  <property name="geometry">
-                   <rect>
-                    <x>-2</x>
-                    <y>10</y>
-                    <width>789</width>
-                    <height>592</height>
-                   </rect>
-                  </property>
-                 </widget>
-                 <widget class="MiniMapWidget" name="labelCentralRC" native="true">
-                  <property name="geometry">
-                   <rect>
-                    <x>0</x>
-                    <y>20</y>
-                    <width>789</width>
-                    <height>571</height>
-                   </rect>
-                  </property>
-                 </widget>
-                 <widget class="MiniMapWidget" name="labelCentralCapture" native="true">
-                  <property name="geometry">
-                   <rect>
-                    <x>0</x>
-                    <y>20</y>
-                    <width>789</width>
-                    <height>571</height>
-                   </rect>
-                  </property>
-                 </widget>
-                 <zorder>labelCentralView</zorder>
-                 <zorder>labelCentralMap</zorder>
-                 <zorder>labelCentralRC</zorder>
-                 <zorder>labelCentralCapture</zorder>
-                </widget>
-               </item>
-              </layout>
-             </widget>
-             <widget class="QWidget" name="widgetCentralChBar" native="true">
-              <property name="geometry">
-               <rect>
-                <x>260</x>
-                <y>640</y>
-                <width>291</width>
-                <height>41</height>
-               </rect>
-              </property>
-              <widget class="QWidget" name="horizontalLayoutWidget_3">
-               <property name="geometry">
-                <rect>
-                 <x>7</x>
-                 <y>0</y>
-                 <width>280</width>
-                 <height>41</height>
-                </rect>
-               </property>
-               <layout class="QHBoxLayout" name="horizontalLayout_allcctv">
-                <item>
-                 <widget class="QPushButton" name="btnCapture">
-                  <property name="maximumSize">
-                   <size>
-                    <width>70</width>
-                    <height>25</height>
-                   </size>
-                  </property>
-                  <property name="baseSize">
-                   <size>
-                    <width>2</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                  <property name="text">
-                   <string>캡쳐</string>
-                  </property>
-                  <property name="checkable">
-                   <bool>true</bool>
-                  </property>
-                  <property name="checked">
-                   <bool>false</bool>
-                  </property>
-                  <property name="autoExclusive">
-                   <bool>true</bool>
-                  </property>
-                  <property name="autoRepeatDelay">
-                   <number>295</number>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="btnMap">
-                  <property name="maximumSize">
-                   <size>
-                    <width>50</width>
-                    <height>25</height>
-                   </size>
-                  </property>
-                  <property name="baseSize">
-                   <size>
-                    <width>2</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                  <property name="text">
-                   <string>맵</string>
-                  </property>
-                  <property name="checkable">
-                   <bool>true</bool>
-                  </property>
-                  <property name="checked">
-                   <bool>false</bool>
-                  </property>
-                  <property name="autoExclusive">
-                   <bool>true</bool>
-                  </property>
-                  <property name="autoRepeatDelay">
-                   <number>295</number>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="btnRC">
-                  <property name="maximumSize">
-                   <size>
-                    <width>60</width>
-                    <height>25</height>
-                   </size>
-                  </property>
-                  <property name="baseSize">
-                   <size>
-                    <width>2</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                  <property name="text">
-                   <string>노드</string>
-                  </property>
-                  <property name="checkable">
-                   <bool>true</bool>
-                  </property>
-                  <property name="checked">
-                   <bool>false</bool>
-                  </property>
-                  <property name="autoExclusive">
-                   <bool>true</bool>
-                  </property>
-                  <property name="autoRepeatDelay">
-                   <number>295</number>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="patrolstartbtn">
-                  <property name="maximumSize">
-                   <size>
-                    <width>60000</width>
-                    <height>25</height>
-                   </size>
-                  </property>
-                  <property name="baseSize">
-                   <size>
-                    <width>2</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                  <property name="text">
-                   <string>정찰 시작</string>
-                  </property>
-                  <property name="checkable">
-                   <bool>true</bool>
-                  </property>
-                  <property name="checked">
-                   <bool>false</bool>
-                  </property>
-                  <property name="autoExclusive">
-                   <bool>true</bool>
-                  </property>
-                  <property name="autoRepeatDelay">
-                   <number>295</number>
-                  </property>
-                 </widget>
-                </item>
-               </layout>
-              </widget>
-             </widget>
-             <widget class="QWidget" name="horizontalLayoutWidget_4">
-              <property name="geometry">
-               <rect>
-                <x>720</x>
-                <y>640</y>
-                <width>82</width>
-                <height>41</height>
-               </rect>
-              </property>
-              <layout class="QHBoxLayout" name="horizontalLayout_allcctv_2">
-               <item>
-                <widget class="QPushButton" name="btnOpenAllCctv">
-                 <property name="maximumSize">
-                  <size>
-                   <width>150</width>
-                   <height>25</height>
-                  </size>
-                 </property>
-                 <property name="baseSize">
-                  <size>
-                   <width>2</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="text">
-                  <string>전체 CCTV</string>
-                 </property>
-                 <property name="checkable">
-                  <bool>true</bool>
-                 </property>
-                 <property name="checked">
-                  <bool>false</bool>
-                 </property>
-                 <property name="autoExclusive">
-                  <bool>true</bool>
                  </property>
                 </widget>
                </item>
@@ -573,6 +298,353 @@
             </layout>
            </widget>
           </widget>
+         </widget>
+        </widget>
+       </item>
+       <item row="0" column="0" rowspan="2">
+        <widget class="QWidget" name="panelCenter" native="true">
+         <widget class="QWidget" name="verticalLayoutWidget_2">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>0</y>
+            <width>811</width>
+            <height>701</height>
+           </rect>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout_center">
+           <item>
+            <widget class="QGroupBox" name="groupCentral">
+             <property name="baseSize">
+              <size>
+               <width>2</width>
+               <height>0</height>
+              </size>
+             </property>
+             <property name="title">
+              <string/>
+             </property>
+             <widget class="QWidget" name="verticalLayoutWidget_6">
+              <property name="geometry">
+               <rect>
+                <x>10</x>
+                <y>20</y>
+                <width>791</width>
+                <height>611</height>
+               </rect>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_central">
+               <item>
+                <widget class="QWidget" name="centralOverlayHost" native="true">
+                 <widget class="MiniMapWidget" name="labelCentralMap" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>0</x>
+                    <y>21</y>
+                    <width>789</width>
+                    <height>571</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <widget class="GstVideoWidget" name="labelCentralView" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>-2</x>
+                    <y>10</y>
+                    <width>789</width>
+                    <height>592</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <widget class="MiniMapWidget" name="labelCentralRC" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>0</x>
+                    <y>20</y>
+                    <width>789</width>
+                    <height>571</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <widget class="MiniMapWidget" name="labelCentralCapture" native="true">
+                  <property name="geometry">
+                   <rect>
+                    <x>0</x>
+                    <y>20</y>
+                    <width>789</width>
+                    <height>571</height>
+                   </rect>
+                  </property>
+                 </widget>
+                 <zorder>labelCentralView</zorder>
+                 <zorder>labelCentralMap</zorder>
+                 <zorder>labelCentralRC</zorder>
+                 <zorder>labelCentralCapture</zorder>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="widgetCentralChBar" native="true">
+              <property name="geometry">
+               <rect>
+                <x>260</x>
+                <y>640</y>
+                <width>381</width>
+                <height>51</height>
+               </rect>
+              </property>
+              <widget class="QWidget" name="horizontalLayoutWidget_3">
+               <property name="geometry">
+                <rect>
+                 <x>10</x>
+                 <y>10</y>
+                 <width>366</width>
+                 <height>31</height>
+                </rect>
+               </property>
+               <layout class="QHBoxLayout" name="horizontalLayout_allcctv">
+                <item>
+                 <widget class="QPushButton" name="btnCapture">
+                  <property name="maximumSize">
+                   <size>
+                    <width>70</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>캡쳐</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnMap">
+                  <property name="maximumSize">
+                   <size>
+                    <width>50</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>맵</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnRC">
+                  <property name="maximumSize">
+                   <size>
+                    <width>60</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>노드</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="Humanbtn">
+                  <property name="maximumSize">
+                   <size>
+                    <width>60000</width>
+                    <height>20</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>사람 감지</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="patrolstartbtn">
+                  <property name="maximumSize">
+                   <size>
+                    <width>60000</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>정찰 시작</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+             <widget class="QWidget" name="widgetCentralChBar_2" native="true">
+              <property name="geometry">
+               <rect>
+                <x>710</x>
+                <y>640</y>
+                <width>91</width>
+                <height>51</height>
+               </rect>
+              </property>
+              <widget class="QWidget" name="verticalLayoutWidget_7">
+               <property name="geometry">
+                <rect>
+                 <x>0</x>
+                 <y>0</y>
+                 <width>82</width>
+                 <height>52</height>
+                </rect>
+               </property>
+               <layout class="QVBoxLayout" name="verticalLayout">
+                <item>
+                 <widget class="QPushButton" name="btnOpenAllCctv">
+                  <property name="maximumSize">
+                   <size>
+                    <width>150</width>
+                    <height>25</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>전체 CCTV</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="ruviewbtn">
+                  <property name="maximumSize">
+                   <size>
+                    <width>60000</width>
+                    <height>20</height>
+                   </size>
+                  </property>
+                  <property name="baseSize">
+                   <size>
+                    <width>2</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>RuView</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                  <property name="checked">
+                   <bool>false</bool>
+                  </property>
+                  <property name="autoExclusive">
+                   <bool>true</bool>
+                  </property>
+                  <property name="autoRepeatDelay">
+                   <number>295</number>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+            </widget>
+           </item>
+          </layout>
          </widget>
         </widget>
        </item>

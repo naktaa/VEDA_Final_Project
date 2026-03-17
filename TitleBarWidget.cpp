@@ -9,7 +9,7 @@ TitleBarWidget::TitleBarWidget(QWidget* parent)
 {
     setObjectName("TitleBarWidget");
     setAttribute(Qt::WA_StyledBackground, true);
-    setFixedHeight(32);
+    setFixedHeight(38);
 
     m_title = new QLabel(this);
     m_title->setObjectName("titleText");
@@ -17,22 +17,29 @@ TitleBarWidget::TitleBarWidget(QWidget* parent)
 
     m_btnMin = new QPushButton("-", this);
     m_btnMin->setObjectName("btnMin");
-    m_btnMin->setFixedSize(36, 24);
+    m_btnMin->setFixedSize(42, 28);
     m_btnMin->setFocusPolicy(Qt::NoFocus);
 
     m_btnMax = new QPushButton("[]", this);
     m_btnMax->setObjectName("btnMax");
-    m_btnMax->setFixedSize(36, 24);
+    m_btnMax->setFixedSize(42, 28);
     m_btnMax->setFocusPolicy(Qt::NoFocus);
 
     m_btnClose = new QPushButton("X", this);
     m_btnClose->setObjectName("btnClose");
-    m_btnClose->setFixedSize(36, 24);
+    m_btnClose->setFixedSize(42, 28);
     m_btnClose->setFocusPolicy(Qt::NoFocus);
 
+    QFont btnFont = font();
+    btnFont.setPointSize(11);
+    btnFont.setBold(true);
+    m_btnMin->setFont(btnFont);
+    m_btnMax->setFont(btnFont);
+    m_btnClose->setFont(btnFont);
+
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(10, 0, 6, 0);
-    layout->setSpacing(6);
+    layout->setContentsMargins(12, 0, 8, 0);
+    layout->setSpacing(8);
     layout->addWidget(m_title, 1);
     layout->addWidget(m_btnMin);
     layout->addWidget(m_btnMax);
@@ -40,11 +47,11 @@ TitleBarWidget::TitleBarWidget(QWidget* parent)
     setLayout(layout);
 
     setStyleSheet(
-        "#TitleBarWidget { background-color: #534842; }"
-        "#titleText { background-color: transparent; color: #e3ddda; font-weight: 600; }"
-        "QPushButton { background: transparent; color: #e3ddda; border: none; }"
-        "QPushButton:hover { background: #6d5e57; }"
-        "QPushButton#btnClose:hover { background: #b04a3f; color: #ffffff; }"
+        "#TitleBarWidget { background-color: #111522; border-bottom: 1px solid #242c43; }"
+        "#titleText { background-color: transparent; color: #eef2ff; font-weight: 700; font-size: 14px; }"
+        "QPushButton { background: transparent; color: #b9c4e4; border: none; border-radius: 8px; font-size: 12px; }"
+        "QPushButton:hover { background: #232c43; color: #ffffff; }"
+        "QPushButton#btnClose:hover { background: #d14f6e; color: #ffffff; }"
     );
 
     connect(m_btnMin, &QPushButton::clicked, this, &TitleBarWidget::minimizeRequested);

@@ -17,7 +17,7 @@ int main(int argc, char *argv[])
 
     // 2) 로그인 성공 -> userId 전달 -> MainWindow에서 role 결정
     MainWindow w(login.userId());
-    w.show();
+    w.showMaximized();
 
     return app.exec();
 }

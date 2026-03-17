@@ -13,7 +13,7 @@ static bool g_gst_inited = false;
 GstVideoWidget::GstVideoWidget(QWidget *parent)
     : QWidget(parent)
 {
-    // ✅ 이제 native overlay 필요 없음 (오버레이 위해 제거)
+    // ???�제 native overlay ?�요 ?�음 (?�버?�이 ?�해 ?�거)
     // setAttribute(Qt::WA_NativeWindow);
     // setAttribute(Qt::WA_PaintOnScreen);
 
@@ -24,7 +24,7 @@ GstVideoWidget::GstVideoWidget(QWidget *parent)
     ensureGstInit();
 
     m_pullTimer = new QTimer(this);
-    // 낮은 해상도 기준 30fps 정도로 충분 (추측)
+    // ??? ?�상??기�? 30fps ?�도�?충분 (추측)
     m_pullTimer->setInterval(33);
     connect(m_pullTimer, &QTimer::timeout, this, &GstVideoWidget::onPullFrame);
 }
@@ -78,15 +78,15 @@ void GstVideoWidget::startStream(const QString &url)
 {
     stopStream();
 
-    // ✅ 해상도 낮게 고정 (기본 640x360)
-    // 필요하면 854x480 or 1280x720로 변경 가능
-    const int OUT_W = 1024;
-    const int OUT_H = 768;
+    // ???�상????�� 고정 (기본 640x360)
+    // ?�요?�면 854x480 or 1280x720�?변�?가??
+    const int OUT_W = 1280;
+    const int OUT_H = 960;
 
-    // ✅ appsink로 프레임을 Qt로 가져온다 (오버레이 100% 가능)
+    // ??appsink�??�레?�을 Qt�?가?�온??(?�버?�이 100% 가??
     QString pipeStr = QString(
-                          "rtspsrc location=%1 protocols=tcp latency=50 drop-on-latency=true ! "
-                          "rtph264depay ! h264parse ! "
+                          "rtspsrc location=%1 protocols=tcp latency=120 ! "
+                          "queue max-size-buffers=2 ! rtph264depay ! h264parse ! "
                           "avdec_h264 ! videoconvert ! "
                           "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
                           "videoscale ! "
@@ -111,7 +111,7 @@ void GstVideoWidget::startStream(const QString &url)
         return;
     }
 
-    // appsink 설정 (안전하게 한 번 더)
+    // appsink ?�정 (?�전?�게 ??�???
     GstAppSink* as = GST_APP_SINK(m_appsink);
     gst_app_sink_set_drop(as, TRUE);
     gst_app_sink_set_max_buffers(as, 1);
@@ -119,10 +119,10 @@ void GstVideoWidget::startStream(const QString &url)
 
     gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
 
-    // ✅ 첫 시작은 줌 해제 상태
+    // ??�??�작?� �??�제 ?�태
     resetZoom();
 
-    // ✅ pull timer 시작
+    // ??pull timer ?�작
     m_pullTimer->start();
 }
 
@@ -151,10 +151,10 @@ void GstVideoWidget::onPullFrame()
         return;
     }
 
-    // BGRA 포맷으로 받았으니 QImage::Format_ARGB32 사용 가능
-    // ⚠️ map.data는 gst 버퍼 메모리라서 sample unref 후 무효가 될 수 있음 → deep copy
+    // BGRA ?�맷?�로 받았?�니 QImage::Format_ARGB32 ?�용 가??
+    // ?�️ map.data??gst 버퍼 메모리라??sample unref ??무효가 ?????�음 ??deep copy
     QImage img((const uchar*)map.data, w, h, QImage::Format_ARGB32);
-    QImage copy = img.copy(); // ✅ 안정성 우선 (성능보다 확실)
+    QImage copy = img.copy(); // ???�정???�선 (?�능보다 ?�실)
 
     gst_buffer_unmap(buffer, &map);
     gst_sample_unref(sample);
@@ -180,7 +180,7 @@ void GstVideoWidget::paintEvent(QPaintEvent *e)
     }
     if (frameCopy.isNull()) return;
 
-    // ✅ 위젯 크기에 맞게 letterbox로 표시
+    // ???�젯 ?�기??맞게 letterbox�??�시
     QSize target = frameCopy.size();
     target.scale(size(), Qt::KeepAspectRatio);
 
@@ -213,7 +213,30 @@ bool GstVideoWidget::widgetToImagePoint(const QPointF& widgetPos, QPointF& image
     return true;
 }
 
-// ---- zoom (기존 로직 유지) ----
+QRect GstVideoWidget::videoDisplayRect() const
+{
+    QImage frameCopy;
+    {
+        QMutexLocker lk(&m_frameMtx);
+        frameCopy = m_frame;
+    }
+    if (frameCopy.isNull()) return rect();
+
+    QSize target = frameCopy.size();
+    target.scale(size(), Qt::KeepAspectRatio);
+
+    QRect dst(QPoint(0,0), target);
+    dst.moveCenter(rect().center());
+    return dst;
+}
+
+QSize GstVideoWidget::currentFrameSize() const
+{
+    QMutexLocker lk(&m_frameMtx);
+    return m_frame.size();
+}
+
+// ---- zoom (기존 로직 ?��?) ----
 void GstVideoWidget::setDigitalZoom(double zoom, double cx, double cy)
 {
     if (zoom < 1.0) zoom = 1.0;
@@ -235,15 +258,15 @@ void GstVideoWidget::resetZoom()
 
 void GstVideoWidget::updateVideoSizeFromCaps()
 {
-    // appsink로 받으므로 굳이 필요 없지만, 기존 인터페이스 유지용
+    // appsink�?받으므�?굳이 ?�요 ?��?�? 기존 ?�터?�이???��???
 }
 
 void GstVideoWidget::updateCrop(double zoom, double cx, double cy)
 {
     if (!m_crop) return;
 
-    // appsink 캡스 기준 OUT_W/OUT_H로 들어오므로 crop 기준도 그 해상도
-    // 여기서는 현재 프레임 크기를 사용 (없으면 OUT_W/OUT_H 가정)
+    // appsink 캡스 기�? OUT_W/OUT_H�??�어?��?�?crop 기�???�??�상??
+    // ?�기?�는 ?�재 ?�레???�기�??�용 (?�으�?OUT_W/OUT_H 가??
     int W = 782, H = 592;
     {
         QMutexLocker lk(&m_frameMtx);

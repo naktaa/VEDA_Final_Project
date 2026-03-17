@@ -1,6 +1,10 @@
-#include "login_dialog.h"
+﻿#include "login_dialog.h"
 #include "ui_login_dialog.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
+#include <QGraphicsDropShadowEffect>
 #include <QMessageBox>
 #include <QVBoxLayout>
 #include <QSize>
@@ -14,47 +18,158 @@ LoginDialog::LoginDialog(QWidget *parent)
     ui->setupUi(this);
     setupCustomTitleBar();
 
-    setStyleSheet(R"(
+    QString backgroundPath;
+    const QStringList candidates = {
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/image/ui_background.jpg"),
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../image/ui_background.jpg"),
+        QDir::cleanPath(QDir::currentPath() + "/image/ui_background.jpg"),
+        QStringLiteral("C:/Users/1-14/real_final/main_window/image/ui_background.jpg")
+    };
+    for (const QString& candidate : candidates) {
+        if (QFileInfo::exists(candidate)) {
+            backgroundPath = QDir::toNativeSeparators(candidate).replace("\\", "/");
+            break;
+        }
+    }
+    if (backgroundPath.isEmpty()) {
+        backgroundPath = QStringLiteral("C:/Users/1-14/real_final/main_window/image/ui2.png");
+    }
+
+    setStyleSheet(QString(R"(
 QDialog {
-    background-color: #6d6a64;
-    color: #333333;
+    background-color: #12162a;
+    color: #eef2ff;
+}
+QWidget#widget {
+    border-image: url(%1) 0 0 0 0 stretch stretch;
+    border: none;
+}
+QWidget#verticalLayoutWidget {
+    background-color: rgba(34, 37, 63, 226);
+    border: 1px solid rgba(91, 98, 145, 170);
+    border-radius: 18px;
 }
 QLabel {
-    background-color: #6d6a64;
-    color: #333333;
+    background-color: transparent;
+    color: #e8ecff;
 }
 QLineEdit {
-    background-color: #e3ddda;
-    color: #333333;
-    border: 1px solid #988575;
-    border-radius: 2px;
-    padding: 5px 8px;
+    background-color: rgba(88, 92, 128, 210);
+    color: #f7f8ff;
+    border: 1px solid rgba(115, 121, 171, 140);
+    border-radius: 8px;
+    padding: 9px 12px;
+    min-height: 22px;
 }
 QPushButton {
-    background-color: #e3ddda;
-    color: #333333;
-    border: 1px solid #665950;
-    border-radius: 2px;
-    min-height: 26px;
-    padding: 3px 10px;
-    font-weight: 600;
-}
-QPushButton:hover {
-    background-color: #bcb2aa;
-}
-QPushButton:pressed {
-    background-color: #b3a79e;
-}
-QLabel#labelTitle {
-    color: #333333;
+    background-color: rgba(255, 255, 255, 0.92);
+    color: #1f2742;
+    border: none;
+    border-radius: 14px;
+    min-height: 28px;
+    padding: 5px 16px;
     font-weight: 700;
 }
-)");
+QPushButton:hover {
+    background-color: #ffffff;
+}
+QPushButton:pressed {
+    background-color: #e9ecff;
+}
+QLabel#labelTitle {
+    color: #ffffff;
+    font-weight: 800;
+    font-size: 20px;
+}
+QLabel#labelStatus {
+    color: #9aa4c7;
+    font-size: 11px;
+}
+QLabel#ID, QLabel#Password {
+    color: #8d97bb;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+)").arg(backgroundPath));
 
     setModal(true);
 
+    setWindowTitle("Sentinel Fusion Login");
+
+    if (ui->widget) {
+        ui->widget->setMinimumSize(980, 620);
+        ui->widget->setMaximumSize(980, 620);
+    }
+    if (ui->verticalLayoutWidget) {
+        ui->verticalLayoutWidget->setGeometry(325, 148, 330, 306);
+        auto* shadow = new QGraphicsDropShadowEffect(ui->verticalLayoutWidget);
+        shadow->setBlurRadius(28);
+        shadow->setOffset(0, 12);
+        shadow->setColor(QColor(10, 10, 30, 110));
+        ui->verticalLayoutWidget->setGraphicsEffect(shadow);
+    }
+    if (ui->verticalLayout_root) {
+        ui->verticalLayout_root->setContentsMargins(24, 20, 24, 18);
+        ui->verticalLayout_root->setSpacing(8);
+    }
+    if (ui->labelTitle) ui->labelTitle->setText("Sentinel Fusion");
+    if (ui->ID) ui->ID->setText("USERNAME");
+    if (ui->Password) ui->Password->setText("PASSWORD");
+    if (ui->editId) ui->editId->setPlaceholderText("hello@samuelmay.co");
+    if (ui->editPw) ui->editPw->setPlaceholderText("password");
+    if (ui->btnLogin) ui->btnLogin->setText("LOG IN");
+    if (ui->labelTitle) {
+        ui->labelTitle->setMinimumHeight(42);
+        ui->labelTitle->setMaximumHeight(42);
+        QFont f = ui->labelTitle->font();
+        f.setPointSize(18);
+        f.setBold(true);
+        ui->labelTitle->setFont(f);
+    }
+    if (ui->ID) {
+        QFont f = ui->ID->font();
+        f.setPointSize(9);
+        f.setBold(true);
+        ui->ID->setFont(f);
+    }
+    if (ui->Password) {
+        QFont f = ui->Password->font();
+        f.setPointSize(9);
+        f.setBold(true);
+        ui->Password->setFont(f);
+    }
+    if (ui->editId) {
+        ui->editId->setMinimumWidth(282);
+        ui->editId->setMaximumWidth(282);
+        ui->editId->setMinimumHeight(40);
+        ui->editId->setMaximumHeight(40);
+    }
+    if (ui->editPw) {
+        ui->editPw->setMinimumWidth(282);
+        ui->editPw->setMaximumWidth(282);
+        ui->editPw->setMinimumHeight(40);
+        ui->editPw->setMaximumHeight(40);
+    }
+    if (ui->btnLogin) {
+        ui->btnLogin->setMinimumWidth(172);
+        ui->btnLogin->setMaximumWidth(172);
+        ui->btnLogin->setMinimumHeight(38);
+        ui->btnLogin->setMaximumHeight(38);
+    }
+    if (ui->horizontalLayout) {
+        ui->horizontalLayout->setContentsMargins(0, 10, 0, 0);
+        ui->horizontalLayout->setSpacing(0);
+        ui->horizontalLayout->setAlignment(Qt::AlignHCenter);
+    }
+    if (ui->labelStatus) {
+        ui->labelStatus->setText("FORGOT YOUR PASSWORD?");
+        ui->labelStatus->setAlignment(Qt::AlignCenter);
+        ui->labelStatus->setMaximumHeight(18);
+        ui->labelStatus->setStyleSheet("color: rgba(154, 164, 199, 0.55); background: transparent; font-size: 10px; font-weight: 700;");
+    }
+
     ui->editId->setFocus();
-    ui->labelStatus->setText("Ready");
 
     ui->btnLogin->setDefault(true);
 }
@@ -98,7 +213,7 @@ void LoginDialog::on_btnLogin_clicked()
         return;
     }
 
-    // ?�공
+    // ?깃났
     m_userId = id;
     m_role = role;
 
@@ -109,13 +224,13 @@ void LoginDialog::on_btnLogin_clicked()
 bool LoginDialog::validateLocal(const QString& id, const QString& pw, UserRole& outRole) const
 {
     /*
-     * ?�모??계정 ?�책
+     * ?곕え??怨꾩젙 ?뺤콉
      *
-     * 총책?�자:
+     * 珥앹콉?꾩옄:
      *   - hospital_director / 1111
      *   - vice_director     / 2222
      *
-     * 관?�실:
+     * 愿?쒖떎:
      *   - control / 0000
      */
 
@@ -142,9 +257,9 @@ void LoginDialog::setStatus(const QString& msg, bool isError)
     ui->labelStatus->setText(msg);
 
     if (isError) {
-        ui->labelStatus->setStyleSheet("color: #ffd7a8; font-weight: 600;");
+        ui->labelStatus->setStyleSheet("color: #ffb4b4; font-weight: 700; background: transparent; font-size: 10px;");
     } else {
-        ui->labelStatus->setStyleSheet("color: #f3efe9;");
+        ui->labelStatus->setStyleSheet("color: rgba(154, 164, 199, 0.55); background: transparent; font-size: 10px; font-weight: 700;");
     }
 }
 
@@ -187,7 +302,7 @@ void LoginDialog::setupCustomTitleBar()
     root->setStretch(1, 1);
 
     if (ui->widget) {
-        const QSize contentSize = ui->widget->size();
+        const QSize contentSize(980, 620);
         const int titleH = m_titleBar->height();
         resize(contentSize.width(), contentSize.height() + titleH);
         setFixedSize(size());
@@ -208,6 +323,7 @@ void LoginDialog::changeEvent(QEvent* event)
     }
     QDialog::changeEvent(event);
 }
+
 
 
 

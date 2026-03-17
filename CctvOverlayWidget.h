@@ -22,6 +22,7 @@ public:
     void setNodes(const QVector<OverlayNode>& nodes);
     void setPolyline(const QVector<QPointF>& path);
     void setMapVisible(bool visible);
+    void setNodesVisible(bool visible);
     void setGoalMarkerVisible(bool visible);
     void setGoalMarker(const QPointF& worldPos);
     void setRobotPose(const QPointF& worldPos, double yawRad);
@@ -55,6 +56,7 @@ private:
 
     QRectF  m_roiNorm;
     bool    m_mapVisible = false;
+    bool    m_nodesVisible = false;
     bool    m_goalVisible = false;
     QPointF m_goalWorld;
     bool    m_calibrationMode = false;

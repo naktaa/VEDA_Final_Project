@@ -1,5 +1,6 @@
 #include "MiniMapWidget.h"
 
+#include <algorithm>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QPainter>
@@ -67,6 +68,18 @@ void MiniMapWidget::setDrawMapGeometry(bool enabled)
     update();
 }
 
+void MiniMapWidget::setWorldClickEnabled(bool enabled)
+{
+    m_worldClickEnabled = enabled;
+}
+
+void MiniMapWidget::setZonePresenceState(bool present, double confidence)
+{
+    m_zonePresent = present;
+    m_zoneConfidence = std::max(0.0, std::min(1.0, confidence));
+    update();
+}
+
 QPointF MiniMapWidget::worldToWidget(const QPointF& w) const
 {
     const double sx = width() / m_worldWidth;
@@ -81,14 +94,65 @@ QPointF MiniMapWidget::widgetToWorld(const QPointF& p) const
     return QPointF(p.x() * sx, (height() - p.y()) * sy);
 }
 
+QPointF MiniMapWidget::zoneCenterWorld() const
+{
+    if (m_polyline.isEmpty()) {
+        return QPointF(m_worldWidth * 0.5, m_worldHeight * 0.5);
+    }
+
+    double sx = 0.0;
+    double sy = 0.0;
+    for (const auto& p : m_polyline) {
+        sx += p.x();
+        sy += p.y();
+    }
+    const double n = static_cast<double>(m_polyline.size());
+    if (n <= 0.0) {
+        return QPointF(m_worldWidth * 0.5, m_worldHeight * 0.5);
+    }
+    return QPointF(sx / n, sy / n);
+}
+
 void MiniMapWidget::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
+    // Clear the layer first to avoid stale translucent artifacts.
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.fillRect(rect(), Qt::transparent);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
+    if (m_drawMapGeometry && m_zonePresent && m_polyline.size() >= 3) {
+        QPolygonF poly;
+        poly.reserve(m_polyline.size());
+        for (const auto& p : m_polyline) poly << worldToWidget(p);
+
+        const int alpha = static_cast<int>(60 + (120 * m_zoneConfidence));
+        const QColor fill = QColor(255, 70, 70, alpha);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(fill);
+        painter.drawPolygon(poly);
+    }
+
+    if (m_zonePresent) {
+        const QPointF c = worldToWidget(zoneCenterWorld());
+        const double scale = 18.0 + (8.0 * m_zoneConfidence);
+
+        painter.setPen(QPen(QColor(255, 245, 120, 240), 3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(QColor(255, 245, 120, 220));
+
+        // Approximate inferred human figure for blind-zone presence.
+        painter.drawEllipse(QPointF(c.x(), c.y() - scale * 1.6), scale * 0.35, scale * 0.35);
+        painter.drawLine(QPointF(c.x(), c.y() - scale * 1.2), QPointF(c.x(), c.y() + scale * 0.3));
+        painter.drawLine(QPointF(c.x(), c.y() - scale * 0.6), QPointF(c.x() - scale * 0.7, c.y() - scale * 0.1));
+        painter.drawLine(QPointF(c.x(), c.y() - scale * 0.6), QPointF(c.x() + scale * 0.7, c.y() - scale * 0.1));
+        painter.drawLine(QPointF(c.x(), c.y() + scale * 0.3), QPointF(c.x() - scale * 0.55, c.y() + scale * 1.2));
+        painter.drawLine(QPointF(c.x(), c.y() + scale * 0.3), QPointF(c.x() + scale * 0.55, c.y() + scale * 1.2));
+    }
+
     if (m_drawMapGeometry) {
-        // Only draw map lines with transparent background.
+        // Draw map lines only when geometry overlay is enabled.
         painter.setPen(QPen(QColor(0, 220, 255, 210), 3));
         for (const auto& e : m_edges) {
             QPointF a;
@@ -99,6 +163,16 @@ void MiniMapWidget::paintEvent(QPaintEvent *)
             }
             painter.drawLine(worldToWidget(a), worldToWidget(b));
         }
+    }
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(255, 102, 102, 230));
+    for (const auto& n : m_nodes) {
+        const QPointF p = worldToWidget(n.pos);
+        painter.drawEllipse(p, 8, 8);
+        painter.setPen(QPen(QColor(255, 255, 255, 230), 1));
+        painter.drawText(QRectF(p.x() + 8, p.y() - 16, 28, 20), Qt::AlignLeft | Qt::AlignVCenter, n.id);
+        painter.setPen(Qt::NoPen);
     }
 
     // Polyline is intentionally not drawn here to avoid duplicate boxes on MiniMap.
@@ -125,7 +199,9 @@ void MiniMapWidget::mousePressEvent(QMouseEvent *event)
         }
     }
 
-    emit worldClicked(world);
+    if (m_worldClickEnabled) {
+        emit worldClicked(world);
+    }
 }
 
 void MiniMapWidget::mouseMoveEvent(QMouseEvent *event)

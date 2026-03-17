@@ -35,6 +35,12 @@ void CctvOverlayWidget::setMapVisible(bool visible)
     update();
 }
 
+void CctvOverlayWidget::setNodesVisible(bool visible)
+{
+    m_nodesVisible = visible;
+    update();
+}
+
 void CctvOverlayWidget::setGoalMarkerVisible(bool visible)
 {
     m_goalVisible = visible;
@@ -106,7 +112,9 @@ void CctvOverlayWidget::paintEvent(QPaintEvent *)
         for (int i = 0; i + 1 < m_polyline.size(); ++i) {
             painter.drawLine(worldToImage(m_polyline[i]), worldToImage(m_polyline[i + 1]));
         }
+    }
 
+    if (m_nodesVisible) {
         // Map nodes
         painter.setBrush(Qt::green);
         painter.setPen(Qt::NoPen);

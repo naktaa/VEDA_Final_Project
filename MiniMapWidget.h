@@ -34,6 +34,8 @@ public:
     void setGoalMarkerVisible(bool visible);
     void setGoalMarker(const QPointF& worldPos);
     void setDrawMapGeometry(bool enabled);
+    void setWorldClickEnabled(bool enabled);
+    void setZonePresenceState(bool present, double confidence);
 
 signals:
     void nodeClicked(QString id);
@@ -49,6 +51,7 @@ protected:
 private:
     QPointF worldToWidget(const QPointF& w) const;
     QPointF widgetToWorld(const QPointF& p) const;
+    QPointF zoneCenterWorld() const;
 
 
 private:
@@ -66,6 +69,9 @@ private:
     bool m_goalVisible = false;
     QPointF m_goalWorld;
     bool m_drawMapGeometry = true;
+    bool m_worldClickEnabled = true;
+    bool m_zonePresent = false;
+    double m_zoneConfidence = 0.0;
 };
 
 #endif

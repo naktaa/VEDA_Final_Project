@@ -45,16 +45,16 @@ if(WIN32)
     set(VCPKG_TRIPLET "x64-windows" CACHE STRING "vcpkg triplet")
     set(VCPKG_INSTALLED_DIR "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}")
 
-    # toolchain ?�이??find_package가 ?�게 prefix 강제
+    # toolchain ?�이??find_package가 ?�게 prefix 강제
     list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}")
 endif()
 
-# unofficial-mosquitto ?�선
+# unofficial-mosquitto ?�선
 find_package(unofficial-mosquitto CONFIG QUIET)
 if(unofficial-mosquitto_FOUND)
     set(MOSQ_TARGET unofficial::mosquitto::mosquitto)
 else()
-    # fallback (?�경???�라 ?��??�공???�을 ???�어 include/lib 직접 링크??준�?
+    # fallback (?�경???�라 ?��??�공???�을 ???�어 include/lib 직접 링크??준�?
     find_package(mosquitto CONFIG QUIET)
     set(MOSQ_TARGET "")
 endif()
@@ -83,6 +83,14 @@ set(PROJECT_SOURCES
     GstVideoWidget.cpp
     GstVideoWidget.h
 
+    PoseTypes.h
+    PoseOverlayWidget.cpp
+    PoseOverlayWidget.h
+    RobotStatusWindow.cpp
+    RobotStatusWindow.h
+    SystemUsageWindow.cpp
+    SystemUsageWindow.h
+
     FullscreenViewer.cpp
     FullscreenViewer.h
     CaptureCalibOverlay.cpp
@@ -91,9 +99,9 @@ set(PROJECT_SOURCES
     TitleBarWidget.cpp
     TitleBarWidget.h
     FramelessHelper.cpp
-    FramelessHelper.h
+    FramelessHelper.h
 
-    # MQTT 붙인 ?�일??(?��? ??��?�고 ?�던 것들)
+    # MQTT 붙인 ?�일??(?��? ??��?�고 ?�던 것들)
     MqttEvent.h
     MqttSubscriber.h
     MqttSubscriber.cpp
@@ -116,6 +124,8 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         MiniMapWidget.cpp
         MqttPublisher.h
         MqttPublisher.cpp
+
+        image/ui_background.jpg
     )
 else()
     add_executable(main_window ${PROJECT_SOURCES})
@@ -141,7 +151,7 @@ target_link_libraries(main_window PRIVATE
 if(MOSQ_TARGET)
     target_link_libraries(main_window PRIVATE ${MOSQ_TARGET})
 else()
-    # ?�겟이 ???�히??경우 직접 링크
+    # ?�겟이 ???�히??경우 직접 링크
     if(WIN32)
         target_include_directories(main_window PRIVATE "${VCPKG_INSTALLED_DIR}/include")
         target_link_directories(main_window PRIVATE "${VCPKG_INSTALLED_DIR}/lib")
@@ -199,3 +209,12 @@ endif()
 
 
 
+
+
+
+
+
+target_sources(main_window PRIVATE
+    HumanBoxOverlayWidget.cpp
+    HumanBoxOverlayWidget.h
+)

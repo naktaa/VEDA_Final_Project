@@ -10,6 +10,7 @@
 #include <mosquitto.h>
 #include "MapData.h"
 #include "MqttEvent.h"
+#include "PoseTypes.h"
 class MqttSubscriber : public QObject {
     Q_OBJECT
 public:
@@ -21,6 +22,7 @@ public:
 
 signals:
     void eventReceived(const MqttEvent& ev);
+    void poseReceived(const PoseFrame& frame);
     void mapReceived(const MapData& map);
     void homographyReceived(const QTransform& hImgToWorld);
     void logLine(const QString& s);

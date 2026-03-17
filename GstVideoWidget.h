@@ -26,6 +26,8 @@ public:
     void setDigitalZoom(double zoom, double cx = 0.5, double cy = 0.5);
     void resetZoom();
     bool widgetToImagePoint(const QPointF& widgetPos, QPointF& imagePos) const;
+    QRect videoDisplayRect() const;
+    QSize currentFrameSize() const;
 
 protected:
     void paintEvent(QPaintEvent *event) override;

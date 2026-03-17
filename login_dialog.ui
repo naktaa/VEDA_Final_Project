@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>381</width>
-    <height>253</height>
+    <width>980</width>
+    <height>620</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -18,17 +18,17 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>381</width>
-     <height>251</height>
+     <width>980</width>
+     <height>620</height>
     </rect>
    </property>
    <widget class="QWidget" name="verticalLayoutWidget">
     <property name="geometry">
      <rect>
-      <x>10</x>
-      <y>0</y>
-      <width>361</width>
-      <height>241</height>
+      <x>325</x>
+      <y>150</y>
+      <width>330</width>
+      <height>300</height>
      </rect>
     </property>
     <layout class="QVBoxLayout" name="verticalLayout_root">
@@ -49,39 +49,35 @@
       </widget>
      </item>
      <item>
-      <layout class="QFormLayout" name="formLayout">
-       <item row="0" column="0">
-        <widget class="QLabel" name="ID">
-         <property name="text">
-          <string>ID</string>
-         </property>
-        </widget>
-       </item>
-       <item row="0" column="1">
-        <widget class="QLineEdit" name="editId">
-         <property name="placeholderText">
-          <string>Enter ID</string>
-         </property>
-        </widget>
-       </item>
-       <item row="1" column="0">
-        <widget class="QLabel" name="Password">
-         <property name="text">
-          <string>Password</string>
-         </property>
-        </widget>
-       </item>
-       <item row="1" column="1">
-        <widget class="QLineEdit" name="editPw">
-         <property name="echoMode">
-          <enum>QLineEdit::EchoMode::Password</enum>
-         </property>
-         <property name="placeholderText">
-          <string>Enter Password</string>
-         </property>
-        </widget>
-       </item>
-      </layout>
+      <widget class="QLabel" name="ID">
+       <property name="text">
+        <string>ID</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="editId">
+       <property name="placeholderText">
+        <string>Enter ID</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="Password">
+       <property name="text">
+        <string>Password</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="editPw">
+       <property name="echoMode">
+        <enum>QLineEdit::EchoMode::Password</enum>
+       </property>
+       <property name="placeholderText">
+        <string>Enter Password</string>
+       </property>
+      </widget>
      </item>
      <item>
       <widget class="QLabel" name="labelStatus">
@@ -102,6 +98,19 @@
      <item>
       <layout class="QHBoxLayout" name="horizontalLayout">
        <item>
+        <spacer name="horizontalSpacerLeft">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
         <widget class="QPushButton" name="btnLogin">
          <property name="text">
           <string>Login</string>
@@ -112,11 +121,17 @@
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="btnExit">
-         <property name="text">
-          <string>Exit</string>
+        <spacer name="horizontalSpacerRight">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
          </property>
-        </widget>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
        </item>
       </layout>
      </item>

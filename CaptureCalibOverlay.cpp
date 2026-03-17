@@ -148,12 +148,12 @@ void CaptureCalibOverlay::paintEvent(QPaintEvent* e)
         p.setPen(QPen(QColor(0, 220, 255, 230), 3));
         if (m_points[0].x() >= 0 && m_points[1].x() >= 0)
             p.drawLine(imageToWidget(m_points[0]), imageToWidget(m_points[1]));
-        if (m_points[1].x() >= 0 && m_points[2].x() >= 0)
-            p.drawLine(imageToWidget(m_points[1]), imageToWidget(m_points[2]));
-        if (m_points[2].x() >= 0 && m_points[3].x() >= 0)
-            p.drawLine(imageToWidget(m_points[2]), imageToWidget(m_points[3]));
-        if (m_points[3].x() >= 0 && m_points[0].x() >= 0)
-            p.drawLine(imageToWidget(m_points[3]), imageToWidget(m_points[0]));
+        if (m_points[1].x() >= 0 && m_points[3].x() >= 0)
+            p.drawLine(imageToWidget(m_points[1]), imageToWidget(m_points[3]));
+        if (m_points[3].x() >= 0 && m_points[2].x() >= 0)
+            p.drawLine(imageToWidget(m_points[3]), imageToWidget(m_points[2]));
+        if (m_points[2].x() >= 0 && m_points[0].x() >= 0)
+            p.drawLine(imageToWidget(m_points[2]), imageToWidget(m_points[0]));
     }
 
     static const char* labels[4] = {"10", "11", "12", "13"};
@@ -167,7 +167,7 @@ void CaptureCalibOverlay::paintEvent(QPaintEvent* e)
     }
 
     p.setPen(Qt::white);
-    p.drawText(16, 24, "Set points 10 -> 11 -> 12 -> 13, drag to refine, Map ON/OFF toggles guide lines");
+    p.drawText(16, 24, "Set points by ArUco ID 10, 11, 12, 13. Drag to refine, Map ON/OFF toggles guide lines");
 }
 
 void CaptureCalibOverlay::mousePressEvent(QMouseEvent* e)

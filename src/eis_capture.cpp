@@ -262,12 +262,13 @@ void capture_loop() {
 
     GyroEIS gyro_eis(intr, cfg, &g_gyro_buffer);
 
-    auto estimate_lk_da = [&](const Mat& prev, const Mat& curr, double& out_da) -> bool {
+    auto estimate_lk_transform = [&](const Mat& prev, const Mat& curr,
+                                     double& out_dx, double& out_dy, double& out_da) -> bool {
         std::vector<Point2f> feat_prev, feat_curr;
         std::vector<uchar> status;
         std::vector<float> err_vec;
         goodFeaturesToTrack(prev, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
-        if (feat_prev.size() < 10) return false;
+        if (feat_prev.size() < (size_t)LK_TRANS_MIN_FEATURES) return false;
         calcOpticalFlowPyrLK(prev, curr, feat_prev, feat_curr, status, err_vec);
         std::vector<Point2f> gp, gc;
         for (size_t i = 0; i < status.size(); ++i) {
@@ -276,6 +277,8 @@ void capture_loop() {
         if (gp.size() < 6) return false;
         Mat affine = estimateAffinePartial2D(gp, gc);
         if (affine.empty()) return false;
+        out_dx = affine.at<double>(0, 2);
+        out_dy = affine.at<double>(1, 2);
         out_da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
         return true;
     };
@@ -285,6 +288,17 @@ void capture_loop() {
     bool prev_lk_ok = false;
     double prev_frame_time_ms = 0.0;
     bool prev_time_ok = false;
+
+    struct TransState {
+        Mat prev_gray;
+        bool ok = false;
+        double path_x = 0.0;
+        double path_y = 0.0;
+        double smooth_x = 0.0;
+        double smooth_y = 0.0;
+        bool smooth_init = false;
+    };
+    TransState trans;
 
     struct CalibFrame { double t_ms; double lk_da; };
     std::vector<CalibFrame> calib_frames;
@@ -334,6 +348,7 @@ void capture_loop() {
             gyro_eis.reset();
             prev_lk_gray.release();
             prev_lk_ok = false;
+            trans = TransState{};
             prev_time_ok = false;
             calib_frames.clear();
             calib_start_ms = -1.0;
@@ -360,12 +375,14 @@ void capture_loop() {
         bool need_lk = do_offset_sweep || dbg || (log_every > 0);
 
         Mat curr_gray;
+        double lk_dx = 0.0;
+        double lk_dy = 0.0;
         double lk_da = 0.0;
         bool lk_ok = false;
         if (need_lk) {
             cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
             if (prev_lk_ok) {
-                lk_ok = estimate_lk_da(prev_lk_gray, curr_gray, lk_da);
+                lk_ok = estimate_lk_transform(prev_lk_gray, curr_gray, lk_dx, lk_dy, lk_da);
             }
             prev_lk_gray = curr_gray.clone();
             prev_lk_ok = true;
@@ -445,12 +462,48 @@ void capture_loop() {
 
         gyro_eis.set_warp_mode((GyroWarpMode)g_gyro_warp_mode.load());
         GyroEISDebug dbginfo{};
-        Mat gyro_out;
-        bool gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, &dbginfo);
+        Mat gyro_out = frame;
+        bool gyro_ok = false;
+        if (mode != EisMode::LK) {
+            gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, &dbginfo);
+        }
 
         Mat stabilized = gyro_out;
-        if (mode == EisMode::LK) {
-            stabilized = frame;
+        bool trans_ok = false;
+        double trans_dx = 0.0, trans_dy = 0.0, trans_da = 0.0;
+        double corr_x = 0.0, corr_y = 0.0;
+        if (mode == EisMode::HYBRID || mode == EisMode::LK) {
+            const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
+            Mat curr_trans_gray;
+            cvtColor(trans_base, curr_trans_gray, COLOR_BGR2GRAY);
+            if (trans.ok) {
+                trans_ok = estimate_lk_transform(trans.prev_gray, curr_trans_gray,
+                                                 trans_dx, trans_dy, trans_da);
+                if (trans_ok) {
+                    trans.path_x += trans_dx;
+                    trans.path_y += trans_dy;
+                    if (!trans.smooth_init) {
+                        trans.smooth_x = trans.path_x;
+                        trans.smooth_y = trans.path_y;
+                        trans.smooth_init = true;
+                    } else {
+                        trans.smooth_x = LK_TRANS_ALPHA * trans.smooth_x + (1.0 - LK_TRANS_ALPHA) * trans.path_x;
+                        trans.smooth_y = LK_TRANS_ALPHA * trans.smooth_y + (1.0 - LK_TRANS_ALPHA) * trans.path_y;
+                    }
+                    corr_x = std::clamp(trans.smooth_x - trans.path_x, -LK_TRANS_MAX_CORR_PX, LK_TRANS_MAX_CORR_PX);
+                    corr_y = std::clamp(trans.smooth_y - trans.path_y, -LK_TRANS_MAX_CORR_PX, LK_TRANS_MAX_CORR_PX);
+                    Mat Ht = (Mat_<double>(3, 3) << 1, 0, corr_x,
+                                                   0, 1, corr_y,
+                                                   0, 0, 1);
+                    warpPerspective(trans_base, stabilized, Ht, trans_base.size(), INTER_LINEAR, BORDER_CONSTANT);
+                } else {
+                    stabilized = trans_base;
+                }
+            } else {
+                stabilized = trans_base;
+            }
+            trans.prev_gray = curr_trans_gray.clone();
+            trans.ok = true;
         }
 
         double imu_err_ms = 0.0;
@@ -529,6 +582,12 @@ void capture_loop() {
                         "[WIN] t0=%.2f t1=%.2f used=%d range=[%.2f,%.2f]\n",
                         delta_range.t0, delta_range.t1, delta_range.used,
                         delta_range.min_ts, delta_range.max_ts);
+            }
+
+            if (trans_ok) {
+                fprintf(stderr,
+                        "[TRANS] dx=%.2f dy=%.2f corr=%.2f %.2f\n",
+                        trans_dx, trans_dy, corr_x, corr_y);
             }
         }
 

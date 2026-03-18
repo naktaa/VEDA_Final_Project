@@ -143,6 +143,45 @@ class StreamReader(threading.Thread):
                     self.queue.put(sample)
 
 
+class DemoGenerator(threading.Thread):
+    """Generate synthetic LK/Gyro stream for quick visualization checks."""
+
+    def __init__(self, queue: SimpleQueue, fps: float, lag_ms: float, invert: bool):
+        super().__init__(daemon=True)
+        self.queue = queue
+        self.dt = 1.0 / max(1e-6, fps)
+        self.lag_ms = lag_ms
+        self.sign = -1.0 if invert else 1.0
+        self.stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def run(self) -> None:
+        t0 = time.monotonic()
+        while not self.stop_event.is_set():
+            t_sec = time.monotonic() - t0
+            t_ms = t_sec * 1000.0
+            # Composite motion-like waveform.
+            lk = (
+                3.5 * np.sin(2.0 * np.pi * 0.65 * t_sec)
+                + 1.8 * np.sin(2.0 * np.pi * 1.3 * t_sec + 0.5)
+                + 0.6 * np.sin(2.0 * np.pi * 2.1 * t_sec + 1.2)
+            )
+            tg = t_sec - self.lag_ms / 1000.0
+            gyro = self.sign * (
+                3.5 * np.sin(2.0 * np.pi * 0.65 * tg)
+                + 1.8 * np.sin(2.0 * np.pi * 1.3 * tg + 0.5)
+                + 0.6 * np.sin(2.0 * np.pi * 2.1 * tg + 1.2)
+            )
+            # Small noise to look more realistic.
+            gyro += float(np.random.normal(0.0, 0.08))
+            lk += float(np.random.normal(0.0, 0.05))
+
+            self.queue.put((t_ms, lk, gyro))
+            time.sleep(self.dt)
+
+
 def update_axis_ylim(ax, arrays, default=(-1.0, 1.0)):
     ys = []
     for arr in arrays:
@@ -234,6 +273,10 @@ def main():
     ap = argparse.ArgumentParser(description="Live LK vs gyro compare visualizer")
     ap.add_argument("--input", type=str, default=None, help="append-only input file path (tail -f style). If omitted, read from stdin.")
     ap.add_argument("--from-start", action="store_true", help="for --input mode, read from beginning instead of seeking to end")
+    ap.add_argument("--demo", action="store_true", help="run synthetic realtime data generator (no external input needed)")
+    ap.add_argument("--demo-fps", type=float, default=30.0, help="synthetic generator FPS")
+    ap.add_argument("--demo-lag-ms", type=float, default=12.0, help="synthetic gyro lag for demo")
+    ap.add_argument("--demo-invert", action="store_true", help="invert synthetic gyro sign for demo")
     ap.add_argument("--display-sec", type=float, default=8.0, help="visible rolling time window in seconds")
     ap.add_argument("--analysis-sec", type=float, default=2.5, help="recent window for lag estimation in seconds")
     ap.add_argument("--lag-max-ms", type=float, default=80.0, help="lag sweep range [-max, +max] ms")
@@ -246,8 +289,18 @@ def main():
 
     data_queue: SimpleQueue = SimpleQueue()
     parser = StreamParser(fallback_fps=args.fps_fallback)
-    reader = StreamReader(data_queue, parser, input_path=args.input, from_start=args.from_start)
-    reader.start()
+    bg_worker = None
+    if args.demo:
+        bg_worker = DemoGenerator(
+            data_queue,
+            fps=args.demo_fps,
+            lag_ms=args.demo_lag_ms,
+            invert=args.demo_invert,
+        )
+        bg_worker.start()
+    else:
+        bg_worker = StreamReader(data_queue, parser, input_path=args.input, from_start=args.from_start)
+        bg_worker.start()
 
     t_buf = deque(maxlen=args.max_buffer)
     lk_buf = deque(maxlen=args.max_buffer)
@@ -411,7 +464,8 @@ def main():
         plt.tight_layout()
         plt.show()
     finally:
-        reader.stop()
+        if bg_worker is not None:
+            bg_worker.stop()
         _ = ani
 
 

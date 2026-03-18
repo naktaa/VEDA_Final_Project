@@ -21,6 +21,11 @@
 #include <cstdio>
 #include <mutex>
 #include <thread>
+#include <poll.h>
+#include <termios.h>
+#include <unistd.h>
+
+#include "tank_drive.hpp"
 
 using namespace std;
 using namespace cv;
@@ -176,6 +181,49 @@ static bool push_bgr(GstAppSrc* appsrc, const Mat& frame, guint64 idx) {
 }
 
 static void sigint_handler(int) { g_running = false; }
+
+static void keyboard_loop() {
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "[KEY] stdin is not a TTY. Keyboard control disabled.\n");
+        return;
+    }
+
+    termios oldt{};
+    if (tcgetattr(STDIN_FILENO, &oldt) != 0) {
+        perror("[KEY] tcgetattr");
+        return;
+    }
+    termios newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    newt.c_cc[VMIN] = 0;
+    newt.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &newt) != 0) {
+        perror("[KEY] tcsetattr");
+        return;
+    }
+
+    tank_drive::init();
+    fprintf(stderr, "[KEY] WASD/QE + Space/X stop, +/- speed, H help\n");
+
+    pollfd pfd;
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
+
+    while (g_running) {
+        int r = poll(&pfd, 1, 50);
+        if (r > 0 && (pfd.revents & POLLIN)) {
+            char ch = 0;
+            ssize_t n = read(STDIN_FILENO, &ch, 1);
+            if (n == 1) {
+                tank_drive::handle_key(ch);
+            }
+        }
+        tank_drive::tick();
+    }
+
+    tank_drive::shutdown();
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+}
 
 // ======================== Capture + Stabilize ========================
 
@@ -404,12 +452,14 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  Border crop: %d px\n", BORDER_CROP);
     fprintf(stderr, "==============================\n");
 
+    std::thread key_th(keyboard_loop);
     std::thread cap_th(capture_loop);
     GMainLoop* loop = g_main_loop_new(nullptr, FALSE);
     g_main_loop_run(loop);
 
     g_running = false;
     cap_th.join();
+    if (key_th.joinable()) key_th.join();
     g_main_loop_unref(loop);
     return 0;
 }

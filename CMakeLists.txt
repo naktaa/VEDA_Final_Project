@@ -32,6 +32,7 @@ add_executable(eis
 
 add_executable(eis_LKonly
   src/eis_LKonly.cpp
+  src/tank_drive.cpp
 )
 
 target_include_directories(eis PRIVATE
@@ -65,4 +66,5 @@ target_compile_options(eis_LKonly PRIVATE
 target_link_libraries(eis_LKonly
   ${OpenCV_LIBS}
   ${GST_LIBRARIES}
+  wiringPi
 )

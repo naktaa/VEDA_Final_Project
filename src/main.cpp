@@ -25,6 +25,11 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --ts-source {auto|sensor|pts|arrival}\n");
     fprintf(stderr, "  --gyro-warp {jitter|delta}\n");
     fprintf(stderr, "  --profile {run|calib|debug}\n");
+    fprintf(stderr, "  --libcamera-xrgb {0|1}\n");
+    fprintf(stderr, "  --smooth-alpha <0~1>\n");
+    fprintf(stderr, "  --max-roll-deg <deg>\n");
+    fprintf(stderr, "  --max-pitch-deg <deg>\n");
+    fprintf(stderr, "  --max-yaw-deg <deg>\n");
 }
 
 static bool parse_args(int argc, char* argv[]) {
@@ -122,6 +127,31 @@ static bool parse_args(int argc, char* argv[]) {
             else if (s == "debug") g_profile = (int)RunProfile::DEBUG;
             else return false;
             profile_set = true;
+        } else if (a == "--libcamera-xrgb") {
+            if (!eat_value(val)) return false;
+            g_libcamera_xrgb = (std::stoi(val) != 0);
+        } else if (a.rfind("--libcamera-xrgb=", 0) == 0) {
+            g_libcamera_xrgb = (std::stoi(a.substr(18)) != 0);
+        } else if (a == "--smooth-alpha") {
+            if (!eat_value(val)) return false;
+            g_smooth_alpha = std::stod(val);
+        } else if (a.rfind("--smooth-alpha=", 0) == 0) {
+            g_smooth_alpha = std::stod(a.substr(15));
+        } else if (a == "--max-roll-deg") {
+            if (!eat_value(val)) return false;
+            g_max_roll_rad = std::stod(val) * CV_PI / 180.0;
+        } else if (a.rfind("--max-roll-deg=", 0) == 0) {
+            g_max_roll_rad = std::stod(a.substr(16)) * CV_PI / 180.0;
+        } else if (a == "--max-pitch-deg") {
+            if (!eat_value(val)) return false;
+            g_max_pitch_rad = std::stod(val) * CV_PI / 180.0;
+        } else if (a.rfind("--max-pitch-deg=", 0) == 0) {
+            g_max_pitch_rad = std::stod(a.substr(17)) * CV_PI / 180.0;
+        } else if (a == "--max-yaw-deg") {
+            if (!eat_value(val)) return false;
+            g_max_yaw_rad = std::stod(val) * CV_PI / 180.0;
+        } else if (a.rfind("--max-yaw-deg=", 0) == 0) {
+            g_max_yaw_rad = std::stod(a.substr(15)) * CV_PI / 180.0;
         } else {
             fprintf(stderr, "[ERR] Unknown arg: %s\n", a.c_str());
             return false;
@@ -175,6 +205,14 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  IMU offset: %.3f ms  (sweep: %s)\n", g_manual_imu_offset_ms,
             g_offset_sweep.load() ? "on" : "off");
     fprintf(stderr, "  Profile: %s\n", profile_str((RunProfile)g_profile.load()));
+    fprintf(stderr, "  Libcamera XRGB: %s\n", g_libcamera_xrgb.load() ? "true" : "false");
+    fprintf(stderr, "  Gyro alpha=%.3f max(deg) R=%.1f P=%.1f Y=%.1f\n",
+            g_smooth_alpha.load(),
+            g_max_roll_rad.load() * 180.0 / CV_PI,
+            g_max_pitch_rad.load() * 180.0 / CV_PI,
+            g_max_yaw_rad.load() * 180.0 / CV_PI);
+    fprintf(stderr, "  IMU map: roll axis=%d sign=%d | pitch axis=%d sign=%d | yaw axis=%d sign=%d\n",
+            IMU_AXIS_ROLL, IMU_SIGN_ROLL, IMU_AXIS_PITCH, IMU_SIGN_PITCH, IMU_AXIS_YAW, IMU_SIGN_YAW);
     fprintf(stderr, "  TS source: %s\n", ts_pref_str((TsSourcePref)g_ts_pref.load()));
     fprintf(stderr, "  GyroEIS smooth alpha=%.3f  warp=%s\n",
             SMOOTH_ALPHA, gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));

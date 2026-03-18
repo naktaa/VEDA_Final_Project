@@ -112,6 +112,10 @@ struct GyroEISDebug {
     Quaternion q_corr;
     GyroRangeInfo range;
     double crop_percent = 0.0;
+    cv::Vec3d e_corr_raw = {0,0,0};
+    cv::Vec3d e_corr_clamped = {0,0,0};
+    double required_scale = 1.0;
+    double required_crop_percent = 0.0;
 };
 
 class GyroEIS {

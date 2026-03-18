@@ -32,6 +32,13 @@ extern std::atomic<bool> g_offset_sweep;
 extern std::atomic<int> g_gyro_warp_mode;
 extern double g_manual_imu_offset_ms;
 extern std::atomic<int> g_profile;
+extern std::atomic<bool> g_libcamera_xrgb;
+
+// Gyro tuning (runtime overrides)
+extern std::atomic<double> g_smooth_alpha;
+extern std::atomic<double> g_max_roll_rad;
+extern std::atomic<double> g_max_pitch_rad;
+extern std::atomic<double> g_max_yaw_rad;
 
 // Time helpers
 int64_t clock_ns(clockid_t id);

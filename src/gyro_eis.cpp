@@ -36,6 +36,30 @@ static Quaternion quat_from_euler(double roll, double pitch, double yaw) {
     return q;
 }
 
+static double required_scale_from_homography(const cv::Mat& H, int w, int h) {
+    std::vector<cv::Point2f> corners;
+    corners.emplace_back(0.0f, 0.0f);
+    corners.emplace_back((float)w, 0.0f);
+    corners.emplace_back((float)w, (float)h);
+    corners.emplace_back(0.0f, (float)h);
+    std::vector<cv::Point2f> warped;
+    cv::perspectiveTransform(corners, warped, H);
+
+    double minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+    for (const auto& p : warped) {
+        minx = std::min(minx, (double)p.x);
+        maxx = std::max(maxx, (double)p.x);
+        miny = std::min(miny, (double)p.y);
+        maxy = std::max(maxy, (double)p.y);
+    }
+    double overlap_w = std::min((double)w, maxx) - std::max(0.0, minx);
+    double overlap_h = std::min((double)h, maxy) - std::max(0.0, miny);
+    if (overlap_w <= 1.0 || overlap_h <= 1.0) return 10.0;
+    double scale_x = (double)w / overlap_w;
+    double scale_y = (double)h / overlap_h;
+    return std::max(1.0, std::max(scale_x, scale_y));
+}
+
 // ---------------- CameraIntrinsics ----------------
 
 cv::Mat CameraIntrinsics::K() const {
@@ -333,12 +357,16 @@ bool GyroEIS::process(const cv::Mat& frame, double frame_time_ms, double imu_off
 
     // clamp correction (prevent 180deg flip + slow recovery on large turns)
     cv::Vec3d e = quat_to_euler(q_corr);
+    cv::Vec3d e_raw = e;
     e[0] = std::clamp(e[0] * cfg_.roll_gain, -cfg_.max_roll_rad, cfg_.max_roll_rad);
     e[1] = std::clamp(e[1] * cfg_.pitch_gain, -cfg_.max_pitch_rad, cfg_.max_pitch_rad);
     e[2] = std::clamp(e[2] * cfg_.yaw_gain, -cfg_.max_yaw_rad, cfg_.max_yaw_rad);
     q_corr = quat_from_euler(e[0], e[1], e[2]);
 
     cv::Mat H = warp_.homography_from_quat(q_corr);
+
+    double req_scale = required_scale_from_homography(H, frame.cols, frame.rows);
+    double req_crop = (1.0 - 1.0 / req_scale) * 100.0;
 
     cv::warpPerspective(frame, out, H, frame.size(), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
 
@@ -360,6 +388,10 @@ bool GyroEIS::process(const cv::Mat& frame, double frame_time_ms, double imu_off
         dbg->q_corr = q_corr;
         dbg->range = info;
         dbg->crop_percent = cfg_.enable_crop ? cfg_.crop_percent : 0.0;
+        dbg->e_corr_raw = e_raw;
+        dbg->e_corr_clamped = e;
+        dbg->required_scale = req_scale;
+        dbg->required_crop_percent = req_crop;
     }
     return true;
 }

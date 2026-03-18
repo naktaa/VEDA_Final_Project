@@ -44,6 +44,10 @@ bool LibcameraGrabber::init() {
         return false;
     }
 
+    fprintf(stderr, "[LC] Configured format: %s %ux%u stride=%u\n",
+            cfg.pixelFormat.toString().c_str(),
+            cfg.size.width, cfg.size.height, cfg.stride);
+
     stream_ = cfg.stream();
     allocator_ = std::make_unique<libcamera::FrameBufferAllocator>(camera_);
     if (allocator_->allocate(stream_) < 0) {

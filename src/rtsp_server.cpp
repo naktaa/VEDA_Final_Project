@@ -12,7 +12,7 @@ static cv::Mat ensureBGR(const cv::Mat& in) {
     if (in.empty()) return cv::Mat();
     cv::Mat out = in;
     if (out.type() == CV_8UC4) {
-        if (LIBCAMERA_XRGB) {
+        if (g_libcamera_xrgb.load()) {
             cv::Mat tmp(out.rows, out.cols, CV_8UC3);
             // XRGB -> BGR (X,R,G,B)
             int from_to[] = {3, 0, 2, 1, 1, 2};

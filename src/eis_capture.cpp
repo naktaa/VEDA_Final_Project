@@ -43,7 +43,7 @@ static cv::Mat ensureBGR(const cv::Mat& in) {
     if (in.empty()) return cv::Mat();
     cv::Mat out = in;
     if (out.type() == CV_8UC4) {
-        if (LIBCAMERA_XRGB) {
+        if (g_libcamera_xrgb.load()) {
             cv::Mat tmp(out.rows, out.cols, CV_8UC3);
             // XRGB -> BGR (X,R,G,B)
             int from_to[] = {3, 0, 2, 1, 1, 2};
@@ -148,6 +148,70 @@ static double compute_corr(const std::deque<std::pair<double, double>>& buf) {
     double denom = std::sqrt((n * sumxx - sumx * sumx) * (n * sumyy - sumy * sumy));
     if (denom < 1e-9) return 0.0;
     return (n * sumxy - sumx * sumy) / denom;
+}
+
+struct FlowDebugInfo {
+    double dx = 0.0;
+    double dy = 0.0;
+    double da = 0.0;
+    cv::Point2f mean_all{0,0};
+    cv::Point2f mean_center{0,0};
+    cv::Point2f mean_edge{0,0};
+    int n_all = 0;
+    int n_center = 0;
+    int n_edge = 0;
+};
+
+static bool draw_optical_flow_overlay(const cv::Mat& prev_gray, const cv::Mat& curr_gray,
+                                      cv::Mat& canvas, FlowDebugInfo& info) {
+    if (prev_gray.empty() || curr_gray.empty()) return false;
+    std::vector<cv::Point2f> feat_prev, feat_curr;
+    std::vector<uchar> status;
+    std::vector<float> err_vec;
+    goodFeaturesToTrack(prev_gray, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
+    if (feat_prev.size() < (size_t)LK_TRANS_MIN_FEATURES) return false;
+    calcOpticalFlowPyrLK(prev_gray, curr_gray, feat_prev, feat_curr, status, err_vec);
+    std::vector<cv::Point2f> gp, gc;
+    const cv::Point2f center(canvas.cols * 0.5f, canvas.rows * 0.5f);
+    const float center_r = 0.25f * std::min(canvas.cols, canvas.rows);
+    for (size_t i = 0; i < status.size(); ++i) {
+        if (!status[i]) continue;
+        cv::Point2f p0 = feat_prev[i];
+        cv::Point2f p1 = feat_curr[i];
+        gp.push_back(p0);
+        gc.push_back(p1);
+        cv::Point2f v = p1 - p0;
+        info.mean_all += v;
+        info.n_all++;
+        float dist = cv::norm(p0 - center);
+        if (dist < center_r) {
+            info.mean_center += v;
+            info.n_center++;
+        } else {
+            info.mean_edge += v;
+            info.n_edge++;
+        }
+        cv::line(canvas, p0, p1, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+        cv::circle(canvas, p0, 1, cv::Scalar(0, 255, 0), -1, cv::LINE_AA);
+    }
+    if (info.n_all > 0) {
+        info.mean_all *= (1.0f / info.n_all);
+    }
+    if (info.n_center > 0) {
+        info.mean_center *= (1.0f / info.n_center);
+    }
+    if (info.n_edge > 0) {
+        info.mean_edge *= (1.0f / info.n_edge);
+    }
+    if (gp.size() >= 6) {
+        cv::Mat affine = estimateAffinePartial2D(gp, gc);
+        if (!affine.empty()) {
+            info.dx = affine.at<double>(0, 2);
+            info.dy = affine.at<double>(1, 2);
+            info.da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+        }
+    }
+    return info.n_all > 0;
 }
 
 void capture_loop() {
@@ -270,13 +334,13 @@ void capture_loop() {
 
     CameraIntrinsics intr = CameraIntrinsics::from_fov(G_WIDTH, G_HEIGHT, HFOV_DEG, VFOV_DEG);
     EISConfig cfg;
-    cfg.smooth_alpha = SMOOTH_ALPHA;
+    cfg.smooth_alpha = g_smooth_alpha.load();
     cfg.roll_gain = ROLL_GAIN;
     cfg.pitch_gain = PITCH_GAIN;
     cfg.yaw_gain = YAW_GAIN;
-    cfg.max_roll_rad = MAX_ROLL_RAD;
-    cfg.max_pitch_rad = MAX_PITCH_RAD;
-    cfg.max_yaw_rad = MAX_YAW_RAD;
+    cfg.max_roll_rad = g_max_roll_rad.load();
+    cfg.max_pitch_rad = g_max_pitch_rad.load();
+    cfg.max_yaw_rad = g_max_yaw_rad.load();
     cfg.crop_percent = FIXED_CROP_PERCENT;
     cfg.enable_crop = false; // crop after all warps
 
@@ -329,6 +393,8 @@ void capture_loop() {
         double scale = 0.5;
     };
     TransState trans;
+    Mat flow_prev_gray;
+    bool flow_prev_ok = false;
 
     struct CalibFrame { double t_ms; double lk_da; };
     std::vector<CalibFrame> calib_frames;
@@ -352,6 +418,7 @@ void capture_loop() {
     EisMode last_mode = (EisMode)g_mode.load();
     bool lk_disabled_warned = false;
     double last_cost_ms = 0.0;
+    bool color_logged = false;
 
     while (g_running) {
         int64_t frame_start_ns = clock_ns(CLOCK_MONOTONIC_RAW);
@@ -372,6 +439,12 @@ void capture_loop() {
             cv::flip(frame, frame, -1);
         }
 
+        if (!color_logged && !frame.empty()) {
+            cv::Scalar m = cv::mean(frame);
+            fprintf(stderr, "[COLOR] mean B=%.1f G=%.1f R=%.1f\n", m[0], m[1], m[2]);
+            color_logged = true;
+        }
+
         if (ts_src != last_ts_src) {
             fprintf(stderr, "[TS] source=%s\n", ts_source_str(ts_src));
             last_ts_src = ts_src;
@@ -383,6 +456,8 @@ void capture_loop() {
             prev_lk_gray.release();
             prev_lk_ok = false;
             trans = TransState{};
+            flow_prev_gray.release();
+            flow_prev_ok = false;
             prev_time_ok = false;
             calib_frames.clear();
             calib_start_ms = -1.0;
@@ -430,6 +505,34 @@ void capture_loop() {
             } else if (!offset_calibrated && (frame_time_ms - calib_start_ms) > OFFSET_CALIB_DURATION_MS) {
                 if (calib_frames.size() >= 8 && g_gyro_buffer.size() >= 10) {
                     double base_off = g_manual_imu_offset_ms;
+                    int pair_total = 0;
+                    int pair_ok = 0;
+                    int pair_low_samples = 0;
+                    int pair_out_of_range = 0;
+                    double lk_motion_sum = 0.0;
+                    for (size_t i = 1; i < calib_frames.size(); ++i) {
+                        pair_total++;
+                        lk_motion_sum += std::abs(calib_frames[i].lk_da);
+                        double t0 = calib_frames[i - 1].t_ms + base_off;
+                        double t1 = calib_frames[i].t_ms + base_off;
+                        cv::Vec3d delta;
+                        GyroRangeInfo rinfo;
+                        if (!integrate_gyro_delta(g_gyro_buffer, t0, t1, delta, &rinfo)) {
+                            pair_low_samples++;
+                            continue;
+                        }
+                        if (rinfo.used < SWEEP_MIN_SAMPLES) {
+                            pair_low_samples++;
+                            continue;
+                        }
+                        double err0 = std::abs(t0 - rinfo.min_ts);
+                        double err1 = std::abs(t1 - rinfo.max_ts);
+                        if (err0 > SWEEP_MAX_ERR_MS || err1 > SWEEP_MAX_ERR_MS) {
+                            pair_out_of_range++;
+                            continue;
+                        }
+                        pair_ok++;
+                    }
                     auto cost_for = [&](double delta_ms) -> double {
                         double off_ms = base_off + delta_ms;
                         double sum = 0.0;
@@ -467,7 +570,9 @@ void capture_loop() {
                         time_offset_ms = base_off + best_off;
                     } else {
                         time_offset_ms = base_off;
-                        fprintf(stderr, "[SYNC] sweep failed (insufficient valid samples)\n");
+                        fprintf(stderr,
+                                "[SYNC] sweep failed (valid=%d/%d low_samples=%d out_of_range=%d lk_motion=%.4f)\n",
+                                pair_ok, pair_total, pair_low_samples, pair_out_of_range, lk_motion_sum);
                     }
                 } else {
                     time_offset_ms = g_manual_imu_offset_ms;
@@ -590,6 +695,23 @@ void capture_loop() {
             snprintf(buf, sizeof(buf), "Gyro corr R:%+.2f P:%+.2f Y:%+.2f  crop:%.1f%%",
                      e_corr[0], e_corr[1], e_corr[2], dbginfo.crop_percent);
             putText(stabilized, buf, Point(8, 33), font, 0.4, Scalar(255, 200, 0), 1, LINE_AA);
+
+            // Optical flow overlay (debug only)
+            Mat flow_curr_gray;
+            cvtColor(frame, flow_curr_gray, COLOR_BGR2GRAY);
+            FlowDebugInfo flowinfo;
+            if (flow_prev_ok && draw_optical_flow_overlay(flow_prev_gray, flow_curr_gray, stabilized, flowinfo)) {
+                snprintf(buf, sizeof(buf), "OF dx:%.2f dy:%.2f da:%.2f",
+                         flowinfo.dx, flowinfo.dy, flowinfo.da * 180.0 / CV_PI);
+                putText(stabilized, buf, Point(8, 48), font, 0.4, Scalar(0, 200, 255), 1, LINE_AA);
+                snprintf(buf, sizeof(buf), "OF mean all:(%.1f,%.1f) center:(%.1f,%.1f) edge:(%.1f,%.1f)",
+                         flowinfo.mean_all.x, flowinfo.mean_all.y,
+                         flowinfo.mean_center.x, flowinfo.mean_center.y,
+                         flowinfo.mean_edge.x, flowinfo.mean_edge.y);
+                putText(stabilized, buf, Point(8, 63), font, 0.35, Scalar(0, 200, 255), 1, LINE_AA);
+            }
+            flow_prev_gray = flow_curr_gray.clone();
+            flow_prev_ok = true;
         }
 
         if (log_every > 0 && (frameIdx % (guint64)log_every == 0)) {
@@ -605,6 +727,18 @@ void capture_loop() {
                         (unsigned long long)cap_index);
             }
 
+            fprintf(stderr,
+                    "[ALIGN] src=%s frame=%.2f target=%.2f win=[%.2f,%.2f] "
+                    "range=[%.2f,%.2f] imu_err=%.2fms\n",
+                    ts_source_str(ts_src),
+                    frame_time_ms,
+                    target_curr_ms,
+                    dbginfo.range.t0,
+                    dbginfo.range.t1,
+                    dbginfo.range.min_ts,
+                    dbginfo.range.max_ts,
+                    imu_err_ms);
+
             GyroSample last = g_last_gyro_sample;
             cv::Vec3d e_phys = quat_to_euler_deg(dbginfo.q_phys);
             cv::Vec3d e_virt = quat_to_euler_deg(dbginfo.q_virtual);
@@ -618,6 +752,20 @@ void capture_loop() {
                     e_virt[0], e_virt[1], e_virt[2],
                     e_corr[0], e_corr[1], e_corr[2],
                     g_imu_actual_hz.load());
+
+            fprintf(stderr,
+                    "[CORR] warp=%s raw(deg)=%.2f %.2f %.2f  clamped(deg)=%.2f %.2f %.2f  "
+                    "req_scale=%.2f req_crop=%.1f%% actual_crop=%.1f%%\n",
+                    gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()),
+                    dbginfo.e_corr_raw[0] * 180.0 / CV_PI,
+                    dbginfo.e_corr_raw[1] * 180.0 / CV_PI,
+                    dbginfo.e_corr_raw[2] * 180.0 / CV_PI,
+                    dbginfo.e_corr_clamped[0] * 180.0 / CV_PI,
+                    dbginfo.e_corr_clamped[1] * 180.0 / CV_PI,
+                    dbginfo.e_corr_clamped[2] * 180.0 / CV_PI,
+                    dbginfo.required_scale,
+                    dbginfo.required_crop_percent,
+                    (!profile_calib && FIXED_CROP_PERCENT > 0.0) ? FIXED_CROP_PERCENT : 0.0);
 
             if (lk_ok && gyro_delta_ok) {
                 fprintf(stderr,

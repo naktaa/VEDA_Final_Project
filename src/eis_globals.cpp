@@ -20,6 +20,12 @@ std::atomic<bool> g_offset_sweep{false};
 std::atomic<int> g_gyro_warp_mode{(int)GyroWarpMode::JITTER};
 double g_manual_imu_offset_ms = 0.0;
 std::atomic<int> g_profile{(int)RunProfile::RUN};
+std::atomic<bool> g_libcamera_xrgb{DEFAULT_LIBCAMERA_XRGB};
+
+std::atomic<double> g_smooth_alpha{SMOOTH_ALPHA};
+std::atomic<double> g_max_roll_rad{MAX_ROLL_RAD};
+std::atomic<double> g_max_pitch_rad{MAX_PITCH_RAD};
+std::atomic<double> g_max_yaw_rad{MAX_YAW_RAD};
 
 int64_t clock_ns(clockid_t id) {
     struct timespec ts;

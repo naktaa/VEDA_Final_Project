@@ -30,6 +30,10 @@ add_executable(eis
   src/gyro_eis.cpp
 )
 
+add_executable(eis_LKonly
+  src/eis_LKonly.cpp
+)
+
 target_include_directories(eis PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${OpenCV_INCLUDE_DIRS}
@@ -47,4 +51,18 @@ target_link_libraries(eis
   ${GST_LIBRARIES}
   ${LIBCAMERA_LIBRARIES}
   wiringPi
+)
+
+target_include_directories(eis_LKonly PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
+  ${GST_INCLUDE_DIRS}
+)
+
+target_compile_options(eis_LKonly PRIVATE
+  ${GST_CFLAGS_OTHER}
+)
+
+target_link_libraries(eis_LKonly
+  ${OpenCV_LIBS}
+  ${GST_LIBRARIES}
 )

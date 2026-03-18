@@ -39,6 +39,13 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --gyro-hp-gain-yaw <double>\n");
     fprintf(stderr, "  --gyro-large-rot-thresh-deg <deg>\n");
     fprintf(stderr, "  --gyro-large-rot-gain-scale <0~1>\n");
+    fprintf(stderr, "  --lk-trans-every-n <int>\n");
+    fprintf(stderr, "  --lk-trans-alpha <0~1>\n");
+    fprintf(stderr, "  --lk-trans-max-corr-px <px>\n");
+    fprintf(stderr, "  --lk-trans-scale <0~1>\n");
+    fprintf(stderr, "  --lk-trans-min-inliers <int>\n");
+    fprintf(stderr, "  --lk-trans-jerk-limit-px <px>\n");
+    fprintf(stderr, "  --lk-trans-confidence-gate <0~1>\n");
     fprintf(stderr, "  --profile {run|calib|debug}\n");
     fprintf(stderr, "  --libcamera-xrgb {0|1}\n");
 }
@@ -138,10 +145,13 @@ static void apply_config_map(const ConfigMap& cfg) {
     if (auto v = get("lk.quality")) g_lk_quality = std::stod(*v);
     if (auto v = get("lk.min_dist")) g_lk_min_dist = std::stod(*v);
     set_int("lk.trans_min_features", g_lk_trans_min_features);
+    set_int("lk.trans_min_inliers", g_lk_trans_min_inliers);
     set_int("lk.trans_every_n", g_lk_trans_every_n);
     if (auto v = get("lk.trans_alpha")) g_lk_trans_alpha = std::stod(*v);
     if (auto v = get("lk.trans_max_corr_px")) g_lk_trans_max_corr_px = std::stod(*v);
     if (auto v = get("lk.trans_scale")) g_lk_trans_scale = std::stod(*v);
+    if (auto v = get("lk.trans_jerk_limit_px")) g_lk_trans_jerk_limit_px = std::stod(*v);
+    if (auto v = get("lk.trans_confidence_gate")) g_lk_trans_confidence_gate = std::stod(*v);
 }
 
 static bool parse_args(int argc, char* argv[]) {
@@ -278,6 +288,41 @@ static bool parse_args(int argc, char* argv[]) {
             g_gyro_large_rot_gain_scale = std::stod(val);
         } else if (a.rfind("--gyro-large-rot-gain-scale=", 0) == 0) {
             g_gyro_large_rot_gain_scale = std::stod(a.substr(28));
+        } else if (a == "--lk-trans-every-n") {
+            if (!eat_value(val)) return false;
+            g_lk_trans_every_n = std::max(1, std::stoi(val));
+        } else if (a.rfind("--lk-trans-every-n=", 0) == 0) {
+            g_lk_trans_every_n = std::max(1, std::stoi(a.substr(19)));
+        } else if (a == "--lk-trans-alpha") {
+            if (!eat_value(val)) return false;
+            g_lk_trans_alpha = std::stod(val);
+        } else if (a.rfind("--lk-trans-alpha=", 0) == 0) {
+            g_lk_trans_alpha = std::stod(a.substr(17));
+        } else if (a == "--lk-trans-max-corr-px") {
+            if (!eat_value(val)) return false;
+            g_lk_trans_max_corr_px = std::stod(val);
+        } else if (a.rfind("--lk-trans-max-corr-px=", 0) == 0) {
+            g_lk_trans_max_corr_px = std::stod(a.substr(23));
+        } else if (a == "--lk-trans-scale") {
+            if (!eat_value(val)) return false;
+            g_lk_trans_scale = std::stod(val);
+        } else if (a.rfind("--lk-trans-scale=", 0) == 0) {
+            g_lk_trans_scale = std::stod(a.substr(17));
+        } else if (a == "--lk-trans-min-inliers") {
+            if (!eat_value(val)) return false;
+            g_lk_trans_min_inliers = std::max(0, std::stoi(val));
+        } else if (a.rfind("--lk-trans-min-inliers=", 0) == 0) {
+            g_lk_trans_min_inliers = std::max(0, std::stoi(a.substr(23)));
+        } else if (a == "--lk-trans-jerk-limit-px") {
+            if (!eat_value(val)) return false;
+            g_lk_trans_jerk_limit_px = std::stod(val);
+        } else if (a.rfind("--lk-trans-jerk-limit-px=", 0) == 0) {
+            g_lk_trans_jerk_limit_px = std::stod(a.substr(25));
+        } else if (a == "--lk-trans-confidence-gate") {
+            if (!eat_value(val)) return false;
+            g_lk_trans_confidence_gate = std::stod(val);
+        } else if (a.rfind("--lk-trans-confidence-gate=", 0) == 0) {
+            g_lk_trans_confidence_gate = std::stod(a.substr(27));
         } else if (a == "--profile") {
             if (!eat_value(val)) return false;
             std::string s = val;
@@ -414,12 +459,16 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  TS source: %s\n", ts_pref_str((TsSourcePref)g_ts_pref.load()));
     fprintf(stderr, "  Crop: fixed %.0f%%\n", FIXED_CROP_PERCENT);
     fprintf(stderr,
-            "  LK trans: %s  every=%d  alpha=%.2f  max_corr=%.1fpx  scale=%.2f\n",
+            "  LK trans: %s  every=%d  alpha=%.2f  max_corr=%.1fpx  scale=%.2f  "
+            "min_inliers=%d jerk=%.1fpx conf=%.2f\n",
             g_lk_trans_enable.load() ? "on" : "off",
             g_lk_trans_every_n.load(),
             g_lk_trans_alpha.load(),
             g_lk_trans_max_corr_px.load(),
-            g_lk_trans_scale.load());
+            g_lk_trans_scale.load(),
+            g_lk_trans_min_inliers.load(),
+            g_lk_trans_jerk_limit_px.load(),
+            g_lk_trans_confidence_gate.load());
     fprintf(stderr, "  RTSP: rtsp://<PI_IP>:8555/cam\n");
     fprintf(stderr, "  Keys: 1=LK 2=Gyro 3=Hybrid (output fixed to CAM)\n");
     fprintf(stderr, "==============================\n");

@@ -54,10 +54,13 @@ extern std::atomic<int> g_lk_max_features;
 extern std::atomic<double> g_lk_quality;
 extern std::atomic<double> g_lk_min_dist;
 extern std::atomic<int> g_lk_trans_min_features;
+extern std::atomic<int> g_lk_trans_min_inliers;
 extern std::atomic<int> g_lk_trans_every_n;
 extern std::atomic<double> g_lk_trans_alpha;
 extern std::atomic<double> g_lk_trans_max_corr_px;
 extern std::atomic<double> g_lk_trans_scale;
+extern std::atomic<double> g_lk_trans_jerk_limit_px;
+extern std::atomic<double> g_lk_trans_confidence_gate;
 
 // Time helpers
 int64_t clock_ns(clockid_t id);

@@ -395,8 +395,22 @@ void capture_loop() {
         }
     }
 
-    auto estimate_lk_transform = [&](const Mat& prev, const Mat& curr,
-                                     double& out_dx, double& out_dy, double& out_da) -> bool {
+    struct LKTransMeasure {
+        bool flow_ok = false;
+        bool model_ok = false;
+        double dx = 0.0;
+        double dy = 0.0;
+        double da = 0.0;
+        double scale = 1.0;
+        int features = 0;
+        int valid = 0;
+        int inliers = 0;
+        double confidence = 0.0;
+    };
+
+    auto estimate_lk_transform = [&](const Mat& prev, const Mat& curr) -> LKTransMeasure {
+        LKTransMeasure m{};
+
         std::vector<Point2f> feat_prev, feat_curr;
         std::vector<uchar> status;
         std::vector<float> err_vec;
@@ -404,19 +418,44 @@ void capture_loop() {
                             (int)g_lk_max_features.load(),
                             g_lk_quality.load(),
                             g_lk_min_dist.load());
-        if (feat_prev.size() < (size_t)g_lk_trans_min_features.load()) return false;
+        m.features = (int)feat_prev.size();
+        if (m.features < g_lk_trans_min_features.load()) return m;
+
         calcOpticalFlowPyrLK(prev, curr, feat_prev, feat_curr, status, err_vec);
+
         std::vector<Point2f> gp, gc;
+        gp.reserve(status.size());
+        gc.reserve(status.size());
         for (size_t i = 0; i < status.size(); ++i) {
-            if (status[i]) { gp.push_back(feat_prev[i]); gc.push_back(feat_curr[i]); }
+            if (status[i]) {
+                gp.push_back(feat_prev[i]);
+                gc.push_back(feat_curr[i]);
+            }
         }
-        if (gp.size() < 6) return false;
-        Mat affine = estimateAffinePartial2D(gp, gc);
-        if (affine.empty()) return false;
-        out_dx = affine.at<double>(0, 2);
-        out_dy = affine.at<double>(1, 2);
-        out_da = atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
-        return true;
+        m.valid = (int)gp.size();
+        m.flow_ok = (m.valid >= g_lk_trans_min_features.load());
+        if (!m.flow_ok) return m;
+
+        Mat inlier_mask;
+        Mat affine = estimateAffinePartial2D(
+            gp, gc, inlier_mask, cv::RANSAC, 2.5, 2000, 0.99, 10);
+        if (affine.empty()) return m;
+
+        m.model_ok = true;
+        if (!inlier_mask.empty()) {
+            m.inliers = cv::countNonZero(inlier_mask);
+        } else {
+            m.inliers = m.valid;
+        }
+        m.confidence = (m.valid > 0) ? ((double)m.inliers / (double)m.valid) : 0.0;
+
+        m.dx = affine.at<double>(0, 2);
+        m.dy = affine.at<double>(1, 2);
+        m.da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+        m.scale = std::sqrt(
+            affine.at<double>(0, 0) * affine.at<double>(0, 0) +
+            affine.at<double>(1, 0) * affine.at<double>(1, 0));
+        return m;
     };
 
     guint64 frameIdx = 0;
@@ -429,14 +468,31 @@ void capture_loop() {
         Mat prev_gray;
         Mat prev_small;
         bool ok = false;
-        double path_x = 0.0;
-        double path_y = 0.0;
-        double smooth_x = 0.0;
-        double smooth_y = 0.0;
-        bool smooth_init = false;
         int frame_count = 0;
+        double smooth_corr_x = 0.0;
+        double smooth_corr_y = 0.0;
+        bool smooth_init = false;
         double last_corr_x = 0.0;
         double last_corr_y = 0.0;
+        double last_raw_corr_x = 0.0;
+        double last_raw_corr_y = 0.0;
+        double last_meas_dx = 0.0;
+        double last_meas_dy = 0.0;
+        double last_meas_da = 0.0;
+        bool has_last_meas = false;
+        int last_features = 0;
+        int last_valid = 0;
+        int last_inliers = 0;
+        double last_confidence = 0.0;
+        double last_scale = 1.0;
+        double last_jerk_px = 0.0;
+        double last_smooth_before_x = 0.0;
+        double last_smooth_before_y = 0.0;
+        double last_smooth_after_x = 0.0;
+        double last_smooth_after_y = 0.0;
+        bool last_clamped = false;
+        std::string last_reject_reason = "init";
+        bool last_applied = false;
         double scale = 0.5;
     };
     TransState trans;
@@ -465,13 +521,9 @@ void capture_loop() {
 
     EisMode last_mode = (EisMode)g_mode.load();
     bool lk_disabled_warned = false;
-    double last_cost_ms = 0.0;
     bool color_logged = false;
 
     while (g_running) {
-        int64_t frame_start_ns = clock_ns(CLOCK_MONOTONIC_RAW);
-        const double budget_ms = 1000.0 / std::max(1, G_FPS);
-        bool skip_heavy = (last_cost_ms > budget_ms);
         CapturedFrame cap;
         if (!pull_frame(cap) || cap.frame.empty()) continue;
 
@@ -542,7 +594,11 @@ void capture_loop() {
         if (need_lk) {
             cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
             if (prev_lk_ok) {
-                lk_ok = estimate_lk_transform(prev_lk_gray, curr_gray, lk_dx, lk_dy, lk_da);
+                const LKTransMeasure m = estimate_lk_transform(prev_lk_gray, curr_gray);
+                lk_ok = m.model_ok;
+                lk_dx = m.dx;
+                lk_dy = m.dy;
+                lk_da = m.da;
             }
             prev_lk_gray = curr_gray.clone();
             prev_lk_ok = true;
@@ -662,8 +718,10 @@ void capture_loop() {
 
         Mat stabilized = gyro_out;
         bool trans_ok = false;
-        double trans_dx = 0.0, trans_dy = 0.0, trans_da = 0.0;
+        double trans_dx = 0.0, trans_dy = 0.0;
         double corr_x = 0.0, corr_y = 0.0;
+        bool trans_lk_ran = false;
+        bool trans_warp_applied = false;
         bool lk_trans_enabled = g_lk_trans_enable.load();
         if (!profile_calib && lk_trans_enabled && (mode == EisMode::HYBRID || mode == EisMode::LK)) {
             const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
@@ -678,44 +736,120 @@ void capture_loop() {
             }
             trans.frame_count++;
             bool do_lk = (trans.frame_count % std::max(1, g_lk_trans_every_n.load()) == 0);
-            if (!skip_heavy && trans.ok && do_lk) {
+            if (trans.ok && do_lk) {
+                trans_lk_ran = true;
                 const Mat& prev_use = trans.prev_small.empty() ? trans.prev_gray : trans.prev_small;
                 const Mat& curr_use = curr_small;
-                trans_ok = estimate_lk_transform(prev_use, curr_use,
-                                                 trans_dx, trans_dy, trans_da);
-                if (trans_ok) {
+                LKTransMeasure m = estimate_lk_transform(prev_use, curr_use);
+                trans.last_features = m.features;
+                trans.last_valid = m.valid;
+                trans.last_inliers = m.inliers;
+                trans.last_confidence = m.confidence;
+                trans.last_scale = m.scale;
+                trans.last_meas_da = m.da;
+                trans.last_jerk_px = 0.0;
+                trans.last_clamped = false;
+
+                bool accepted = false;
+                std::string reject_reason = "ok";
+                if (m.features < g_lk_trans_min_features.load()) {
+                    reject_reason = "few_features";
+                } else if (!m.flow_ok) {
+                    reject_reason = "flow_fail";
+                } else if (!m.model_ok) {
+                    reject_reason = "model_fail";
+                } else if (m.inliers < g_lk_trans_min_inliers.load()) {
+                    reject_reason = "few_inliers";
+                } else if (m.confidence < g_lk_trans_confidence_gate.load()) {
+                    reject_reason = "low_conf";
+                } else if (m.scale < 0.90 || m.scale > 1.10) {
+                    reject_reason = "scale_outlier";
+                } else {
+                    trans_dx = m.dx;
+                    trans_dy = m.dy;
                     if (!trans.prev_small.empty() && trans.scale > 0.0) {
                         trans_dx /= trans.scale;
                         trans_dy /= trans.scale;
                     }
-                    trans.path_x += trans_dx;
-                    trans.path_y += trans_dy;
+
+                    const double jerk = std::hypot(
+                        trans_dx - trans.last_meas_dx,
+                        trans_dy - trans.last_meas_dy);
+                    trans.last_jerk_px = jerk;
+                    if (trans.has_last_meas && jerk > g_lk_trans_jerk_limit_px.load()) {
+                        reject_reason = "jerk_limit";
+                    } else {
+                        const double max_corr = g_lk_trans_max_corr_px.load();
+                        if (std::abs(trans_dx) > max_corr * 2.0 || std::abs(trans_dy) > max_corr * 2.0) {
+                            reject_reason = "outlier_shift";
+                        } else {
+                            accepted = true;
+                        }
+                    }
+                }
+
+                if (accepted) {
+                    const double raw_corr_x = -trans_dx;
+                    const double raw_corr_y = -trans_dy;
+                    const double alpha = std::clamp(g_lk_trans_alpha.load(), 0.0, 1.0);
+                    trans.last_smooth_before_x = trans.smooth_init ? trans.smooth_corr_x : raw_corr_x;
+                    trans.last_smooth_before_y = trans.smooth_init ? trans.smooth_corr_y : raw_corr_y;
                     if (!trans.smooth_init) {
-                        trans.smooth_x = trans.path_x;
-                        trans.smooth_y = trans.path_y;
+                        trans.smooth_corr_x = raw_corr_x;
+                        trans.smooth_corr_y = raw_corr_y;
                         trans.smooth_init = true;
                     } else {
-                        double a = g_lk_trans_alpha.load();
-                        trans.smooth_x = a * trans.smooth_x + (1.0 - a) * trans.path_x;
-                        trans.smooth_y = a * trans.smooth_y + (1.0 - a) * trans.path_y;
+                        trans.smooth_corr_x = alpha * trans.smooth_corr_x + (1.0 - alpha) * raw_corr_x;
+                        trans.smooth_corr_y = alpha * trans.smooth_corr_y + (1.0 - alpha) * raw_corr_y;
                     }
-                    double max_corr = g_lk_trans_max_corr_px.load();
-                    corr_x = std::clamp(trans.smooth_x - trans.path_x, -max_corr, max_corr);
-                    corr_y = std::clamp(trans.smooth_y - trans.path_y, -max_corr, max_corr);
-                    trans.last_corr_x = corr_x;
-                    trans.last_corr_y = corr_y;
+                    trans.last_smooth_after_x = trans.smooth_corr_x;
+                    trans.last_smooth_after_y = trans.smooth_corr_y;
+
+                    const double max_corr = g_lk_trans_max_corr_px.load();
+                    trans.last_corr_x = std::clamp(trans.smooth_corr_x, -max_corr, max_corr);
+                    trans.last_corr_y = std::clamp(trans.smooth_corr_y, -max_corr, max_corr);
+                    trans.last_clamped =
+                        (std::abs(trans.last_corr_x - trans.smooth_corr_x) > 1e-6) ||
+                        (std::abs(trans.last_corr_y - trans.smooth_corr_y) > 1e-6);
+                    trans.last_raw_corr_x = raw_corr_x;
+                    trans.last_raw_corr_y = raw_corr_y;
+                    trans.last_meas_dx = trans_dx;
+                    trans.last_meas_dy = trans_dy;
+                    trans.has_last_meas = true;
+                    trans.last_applied = true;
+                    trans.last_reject_reason = "ok";
                 } else {
-                    trans.last_corr_x = 0.0;
-                    trans.last_corr_y = 0.0;
+                    const double smooth_before_x = trans.smooth_corr_x;
+                    const double smooth_before_y = trans.smooth_corr_y;
+                    trans.last_corr_x *= 0.6;
+                    trans.last_corr_y *= 0.6;
+                    trans.smooth_corr_x *= 0.6;
+                    trans.smooth_corr_y *= 0.6;
+                    if (std::abs(trans.last_corr_x) < 0.01) trans.last_corr_x = 0.0;
+                    if (std::abs(trans.last_corr_y) < 0.01) trans.last_corr_y = 0.0;
+                    trans.last_smooth_before_x = smooth_before_x;
+                    trans.last_smooth_before_y = smooth_before_y;
+                    trans.last_smooth_after_x = trans.smooth_corr_x;
+                    trans.last_smooth_after_y = trans.smooth_corr_y;
+                    trans.last_raw_corr_x = 0.0;
+                    trans.last_raw_corr_y = 0.0;
+                    trans.last_applied = false;
+                    trans.last_reject_reason = reject_reason;
                 }
+            } else if (!do_lk) {
+                trans.last_applied = false;
+                trans.last_reject_reason = "skip_every_n";
+                trans.last_clamped = false;
             }
 
             corr_x = trans.last_corr_x;
             corr_y = trans.last_corr_y;
+            trans_ok = trans.last_applied;
             if (std::abs(corr_x) > 1e-6 || std::abs(corr_y) > 1e-6) {
                 Mat Ht = (Mat_<double>(2, 3) << 1, 0, corr_x,
                                                0, 1, corr_y);
                 warpAffine(trans_base, stabilized, Ht, trans_base.size(), INTER_LINEAR, BORDER_REPLICATE);
+                trans_warp_applied = true;
             } else {
                 stabilized = trans_base;
             }
@@ -872,10 +1006,34 @@ void capture_loop() {
                          delta_range.min_ts, delta_range.max_ts);
             }
 
-            if (trans_ok) {
+            if (!profile_calib && lk_trans_enabled && (mode == EisMode::HYBRID || mode == EisMode::LK)) {
+                const double corr_mag = std::hypot(corr_x, corr_y);
                 log_dual(periodic_log_fp,
-                         "[TRANS] dx=%.2f dy=%.2f corr=%.2f %.2f\n",
-                         trans_dx, trans_dy, corr_x, corr_y);
+                         "[LKTRANS] mode=%s role=%s lk_ran=%d accepted=%d warp_applied=%d "
+                         "feat=%d valid=%d inliers=%d conf=%.2f scale=%.3f jerk=%.2f reject=%s\n",
+                         mode_str(mode),
+                         (mode == EisMode::HYBRID) ? "gyro_rot+lk_trans" : "lk_trans_only",
+                         trans_lk_ran ? 1 : 0,
+                         trans_ok ? 1 : 0,
+                         trans_warp_applied ? 1 : 0,
+                         trans.last_features,
+                         trans.last_valid,
+                         trans.last_inliers,
+                         trans.last_confidence,
+                         trans.last_scale,
+                         trans.last_jerk_px,
+                         trans.last_reject_reason.c_str());
+
+                log_dual(periodic_log_fp,
+                         "[TRANS] meas(dx,dy,da)=%.2f %.2f %.2fdeg raw_corr=%.2f %.2f "
+                         "smooth_before=%.2f %.2f smooth_after=%.2f %.2f "
+                         "final_corr=%.2f %.2f mag=%.2f clamped=%d\n",
+                         trans.last_meas_dx, trans.last_meas_dy, trans.last_meas_da * 180.0 / CV_PI,
+                         trans.last_raw_corr_x, trans.last_raw_corr_y,
+                         trans.last_smooth_before_x, trans.last_smooth_before_y,
+                         trans.last_smooth_after_x, trans.last_smooth_after_y,
+                         corr_x, corr_y, corr_mag,
+                         trans.last_clamped ? 1 : 0);
             }
         }
 
@@ -902,7 +1060,6 @@ void capture_loop() {
         push_bgr(stabsrc, stabilized, frameIdx, "cam");
         frameIdx++;
 
-        last_cost_ms = (clock_ns(CLOCK_MONOTONIC_RAW) - frame_start_ns) / 1e6;
     }
 
     if (use_libcamera) {

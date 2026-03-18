@@ -168,8 +168,11 @@ static bool draw_optical_flow_overlay(const cv::Mat& prev_gray, const cv::Mat& c
     std::vector<cv::Point2f> feat_prev, feat_curr;
     std::vector<uchar> status;
     std::vector<float> err_vec;
-    goodFeaturesToTrack(prev_gray, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
-    if (feat_prev.size() < (size_t)LK_TRANS_MIN_FEATURES) return false;
+    goodFeaturesToTrack(prev_gray, feat_prev,
+                        (int)g_lk_max_features.load(),
+                        g_lk_quality.load(),
+                        g_lk_min_dist.load());
+    if (feat_prev.size() < (size_t)g_lk_trans_min_features.load()) return false;
     calcOpticalFlowPyrLK(prev_gray, curr_gray, feat_prev, feat_curr, status, err_vec);
     std::vector<cv::Point2f> gp, gc;
     const cv::Point2f center(canvas.cols * 0.5f, canvas.rows * 0.5f);
@@ -356,8 +359,11 @@ void capture_loop() {
         std::vector<Point2f> feat_prev, feat_curr;
         std::vector<uchar> status;
         std::vector<float> err_vec;
-        goodFeaturesToTrack(prev, feat_prev, LK_MAX_FEATURES, LK_QUALITY, LK_MIN_DIST);
-        if (feat_prev.size() < (size_t)LK_TRANS_MIN_FEATURES) return false;
+        goodFeaturesToTrack(prev, feat_prev,
+                            (int)g_lk_max_features.load(),
+                            g_lk_quality.load(),
+                            g_lk_min_dist.load());
+        if (feat_prev.size() < (size_t)g_lk_trans_min_features.load()) return false;
         calcOpticalFlowPyrLK(prev, curr, feat_prev, feat_curr, status, err_vec);
         std::vector<Point2f> gp, gc;
         for (size_t i = 0; i < status.size(); ++i) {
@@ -393,6 +399,7 @@ void capture_loop() {
         double scale = 0.5;
     };
     TransState trans;
+    trans.scale = g_lk_trans_scale.load();
     Mat flow_prev_gray;
     bool flow_prev_ok = false;
 
@@ -456,6 +463,7 @@ void capture_loop() {
             prev_lk_gray.release();
             prev_lk_ok = false;
             trans = TransState{};
+            trans.scale = g_lk_trans_scale.load();
             flow_prev_gray.release();
             flow_prev_ok = false;
             prev_time_ok = false;
@@ -475,7 +483,9 @@ void capture_loop() {
         }
 
         if (mode != EisMode::GYRO && !lk_disabled_warned) {
-            fprintf(stderr, "[MODE] %s requested -> gyro-first stage uses GYRO only\n", mode_str(mode));
+            fprintf(stderr,
+                    "[MODE] %s requested -> gyro rotation + LK translation (if enabled)\n",
+                    mode_str(mode));
             lk_disabled_warned = true;
         }
 
@@ -611,18 +621,20 @@ void capture_loop() {
         bool trans_ok = false;
         double trans_dx = 0.0, trans_dy = 0.0, trans_da = 0.0;
         double corr_x = 0.0, corr_y = 0.0;
-        if (!profile_calib && (mode == EisMode::HYBRID || mode == EisMode::LK)) {
+        bool lk_trans_enabled = g_lk_trans_enable.load();
+        if (!profile_calib && lk_trans_enabled && (mode == EisMode::HYBRID || mode == EisMode::LK)) {
             const Mat& trans_base = (mode == EisMode::HYBRID) ? gyro_out : frame;
             Mat curr_trans_gray;
             cvtColor(trans_base, curr_trans_gray, COLOR_BGR2GRAY);
             Mat curr_small;
+            trans.scale = g_lk_trans_scale.load();
             if (trans.scale > 0.0 && trans.scale < 1.0) {
                 cv::resize(curr_trans_gray, curr_small, cv::Size(), trans.scale, trans.scale, cv::INTER_LINEAR);
             } else {
                 curr_small = curr_trans_gray;
             }
             trans.frame_count++;
-            bool do_lk = (trans.frame_count % std::max(1, LK_TRANS_EVERY_N) == 0);
+            bool do_lk = (trans.frame_count % std::max(1, g_lk_trans_every_n.load()) == 0);
             if (!skip_heavy && trans.ok && do_lk) {
                 const Mat& prev_use = trans.prev_small.empty() ? trans.prev_gray : trans.prev_small;
                 const Mat& curr_use = curr_small;
@@ -640,11 +652,13 @@ void capture_loop() {
                         trans.smooth_y = trans.path_y;
                         trans.smooth_init = true;
                     } else {
-                        trans.smooth_x = LK_TRANS_ALPHA * trans.smooth_x + (1.0 - LK_TRANS_ALPHA) * trans.path_x;
-                        trans.smooth_y = LK_TRANS_ALPHA * trans.smooth_y + (1.0 - LK_TRANS_ALPHA) * trans.path_y;
+                        double a = g_lk_trans_alpha.load();
+                        trans.smooth_x = a * trans.smooth_x + (1.0 - a) * trans.path_x;
+                        trans.smooth_y = a * trans.smooth_y + (1.0 - a) * trans.path_y;
                     }
-                    corr_x = std::clamp(trans.smooth_x - trans.path_x, -LK_TRANS_MAX_CORR_PX, LK_TRANS_MAX_CORR_PX);
-                    corr_y = std::clamp(trans.smooth_y - trans.path_y, -LK_TRANS_MAX_CORR_PX, LK_TRANS_MAX_CORR_PX);
+                    double max_corr = g_lk_trans_max_corr_px.load();
+                    corr_x = std::clamp(trans.smooth_x - trans.path_x, -max_corr, max_corr);
+                    corr_y = std::clamp(trans.smooth_y - trans.path_y, -max_corr, max_corr);
                     trans.last_corr_x = corr_x;
                     trans.last_corr_y = corr_y;
                 } else {

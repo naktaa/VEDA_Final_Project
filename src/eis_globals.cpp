@@ -27,6 +27,16 @@ std::atomic<double> g_max_roll_rad{MAX_ROLL_RAD};
 std::atomic<double> g_max_pitch_rad{MAX_PITCH_RAD};
 std::atomic<double> g_max_yaw_rad{MAX_YAW_RAD};
 
+std::atomic<bool> g_lk_trans_enable{true};
+std::atomic<int> g_lk_max_features{LK_MAX_FEATURES};
+std::atomic<double> g_lk_quality{LK_QUALITY};
+std::atomic<double> g_lk_min_dist{LK_MIN_DIST};
+std::atomic<int> g_lk_trans_min_features{LK_TRANS_MIN_FEATURES};
+std::atomic<int> g_lk_trans_every_n{LK_TRANS_EVERY_N};
+std::atomic<double> g_lk_trans_alpha{LK_TRANS_ALPHA};
+std::atomic<double> g_lk_trans_max_corr_px{LK_TRANS_MAX_CORR_PX};
+std::atomic<double> g_lk_trans_scale{0.5};
+
 int64_t clock_ns(clockid_t id) {
     struct timespec ts;
     clock_gettime(id, &ts);

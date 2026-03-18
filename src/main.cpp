@@ -94,6 +94,16 @@ static void apply_config_map(const ConfigMap& cfg) {
     if (auto v = get("max_roll_deg")) g_max_roll_rad = std::stod(*v) * CV_PI / 180.0;
     if (auto v = get("max_pitch_deg")) g_max_pitch_rad = std::stod(*v) * CV_PI / 180.0;
     if (auto v = get("max_yaw_deg")) g_max_yaw_rad = std::stod(*v) * CV_PI / 180.0;
+
+    set_bool("lk.trans_enable", g_lk_trans_enable);
+    set_int("lk.max_features", g_lk_max_features);
+    if (auto v = get("lk.quality")) g_lk_quality = std::stod(*v);
+    if (auto v = get("lk.min_dist")) g_lk_min_dist = std::stod(*v);
+    set_int("lk.trans_min_features", g_lk_trans_min_features);
+    set_int("lk.trans_every_n", g_lk_trans_every_n);
+    if (auto v = get("lk.trans_alpha")) g_lk_trans_alpha = std::stod(*v);
+    if (auto v = get("lk.trans_max_corr_px")) g_lk_trans_max_corr_px = std::stod(*v);
+    if (auto v = get("lk.trans_scale")) g_lk_trans_scale = std::stod(*v);
 }
 
 static bool parse_args(int argc, char* argv[]) {
@@ -293,7 +303,7 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "==============================\n");
     fprintf(stderr, " EIS - Gyro-first (Quaternion)\n");
     fprintf(stderr, "==============================\n");
-    fprintf(stderr, "  Mode: %s (LK/HYBRID are mapped to gyro-only in this stage)\n",
+    fprintf(stderr, "  Mode: %s (HYBRID = gyro rotation + LK translation)\n",
             mode_str((EisMode)g_mode.load()));
     fprintf(stderr, "  IMU offset: %.3f ms  (sweep: %s)\n", g_manual_imu_offset_ms,
             g_offset_sweep.load() ? "on" : "off");
@@ -310,6 +320,12 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "  GyroEIS smooth alpha=%.3f  warp=%s\n",
             SMOOTH_ALPHA, gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
     fprintf(stderr, "  Crop: fixed %.0f%%\n", FIXED_CROP_PERCENT);
+    fprintf(stderr, "  LK trans: %s  every=%d  alpha=%.2f  max_corr=%.1fpx  scale=%.2f\n",
+            g_lk_trans_enable.load() ? "on" : "off",
+            g_lk_trans_every_n.load(),
+            g_lk_trans_alpha.load(),
+            g_lk_trans_max_corr_px.load(),
+            g_lk_trans_scale.load());
     fprintf(stderr, "  RTSP: rtsp://<PI_IP>:8555/cam\n");
     fprintf(stderr, "  Keys: 1=LK 2=Gyro 3=Hybrid (output fixed to CAM)\n");
     fprintf(stderr, "==============================\n");

@@ -40,6 +40,17 @@ extern std::atomic<double> g_max_roll_rad;
 extern std::atomic<double> g_max_pitch_rad;
 extern std::atomic<double> g_max_yaw_rad;
 
+// LK tuning (runtime overrides)
+extern std::atomic<bool> g_lk_trans_enable;
+extern std::atomic<int> g_lk_max_features;
+extern std::atomic<double> g_lk_quality;
+extern std::atomic<double> g_lk_min_dist;
+extern std::atomic<int> g_lk_trans_min_features;
+extern std::atomic<int> g_lk_trans_every_n;
+extern std::atomic<double> g_lk_trans_alpha;
+extern std::atomic<double> g_lk_trans_max_corr_px;
+extern std::atomic<double> g_lk_trans_scale;
+
 // Time helpers
 int64_t clock_ns(clockid_t id);
 extern int64_t g_time_origin_raw_ns;

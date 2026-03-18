@@ -6,9 +6,12 @@
 #include <gst/gstmeta.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <deque>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -152,6 +155,33 @@ static double compute_corr(const std::deque<std::pair<double, double>>& buf) {
     double denom = std::sqrt((n * sumxx - sumx * sumx) * (n * sumyy - sumy * sumy));
     if (denom < 1e-9) return 0.0;
     return (n * sumxy - sumx * sumy) / denom;
+}
+
+static std::string make_periodic_log_path() {
+    std::filesystem::create_directories("logs");
+    const std::time_t now = std::time(nullptr);
+    std::tm tmv{};
+#if defined(_WIN32)
+    localtime_s(&tmv, &now);
+#else
+    localtime_r(&now, &tmv);
+#endif
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tmv);
+    return std::string("logs/eis_periodic_") + ts + ".log";
+}
+
+static void log_dual(FILE* fp, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+
+    if (!fp) return;
+    va_start(ap, fmt);
+    vfprintf(fp, fmt, ap);
+    va_end(ap);
+    fflush(fp);
 }
 
 struct FlowDebugInfo {
@@ -360,6 +390,17 @@ void capture_loop() {
     RunProfile profile = (RunProfile)g_profile.load();
     const bool profile_calib = (profile == RunProfile::CALIB);
     const bool profile_debug = (profile == RunProfile::DEBUG);
+
+    FILE* periodic_log_fp = nullptr;
+    if (profile_debug && g_log_every_frames.load() > 0) {
+        const std::string log_path = make_periodic_log_path();
+        periodic_log_fp = fopen(log_path.c_str(), "w");
+        if (periodic_log_fp) {
+            fprintf(stderr, "[LOG] periodic debug log: %s\n", log_path.c_str());
+        } else {
+            fprintf(stderr, "[LOG] failed to open periodic log: %s\n", log_path.c_str());
+        }
+    }
 
     auto estimate_lk_transform = [&](const Mat& prev, const Mat& curr,
                                      double& out_dx, double& out_dy, double& out_da) -> bool {
@@ -740,105 +781,108 @@ void capture_loop() {
         if (log_every > 0 && (frameIdx % (guint64)log_every == 0)) {
             if (imu_err_cnt > 0) {
                 double avg_err = imu_err_sum / imu_err_cnt;
-                fprintf(stderr, "[SYNC] imu_err avg=%.3f ms max=%.3f ms offset=%.3f ms\n",
-                        avg_err, imu_err_max, time_offset_ms);
+                log_dual(periodic_log_fp,
+                         "[SYNC] imu_err avg=%.3f ms max=%.3f ms offset=%.3f ms\n",
+                         avg_err, imu_err_max, time_offset_ms);
             }
 
             if (ts_src == TsSource::SENSOR) {
-                fprintf(stderr, "[TS] sensor_ts_ns=%lld exp_us=%d idx=%llu\n",
-                        (long long)sensor_ts_ns, exp_us,
-                        (unsigned long long)cap_index);
+                log_dual(periodic_log_fp,
+                         "[TS] sensor_ts_ns=%lld exp_us=%d idx=%llu\n",
+                         (long long)sensor_ts_ns,
+                         exp_us,
+                         (unsigned long long)cap_index);
             }
 
-            fprintf(stderr,
-                    "[ALIGN] src=%s frame=%.2f target=%.2f prev_target=%.2f "
-                    "win=[%.2f,%.2f] used=%d range=[%.2f,%.2f] imu_err=%.2fms status=%s\n",
-                    ts_source_str(ts_src),
-                    frame_time_ms,
-                    need_gyro_dbg ? dbginfo.target_imu_time_ms : target_curr_ms,
-                    need_gyro_dbg ? dbginfo.prev_target_imu_time_ms : target_prev_ms,
-                    dbginfo.range.t0,
-                    dbginfo.range.t1,
-                    dbginfo.range.used,
-                    dbginfo.range.min_ts,
-                    dbginfo.range.max_ts,
-                    imu_err_ms,
-                    need_gyro_dbg ? gyro_process_status_str(dbginfo.status) : "N/A");
+            log_dual(periodic_log_fp,
+                     "[ALIGN] src=%s frame=%.2f target=%.2f prev_target=%.2f "
+                     "win=[%.2f,%.2f] used=%d range=[%.2f,%.2f] imu_err=%.2fms status=%s\n",
+                     ts_source_str(ts_src),
+                     frame_time_ms,
+                     need_gyro_dbg ? dbginfo.target_imu_time_ms : target_curr_ms,
+                     need_gyro_dbg ? dbginfo.prev_target_imu_time_ms : target_prev_ms,
+                     dbginfo.range.t0,
+                     dbginfo.range.t1,
+                     dbginfo.range.used,
+                     dbginfo.range.min_ts,
+                     dbginfo.range.max_ts,
+                     imu_err_ms,
+                     need_gyro_dbg ? gyro_process_status_str(dbginfo.status) : "N/A");
 
             if (mode != EisMode::LK && !profile_calib) {
                 GyroSample last = g_last_gyro_sample;
                 cv::Vec3d e_phys = quat_to_euler_deg(dbginfo.q_phys);
                 cv::Vec3d e_corr = rad_to_deg(dbginfo.corr_final_rad);
-                fprintf(stderr,
-                        "[GYRO] raw(gx,gy,gz)=%.1f %.1f %.1f  rate(rad/s)=%.3f %.3f %.3f  "
-                        "phys(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  hz=%.1f\n",
-                        last.raw[0], last.raw[1], last.raw[2],
-                        last.w_rad[0], last.w_rad[1], last.w_rad[2],
-                        e_phys[0], e_phys[1], e_phys[2],
-                        e_corr[0], e_corr[1], e_corr[2],
-                        g_imu_actual_hz.load());
+                log_dual(periodic_log_fp,
+                         "[GYRO] raw(gx,gy,gz)=%.1f %.1f %.1f  rate(rad/s)=%.3f %.3f %.3f  "
+                         "phys(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  hz=%.1f\n",
+                         last.raw[0], last.raw[1], last.raw[2],
+                         last.w_rad[0], last.w_rad[1], last.w_rad[2],
+                         e_phys[0], e_phys[1], e_phys[2],
+                         e_corr[0], e_corr[1], e_corr[2],
+                         g_imu_actual_hz.load());
 
                 if ((GyroWarpMode)g_gyro_warp_mode.load() == GyroWarpMode::DELTA_DIRECT) {
                     const cv::Vec3d raw_deg = rad_to_deg(dbginfo.delta_raw_rad);
-                    fprintf(stderr,
-                            "[DELTA] raw(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  "
-                            "delta_angle=%.2fdeg  pix=%.2f req_scale=%.2f req_crop=%.1f%%\n",
-                            raw_deg[0], raw_deg[1], raw_deg[2],
-                            e_corr[0], e_corr[1], e_corr[2],
-                            dbginfo.delta_angle_deg,
-                            dbginfo.pixel_displacement_est,
-                            dbginfo.required_scale,
-                            dbginfo.required_crop_percent);
+                    log_dual(periodic_log_fp,
+                             "[DELTA] raw(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  "
+                             "delta_angle=%.2fdeg  pix=%.2f req_scale=%.2f req_crop=%.1f%%\n",
+                             raw_deg[0], raw_deg[1], raw_deg[2],
+                             e_corr[0], e_corr[1], e_corr[2],
+                             dbginfo.delta_angle_deg,
+                             dbginfo.pixel_displacement_est,
+                             dbginfo.required_scale,
+                             dbginfo.required_crop_percent);
                 } else {
                     const cv::Vec3d raw_deg = rad_to_deg(dbginfo.delta_raw_rad);
                     const cv::Vec3d lp_deg = rad_to_deg(dbginfo.delta_lp_rad);
                     const cv::Vec3d hp_deg = rad_to_deg(dbginfo.delta_hp_rad);
-                    fprintf(stderr,
-                            "[HIGHPASS] raw(deg)=%.2f %.2f %.2f  lp(deg)=%.2f %.2f %.2f  "
-                            "hp(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  "
-                            "pix=%.2f req_scale=%.2f req_crop=%.1f%%\n",
-                            raw_deg[0], raw_deg[1], raw_deg[2],
-                            lp_deg[0], lp_deg[1], lp_deg[2],
-                            hp_deg[0], hp_deg[1], hp_deg[2],
-                            e_corr[0], e_corr[1], e_corr[2],
-                            dbginfo.pixel_displacement_est,
-                            dbginfo.required_scale,
-                            dbginfo.required_crop_percent);
+                    log_dual(periodic_log_fp,
+                             "[HIGHPASS] raw(deg)=%.2f %.2f %.2f  lp(deg)=%.2f %.2f %.2f  "
+                             "hp(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  "
+                             "pix=%.2f req_scale=%.2f req_crop=%.1f%%\n",
+                             raw_deg[0], raw_deg[1], raw_deg[2],
+                             lp_deg[0], lp_deg[1], lp_deg[2],
+                             hp_deg[0], hp_deg[1], hp_deg[2],
+                             e_corr[0], e_corr[1], e_corr[2],
+                             dbginfo.pixel_displacement_est,
+                             dbginfo.required_scale,
+                             dbginfo.required_crop_percent);
                 }
 
-                fprintf(stderr,
-                        "[PROTECT] large_rot=%d gain_scaled=%d scale=%.2f clamp=%d\n",
-                        dbginfo.large_rot_detected ? 1 : 0,
-                        dbginfo.gain_scaled ? 1 : 0,
-                        dbginfo.gain_scale_applied,
-                        dbginfo.clamp_applied ? 1 : 0);
+                log_dual(periodic_log_fp,
+                         "[PROTECT] large_rot=%d gain_scaled=%d scale=%.2f clamp=%d\n",
+                         dbginfo.large_rot_detected ? 1 : 0,
+                         dbginfo.gain_scaled ? 1 : 0,
+                         dbginfo.gain_scale_applied,
+                         dbginfo.clamp_applied ? 1 : 0);
             }
 
             if (lk_ok && gyro_delta_ok) {
-                fprintf(stderr,
-                        "[CMP] lk_da=%.3fdeg gyro_dyaw=%.3fdeg diff=%.3fdeg corr=%.3f\n",
-                        lk_da * 180 / CV_PI,
-                        gyro_delta[2] * 180 / CV_PI,
-                        (lk_da - gyro_delta[2]) * 180 / CV_PI,
-                        corr_val);
+                log_dual(periodic_log_fp,
+                         "[CMP] lk_da=%.3fdeg gyro_dyaw=%.3fdeg diff=%.3fdeg corr=%.3f\n",
+                         lk_da * 180 / CV_PI,
+                         gyro_delta[2] * 180 / CV_PI,
+                         (lk_da - gyro_delta[2]) * 180 / CV_PI,
+                         corr_val);
             }
 
             if (gyro_ok) {
-                fprintf(stderr,
-                        "[WIN] t0=%.2f t1=%.2f used=%d range=[%.2f,%.2f]\n",
-                        dbginfo.range.t0, dbginfo.range.t1, dbginfo.range.used,
-                        dbginfo.range.min_ts, dbginfo.range.max_ts);
+                log_dual(periodic_log_fp,
+                         "[WIN] t0=%.2f t1=%.2f used=%d range=[%.2f,%.2f]\n",
+                         dbginfo.range.t0, dbginfo.range.t1, dbginfo.range.used,
+                         dbginfo.range.min_ts, dbginfo.range.max_ts);
             } else if (have_target_prev) {
-                fprintf(stderr,
-                        "[WIN] t0=%.2f t1=%.2f used=%d range=[%.2f,%.2f]\n",
-                        delta_range.t0, delta_range.t1, delta_range.used,
-                        delta_range.min_ts, delta_range.max_ts);
+                log_dual(periodic_log_fp,
+                         "[WIN] t0=%.2f t1=%.2f used=%d range=[%.2f,%.2f]\n",
+                         delta_range.t0, delta_range.t1, delta_range.used,
+                         delta_range.min_ts, delta_range.max_ts);
             }
 
             if (trans_ok) {
-                fprintf(stderr,
-                        "[TRANS] dx=%.2f dy=%.2f corr=%.2f %.2f\n",
-                        trans_dx, trans_dy, corr_x, corr_y);
+                log_dual(periodic_log_fp,
+                         "[TRANS] dx=%.2f dy=%.2f corr=%.2f %.2f\n",
+                         trans_dx, trans_dy, corr_x, corr_y);
             }
         }
 
@@ -875,5 +919,6 @@ void capture_loop() {
         gst_object_unref(sink);
         gst_object_unref(pipeline);
     }
+    if (periodic_log_fp) fclose(periodic_log_fp);
     fprintf(stderr, "[Capture] Thread exiting\n");
 }

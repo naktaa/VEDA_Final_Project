@@ -21,3 +21,7 @@ Makefile
 config_local.ini
 config_lk_local.ini
 *.local.ini
+
+# Runtime logs
+logs/
+*.log

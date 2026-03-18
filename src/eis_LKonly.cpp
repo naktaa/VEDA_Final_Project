@@ -267,6 +267,9 @@ static void capture_loop() {
         cvtColor(frame, curr_gray, COLOR_BGR2GRAY);
 
         Mat stabilized;
+        // Flip both vertically and horizontally (camera mounted inverted)
+        cv::flip(frame, frame, -1);
+        cv::flip(curr_gray, curr_gray, -1);
         if (frame_count == 0) {
             prev_gray = curr_gray.clone();
             prev_frame = frame.clone();
@@ -410,4 +413,3 @@ int main(int argc, char* argv[]) {
     g_main_loop_unref(loop);
     return 0;
 }
-

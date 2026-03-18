@@ -27,7 +27,8 @@ public:
 
     using StatusProvider = std::function<void(RcStatus& status)>;
 
-    explicit RcStatusPublisher(Config config = Config{});
+    RcStatusPublisher();
+    explicit RcStatusPublisher(const Config& config);
     ~RcStatusPublisher();
 
     bool start();

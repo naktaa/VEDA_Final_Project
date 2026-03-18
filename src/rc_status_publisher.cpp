@@ -2,15 +2,17 @@
 
 #include <iostream>
 #include <thread>
-#include <utility>
 
 namespace {
 constexpr int kReconnectRetryMs = 1000;
 constexpr int kSpinSleepMs = 20;
 }
 
-RcStatusPublisher::RcStatusPublisher(Config config)
-    : config_(std::move(config)),
+RcStatusPublisher::RcStatusPublisher()
+    : RcStatusPublisher(Config{}) {}
+
+RcStatusPublisher::RcStatusPublisher(const Config& config)
+    : config_(config),
       status_(CreateDefaultRcStatus(config_.publish_interval_ms)),
       next_publish_at_(std::chrono::steady_clock::now()),
       last_reconnect_try_(std::chrono::steady_clock::time_point::min()) {}

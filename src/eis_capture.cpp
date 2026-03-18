@@ -173,15 +173,18 @@ static std::string make_periodic_log_path() {
 
 static void log_dual(FILE* fp, const char* fmt, ...) {
     va_list ap;
+    if (fp) {
+        va_start(ap, fmt);
+        vfprintf(fp, fmt, ap);
+        va_end(ap);
+        fflush(fp);
+        return;
+    }
+
+    // Fallback only when file logging is unavailable.
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
-
-    if (!fp) return;
-    va_start(ap, fmt);
-    vfprintf(fp, fmt, ap);
-    va_end(ap);
-    fflush(fp);
 }
 
 struct FlowDebugInfo {

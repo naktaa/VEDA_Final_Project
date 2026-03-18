@@ -16,3 +16,8 @@ Makefile
 
 # VSCode
 .vscode/
+
+# Local config (do not commit)
+config_local.ini
+config_lk_local.ini
+*.local.ini

@@ -28,11 +28,13 @@ add_executable(eis
   src/rtsp_server.cpp
   src/tank_drive.cpp
   src/gyro_eis.cpp
+  src/eis_config.cpp
 )
 
 add_executable(eis_LKonly
   src/eis_LKonly.cpp
   src/tank_drive.cpp
+  src/eis_config.cpp
 )
 
 target_include_directories(eis PRIVATE

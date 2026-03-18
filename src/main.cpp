@@ -12,11 +12,13 @@
 #include "eis_imu.hpp"
 #include "eis_capture.hpp"
 #include "rtsp_server.hpp"
+#include "eis_config.hpp"
 
 static void sigint_handler(int) { g_running = false; }
 
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s [options]\n", prog);
+    fprintf(stderr, "  --config <path>\n");
     fprintf(stderr, "  --mode {lk|gyro|hybrid}\n");
     fprintf(stderr, "  --imu-offset-ms <double>\n");
     fprintf(stderr, "  --offset-sweep\n");
@@ -30,6 +32,68 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --max-roll-deg <deg>\n");
     fprintf(stderr, "  --max-pitch-deg <deg>\n");
     fprintf(stderr, "  --max-yaw-deg <deg>\n");
+}
+
+static void apply_config_map(const ConfigMap& cfg) {
+    auto get = [&](const char* k) -> const std::string* {
+        auto it = cfg.find(k);
+        if (it == cfg.end()) return nullptr;
+        return &it->second;
+    };
+
+    auto set_bool = [&](const char* k, std::atomic<bool>& dst) {
+        if (auto v = get(k)) {
+            std::string s = *v;
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            dst = (s == "1" || s == "true" || s == "yes" || s == "on");
+        }
+    };
+    auto set_int = [&](const char* k, std::atomic<int>& dst) {
+        if (auto v = get(k)) dst = std::stoi(*v);
+    };
+    auto set_double = [&](const char* k, std::atomic<double>& dst) {
+        if (auto v = get(k)) dst = std::stod(*v);
+    };
+
+    if (auto v = get("mode")) {
+        std::string m = *v;
+        std::transform(m.begin(), m.end(), m.begin(), ::tolower);
+        if (m == "lk") g_mode = (int)EisMode::LK;
+        else if (m == "gyro") g_mode = (int)EisMode::GYRO;
+        else if (m == "hybrid") g_mode = (int)EisMode::HYBRID;
+    }
+    if (auto v = get("imu_offset_ms")) g_manual_imu_offset_ms = std::stod(*v);
+    set_bool("offset_sweep", g_offset_sweep);
+    set_bool("overlay", g_debug_overlay);
+    set_int("log_every_frames", g_log_every_frames);
+
+    if (auto v = get("ts_source")) {
+        std::string s = *v;
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        if (s == "auto") g_ts_pref = (int)TsSourcePref::AUTO;
+        else if (s == "sensor") g_ts_pref = (int)TsSourcePref::SENSOR;
+        else if (s == "pts") g_ts_pref = (int)TsSourcePref::PTS;
+        else if (s == "arrival") g_ts_pref = (int)TsSourcePref::ARRIVAL;
+    }
+    if (auto v = get("gyro_warp")) {
+        std::string s = *v;
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        if (s == "jitter") g_gyro_warp_mode = (int)GyroWarpMode::JITTER;
+        else if (s == "delta") g_gyro_warp_mode = (int)GyroWarpMode::DELTA;
+    }
+    if (auto v = get("profile")) {
+        std::string s = *v;
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        if (s == "run") g_profile = (int)RunProfile::RUN;
+        else if (s == "calib") g_profile = (int)RunProfile::CALIB;
+        else if (s == "debug") g_profile = (int)RunProfile::DEBUG;
+    }
+    set_bool("libcamera_xrgb", g_libcamera_xrgb);
+
+    set_double("smooth_alpha", g_smooth_alpha);
+    if (auto v = get("max_roll_deg")) g_max_roll_rad = std::stod(*v) * CV_PI / 180.0;
+    if (auto v = get("max_pitch_deg")) g_max_pitch_rad = std::stod(*v) * CV_PI / 180.0;
+    if (auto v = get("max_yaw_deg")) g_max_yaw_rad = std::stod(*v) * CV_PI / 180.0;
 }
 
 static bool parse_args(int argc, char* argv[]) {
@@ -46,6 +110,14 @@ static bool parse_args(int argc, char* argv[]) {
         if (a == "--help" || a == "-h") {
             print_usage(argv[0]);
             return false;
+        } else if (a == "--config") {
+            if (!eat_value(val)) return false;
+            // handled in main; ignore here
+            val.clear();
+            continue;
+        } else if (a.rfind("--config=", 0) == 0) {
+            // handled in main; ignore here
+            continue;
         } else if (a == "--mode") {
             if (!eat_value(val)) return false;
         } else if (a.rfind("--mode=", 0) == 0) {
@@ -167,6 +239,27 @@ static bool parse_args(int argc, char* argv[]) {
 int main(int argc, char* argv[]) {
     system("fuser -k 8555/tcp 2>/dev/null");
     signal(SIGINT, sigint_handler);
+
+    // Load local config (if present) before parsing CLI
+    std::string cfg_path = "config_local.ini";
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--config" && i + 1 < argc) {
+            cfg_path = argv[i + 1];
+            break;
+        } else if (a.rfind("--config=", 0) == 0) {
+            cfg_path = a.substr(9);
+            break;
+        }
+    }
+    ConfigMap cfg;
+    if (load_config_if_exists(cfg_path, cfg)) {
+        fprintf(stderr, "[CFG] loaded %s\n", cfg_path.c_str());
+        apply_config_map(cfg);
+    } else {
+        fprintf(stderr, "[CFG] no config (%s)\n", cfg_path.c_str());
+    }
+
     if (!parse_args(argc, argv)) return 0;
     RunProfile profile = (RunProfile)g_profile.load();
     if (g_log_every_frames.load() < 0) {

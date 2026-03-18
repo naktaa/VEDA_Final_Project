@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "tank_drive.hpp"
+#include "eis_config.hpp"
 
 using namespace std;
 using namespace cv;
@@ -34,18 +35,19 @@ using namespace cv;
 
 static const int    G_WIDTH  = 640;
 static const int    G_HEIGHT = 480;
-static const int    G_FPS    = 20;
+static int          G_FPS    = 20;
 
-static const int    BORDER_CROP = 30;
+static int    BORDER_CROP = 30;
 
-static const int    MAX_FEATURES = 200;
-static const double FEATURE_QUALITY = 0.01;
-static const double FEATURE_MIN_DIST = 30.0;
+static int    MAX_FEATURES = 200;
+static double FEATURE_QUALITY = 0.01;
+static double FEATURE_MIN_DIST = 30.0;
 
-static const double KF_Q = 0.004;
-static const double KF_R = 0.5;
+static double KF_Q = 0.004;
+static double KF_R = 0.5;
 
-static const bool   DEBUG_OVERLAY = false;
+static bool   DEBUG_OVERLAY = false;
+static bool   FLIP_BOTH = true;
 
 // ======================== Global ========================
 
@@ -182,6 +184,37 @@ static bool push_bgr(GstAppSrc* appsrc, const Mat& frame, guint64 idx) {
 
 static void sigint_handler(int) { g_running = false; }
 
+static void apply_config_map(const ConfigMap& cfg) {
+    auto get = [&](const char* k) -> const std::string* {
+        auto it = cfg.find(k);
+        if (it == cfg.end()) return nullptr;
+        return &it->second;
+    };
+    auto set_int = [&](const char* k, int& dst) {
+        if (auto v = get(k)) dst = std::stoi(*v);
+    };
+    auto set_double = [&](const char* k, double& dst) {
+        if (auto v = get(k)) dst = std::stod(*v);
+    };
+    auto set_bool = [&](const char* k, bool& dst) {
+        if (auto v = get(k)) {
+            std::string s = *v;
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            dst = (s == "1" || s == "true" || s == "yes" || s == "on");
+        }
+    };
+
+    set_int("lk.fps", G_FPS);
+    set_int("lk.border_crop", BORDER_CROP);
+    set_int("lk.max_features", MAX_FEATURES);
+    set_double("lk.feature_quality", FEATURE_QUALITY);
+    set_double("lk.feature_min_dist", FEATURE_MIN_DIST);
+    set_double("lk.kf_q", KF_Q);
+    set_double("lk.kf_r", KF_R);
+    set_bool("lk.debug_overlay", DEBUG_OVERLAY);
+    set_bool("lk.flip_both", FLIP_BOTH);
+}
+
 static void keyboard_loop() {
     if (!isatty(STDIN_FILENO)) {
         fprintf(stderr, "[KEY] stdin is not a TTY. Keyboard control disabled.\n");
@@ -316,8 +349,10 @@ static void capture_loop() {
 
         Mat stabilized;
         // Flip both vertically and horizontally (camera mounted inverted)
-        cv::flip(frame, frame, -1);
-        cv::flip(curr_gray, curr_gray, -1);
+        if (FLIP_BOTH) {
+            cv::flip(frame, frame, -1);
+            cv::flip(curr_gray, curr_gray, -1);
+        }
         if (frame_count == 0) {
             prev_gray = curr_gray.clone();
             prev_frame = frame.clone();
@@ -425,6 +460,30 @@ int main(int argc, char* argv[]) {
     system("fuser -k 8555/tcp 2>/dev/null");
     signal(SIGINT, sigint_handler);
     gst_init(&argc, &argv);
+
+    // Load local config for LK-only
+    std::string cfg_path = "config_lk_local.ini";
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--config" && i + 1 < argc) {
+            cfg_path = argv[i + 1];
+            break;
+        } else if (a.rfind("--config=", 0) == 0) {
+            cfg_path = a.substr(9);
+            break;
+        }
+    }
+    ConfigMap cfg;
+    if (!load_config_if_exists(cfg_path, cfg)) {
+        // fallback to shared local config
+        load_config_if_exists("config_local.ini", cfg);
+    }
+    if (!cfg.empty()) {
+        fprintf(stderr, "[CFG] loaded %s\n", cfg_path.c_str());
+        apply_config_map(cfg);
+    } else {
+        fprintf(stderr, "[CFG] no config (%s)\n", cfg_path.c_str());
+    }
 
     GstRTSPServer* server = gst_rtsp_server_new();
     gst_rtsp_server_set_service(server, "8555");

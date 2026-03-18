@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -141,6 +142,49 @@ class StreamReader(threading.Thread):
                 sample = self.parser.parse_line(line)
                 if sample is not None:
                     self.queue.put(sample)
+
+
+class CmdReader(threading.Thread):
+    """Run external command and parse its stdout/stderr stream in real-time."""
+
+    def __init__(self, queue: SimpleQueue, parser: StreamParser, cmd: str):
+        super().__init__(daemon=True)
+        self.queue = queue
+        self.parser = parser
+        self.cmd = cmd
+        self.stop_event = threading.Event()
+        self.proc: Optional[subprocess.Popen] = None
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+
+    def run(self) -> None:
+        self.proc = subprocess.Popen(
+            self.cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,  # line buffered
+        )
+        if self.proc.stdout is None:
+            return
+
+        while not self.stop_event.is_set():
+            line = self.proc.stdout.readline()
+            if not line:
+                if self.proc.poll() is not None:
+                    break
+                time.sleep(0.01)
+                continue
+            sample = self.parser.parse_line(line)
+            if sample is not None:
+                self.queue.put(sample)
 
 
 class DemoGenerator(threading.Thread):
@@ -272,6 +316,7 @@ def estimate_best_lag(
 def main():
     ap = argparse.ArgumentParser(description="Live LK vs gyro compare visualizer")
     ap.add_argument("--input", type=str, default=None, help="append-only input file path (tail -f style). If omitted, read from stdin.")
+    ap.add_argument("--cmd", type=str, default=None, help="run command and parse realtime stdout/stderr (e.g., your C++ app)")
     ap.add_argument("--from-start", action="store_true", help="for --input mode, read from beginning instead of seeking to end")
     ap.add_argument("--demo", action="store_true", help="run synthetic realtime data generator (no external input needed)")
     ap.add_argument("--demo-fps", type=float, default=30.0, help="synthetic generator FPS")
@@ -297,6 +342,9 @@ def main():
             lag_ms=args.demo_lag_ms,
             invert=args.demo_invert,
         )
+        bg_worker.start()
+    elif args.cmd:
+        bg_worker = CmdReader(data_queue, parser, cmd=args.cmd)
         bg_worker.start()
     else:
         bg_worker = StreamReader(data_queue, parser, input_path=args.input, from_start=args.from_start)

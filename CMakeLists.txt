@@ -37,6 +37,16 @@ add_executable(eis_LKonly
   src/eis_config.cpp
 )
 
+add_executable(move_raw
+  src/move_raw.cpp
+  src/eis_globals.cpp
+  src/eis_input.cpp
+  src/libcamera_grabber.cpp
+  src/rtsp_server.cpp
+  src/tank_drive.cpp
+  src/eis_config.cpp
+)
+
 target_include_directories(eis PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${OpenCV_INCLUDE_DIRS}
@@ -50,6 +60,25 @@ target_compile_options(eis PRIVATE
 )
 
 target_link_libraries(eis
+  ${OpenCV_LIBS}
+  ${GST_LIBRARIES}
+  ${LIBCAMERA_LIBRARIES}
+  wiringPi
+)
+
+target_include_directories(move_raw PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${OpenCV_INCLUDE_DIRS}
+  ${GST_INCLUDE_DIRS}
+  ${LIBCAMERA_INCLUDE_DIRS}
+)
+
+target_compile_options(move_raw PRIVATE
+  ${GST_CFLAGS_OTHER}
+  ${LIBCAMERA_CFLAGS_OTHER}
+)
+
+target_link_libraries(move_raw
   ${OpenCV_LIBS}
   ${GST_LIBRARIES}
   ${LIBCAMERA_LIBRARIES}

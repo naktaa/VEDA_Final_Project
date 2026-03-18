@@ -9,7 +9,6 @@
 #include <cstdarg>
 #include <cmath>
 #include <cstdio>
-#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <string>
@@ -159,16 +158,7 @@ static double compute_corr(const std::deque<std::pair<double, double>>& buf) {
 
 static std::string make_periodic_log_path() {
     std::filesystem::create_directories("logs");
-    const std::time_t now = std::time(nullptr);
-    std::tm tmv{};
-#if defined(_WIN32)
-    localtime_s(&tmv, &now);
-#else
-    localtime_r(&now, &tmv);
-#endif
-    char ts[32];
-    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tmv);
-    return std::string("logs/eis_periodic_") + ts + ".txt";
+    return "logs/eis_periodic.txt";
 }
 
 static void log_dual(FILE* fp, const char* fmt, ...) {

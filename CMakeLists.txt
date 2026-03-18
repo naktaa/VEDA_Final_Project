@@ -55,6 +55,7 @@ target_link_libraries(eis
 )
 
 target_include_directories(eis_LKonly PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${OpenCV_INCLUDE_DIRS}
   ${GST_INCLUDE_DIRS}
 )

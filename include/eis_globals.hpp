@@ -35,10 +35,18 @@ extern std::atomic<int> g_profile;
 extern std::atomic<bool> g_libcamera_xrgb;
 
 // Gyro tuning (runtime overrides)
-extern std::atomic<double> g_smooth_alpha;
-extern std::atomic<double> g_max_roll_rad;
-extern std::atomic<double> g_max_pitch_rad;
-extern std::atomic<double> g_max_yaw_rad;
+extern std::atomic<double> g_gyro_gain_roll;
+extern std::atomic<double> g_gyro_gain_pitch;
+extern std::atomic<double> g_gyro_gain_yaw;
+extern std::atomic<double> g_gyro_max_roll_rad;
+extern std::atomic<double> g_gyro_max_pitch_rad;
+extern std::atomic<double> g_gyro_max_yaw_rad;
+extern std::atomic<double> g_gyro_hp_lpf_alpha;
+extern std::atomic<double> g_gyro_hp_gain_roll;
+extern std::atomic<double> g_gyro_hp_gain_pitch;
+extern std::atomic<double> g_gyro_hp_gain_yaw;
+extern std::atomic<double> g_gyro_large_rot_thresh_deg;
+extern std::atomic<double> g_gyro_large_rot_gain_scale;
 
 // LK tuning (runtime overrides)
 extern std::atomic<bool> g_lk_trans_enable;

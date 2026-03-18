@@ -2,17 +2,18 @@
 #include <gst/rtsp-server/rtsp-server.h>
 
 #include <algorithm>
+#include <cctype>
 #include <csignal>
 #include <string>
 #include <thread>
 
-#include "eis_common.hpp"
-#include "eis_globals.hpp"
-#include "eis_input.hpp"
-#include "eis_imu.hpp"
 #include "eis_capture.hpp"
-#include "rtsp_server.hpp"
+#include "eis_common.hpp"
 #include "eis_config.hpp"
+#include "eis_globals.hpp"
+#include "eis_imu.hpp"
+#include "eis_input.hpp"
+#include "rtsp_server.hpp"
 
 static void sigint_handler(int) { g_running = false; }
 
@@ -24,14 +25,42 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --offset-sweep\n");
     fprintf(stderr, "  --overlay {0|1}\n");
     fprintf(stderr, "  --log-every-frames <N>\n");
-    fprintf(stderr, "  --ts-source {auto|sensor|pts|arrival}\n");
-    fprintf(stderr, "  --gyro-warp {jitter|delta}\n");
+    fprintf(stderr, "  --ts-source {sensor|pts|arrival} (auto alias supported)\n");
+    fprintf(stderr, "  --gyro-warp-mode {delta_direct|highpass}\n");
+    fprintf(stderr, "  --gyro-gain-roll <double>\n");
+    fprintf(stderr, "  --gyro-gain-pitch <double>\n");
+    fprintf(stderr, "  --gyro-gain-yaw <double>\n");
+    fprintf(stderr, "  --gyro-max-roll-deg <deg>\n");
+    fprintf(stderr, "  --gyro-max-pitch-deg <deg>\n");
+    fprintf(stderr, "  --gyro-max-yaw-deg <deg>\n");
+    fprintf(stderr, "  --gyro-hp-lpf-alpha <0~1>\n");
+    fprintf(stderr, "  --gyro-hp-gain-roll <double>\n");
+    fprintf(stderr, "  --gyro-hp-gain-pitch <double>\n");
+    fprintf(stderr, "  --gyro-hp-gain-yaw <double>\n");
+    fprintf(stderr, "  --gyro-large-rot-thresh-deg <deg>\n");
+    fprintf(stderr, "  --gyro-large-rot-gain-scale <0~1>\n");
     fprintf(stderr, "  --profile {run|calib|debug}\n");
     fprintf(stderr, "  --libcamera-xrgb {0|1}\n");
-    fprintf(stderr, "  --smooth-alpha <0~1>\n");
-    fprintf(stderr, "  --max-roll-deg <deg>\n");
-    fprintf(stderr, "  --max-pitch-deg <deg>\n");
-    fprintf(stderr, "  --max-yaw-deg <deg>\n");
+}
+
+static bool parse_ts_source_pref(const std::string& in, int& out_pref) {
+    std::string s = in;
+    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    if (s == "sensor") out_pref = (int)TsSourcePref::SENSOR;
+    else if (s == "pts") out_pref = (int)TsSourcePref::PTS;
+    else if (s == "arrival") out_pref = (int)TsSourcePref::ARRIVAL;
+    else if (s == "auto") out_pref = (int)TsSourcePref::AUTO; // compatibility alias
+    else return false;
+    return true;
+}
+
+static bool parse_gyro_warp_mode(const std::string& in, int& out_mode) {
+    std::string s = in;
+    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    if (s == "delta_direct") out_mode = (int)GyroWarpMode::DELTA_DIRECT;
+    else if (s == "highpass") out_mode = (int)GyroWarpMode::HIGHPASS;
+    else return false;
+    return true;
 }
 
 static void apply_config_map(const ConfigMap& cfg) {
@@ -62,25 +91,22 @@ static void apply_config_map(const ConfigMap& cfg) {
         else if (m == "gyro") g_mode = (int)EisMode::GYRO;
         else if (m == "hybrid") g_mode = (int)EisMode::HYBRID;
     }
+
     if (auto v = get("imu_offset_ms")) g_manual_imu_offset_ms = std::stod(*v);
     set_bool("offset_sweep", g_offset_sweep);
     set_bool("overlay", g_debug_overlay);
     set_int("log_every_frames", g_log_every_frames);
 
     if (auto v = get("ts_source")) {
-        std::string s = *v;
-        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-        if (s == "auto") g_ts_pref = (int)TsSourcePref::AUTO;
-        else if (s == "sensor") g_ts_pref = (int)TsSourcePref::SENSOR;
-        else if (s == "pts") g_ts_pref = (int)TsSourcePref::PTS;
-        else if (s == "arrival") g_ts_pref = (int)TsSourcePref::ARRIVAL;
+        int ts_pref = g_ts_pref.load();
+        if (parse_ts_source_pref(*v, ts_pref)) g_ts_pref = ts_pref;
     }
-    if (auto v = get("gyro_warp")) {
-        std::string s = *v;
-        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-        if (s == "jitter") g_gyro_warp_mode = (int)GyroWarpMode::JITTER;
-        else if (s == "delta") g_gyro_warp_mode = (int)GyroWarpMode::DELTA;
+
+    if (auto v = get("gyro_warp_mode")) {
+        int warp_mode = g_gyro_warp_mode.load();
+        if (parse_gyro_warp_mode(*v, warp_mode)) g_gyro_warp_mode = warp_mode;
     }
+
     if (auto v = get("profile")) {
         std::string s = *v;
         std::transform(s.begin(), s.end(), s.begin(), ::tolower);
@@ -88,12 +114,24 @@ static void apply_config_map(const ConfigMap& cfg) {
         else if (s == "calib") g_profile = (int)RunProfile::CALIB;
         else if (s == "debug") g_profile = (int)RunProfile::DEBUG;
     }
+
     set_bool("libcamera_xrgb", g_libcamera_xrgb);
 
-    set_double("smooth_alpha", g_smooth_alpha);
-    if (auto v = get("max_roll_deg")) g_max_roll_rad = std::stod(*v) * CV_PI / 180.0;
-    if (auto v = get("max_pitch_deg")) g_max_pitch_rad = std::stod(*v) * CV_PI / 180.0;
-    if (auto v = get("max_yaw_deg")) g_max_yaw_rad = std::stod(*v) * CV_PI / 180.0;
+    set_double("gyro_gain_roll", g_gyro_gain_roll);
+    set_double("gyro_gain_pitch", g_gyro_gain_pitch);
+    set_double("gyro_gain_yaw", g_gyro_gain_yaw);
+
+    if (auto v = get("gyro_max_roll_deg")) g_gyro_max_roll_rad = std::stod(*v) * CV_PI / 180.0;
+    if (auto v = get("gyro_max_pitch_deg")) g_gyro_max_pitch_rad = std::stod(*v) * CV_PI / 180.0;
+    if (auto v = get("gyro_max_yaw_deg")) g_gyro_max_yaw_rad = std::stod(*v) * CV_PI / 180.0;
+
+    set_double("gyro_hp_lpf_alpha", g_gyro_hp_lpf_alpha);
+    set_double("gyro_hp_gain_roll", g_gyro_hp_gain_roll);
+    set_double("gyro_hp_gain_pitch", g_gyro_hp_gain_pitch);
+    set_double("gyro_hp_gain_yaw", g_gyro_hp_gain_yaw);
+
+    set_double("gyro_large_rot_thresh_deg", g_gyro_large_rot_thresh_deg);
+    set_double("gyro_large_rot_gain_scale", g_gyro_large_rot_gain_scale);
 
     set_bool("lk.trans_enable", g_lk_trans_enable);
     set_int("lk.max_features", g_lk_max_features);
@@ -108,11 +146,23 @@ static void apply_config_map(const ConfigMap& cfg) {
 
 static bool parse_args(int argc, char* argv[]) {
     bool profile_set = false;
+
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
+
         auto eat_value = [&](std::string& out) -> bool {
             if (i + 1 >= argc) return false;
             out = argv[++i];
+            return true;
+        };
+
+        auto parse_mode = [&](const std::string& value) -> bool {
+            std::string m = value;
+            std::transform(m.begin(), m.end(), m.begin(), ::tolower);
+            if (m == "lk") g_mode = (int)EisMode::LK;
+            else if (m == "gyro") g_mode = (int)EisMode::GYRO;
+            else if (m == "hybrid") g_mode = (int)EisMode::HYBRID;
+            else return false;
             return true;
         };
 
@@ -122,26 +172,14 @@ static bool parse_args(int argc, char* argv[]) {
             return false;
         } else if (a == "--config") {
             if (!eat_value(val)) return false;
-            // handled in main; ignore here
-            val.clear();
             continue;
         } else if (a.rfind("--config=", 0) == 0) {
-            // handled in main; ignore here
             continue;
         } else if (a == "--mode") {
-            if (!eat_value(val)) return false;
+            if (!eat_value(val) || !parse_mode(val)) return false;
+            continue;
         } else if (a.rfind("--mode=", 0) == 0) {
-            val = a.substr(7);
-        }
-
-        if (!val.empty()) {
-            std::string m = val;
-            std::transform(m.begin(), m.end(), m.begin(), ::tolower);
-            if (m == "lk") g_mode = (int)EisMode::LK;
-            else if (m == "gyro") g_mode = (int)EisMode::GYRO;
-            else if (m == "hybrid") g_mode = (int)EisMode::HYBRID;
-            else return false;
-            val.clear();
+            if (!parse_mode(a.substr(7))) return false;
             continue;
         }
 
@@ -164,34 +202,82 @@ static bool parse_args(int argc, char* argv[]) {
             g_log_every_frames = std::max(0, std::stoi(a.substr(19)));
         } else if (a == "--ts-source") {
             if (!eat_value(val)) return false;
-            std::string s = val;
-            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-            if (s == "auto") g_ts_pref = (int)TsSourcePref::AUTO;
-            else if (s == "sensor") g_ts_pref = (int)TsSourcePref::SENSOR;
-            else if (s == "pts") g_ts_pref = (int)TsSourcePref::PTS;
-            else if (s == "arrival") g_ts_pref = (int)TsSourcePref::ARRIVAL;
-            else return false;
+            int pref = 0;
+            if (!parse_ts_source_pref(val, pref)) return false;
+            g_ts_pref = pref;
         } else if (a.rfind("--ts-source=", 0) == 0) {
-            std::string s = a.substr(12);
-            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-            if (s == "auto") g_ts_pref = (int)TsSourcePref::AUTO;
-            else if (s == "sensor") g_ts_pref = (int)TsSourcePref::SENSOR;
-            else if (s == "pts") g_ts_pref = (int)TsSourcePref::PTS;
-            else if (s == "arrival") g_ts_pref = (int)TsSourcePref::ARRIVAL;
-            else return false;
-        } else if (a == "--gyro-warp") {
+            int pref = 0;
+            if (!parse_ts_source_pref(a.substr(12), pref)) return false;
+            g_ts_pref = pref;
+        } else if (a == "--gyro-warp-mode") {
             if (!eat_value(val)) return false;
-            std::string s = val;
-            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-            if (s == "jitter") g_gyro_warp_mode = (int)GyroWarpMode::JITTER;
-            else if (s == "delta") g_gyro_warp_mode = (int)GyroWarpMode::DELTA;
-            else return false;
-        } else if (a.rfind("--gyro-warp=", 0) == 0) {
-            std::string s = a.substr(12);
-            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-            if (s == "jitter") g_gyro_warp_mode = (int)GyroWarpMode::JITTER;
-            else if (s == "delta") g_gyro_warp_mode = (int)GyroWarpMode::DELTA;
-            else return false;
+            int mode = 0;
+            if (!parse_gyro_warp_mode(val, mode)) return false;
+            g_gyro_warp_mode = mode;
+        } else if (a.rfind("--gyro-warp-mode=", 0) == 0) {
+            int mode = 0;
+            if (!parse_gyro_warp_mode(a.substr(17), mode)) return false;
+            g_gyro_warp_mode = mode;
+        } else if (a == "--gyro-gain-roll") {
+            if (!eat_value(val)) return false;
+            g_gyro_gain_roll = std::stod(val);
+        } else if (a.rfind("--gyro-gain-roll=", 0) == 0) {
+            g_gyro_gain_roll = std::stod(a.substr(17));
+        } else if (a == "--gyro-gain-pitch") {
+            if (!eat_value(val)) return false;
+            g_gyro_gain_pitch = std::stod(val);
+        } else if (a.rfind("--gyro-gain-pitch=", 0) == 0) {
+            g_gyro_gain_pitch = std::stod(a.substr(18));
+        } else if (a == "--gyro-gain-yaw") {
+            if (!eat_value(val)) return false;
+            g_gyro_gain_yaw = std::stod(val);
+        } else if (a.rfind("--gyro-gain-yaw=", 0) == 0) {
+            g_gyro_gain_yaw = std::stod(a.substr(16));
+        } else if (a == "--gyro-max-roll-deg") {
+            if (!eat_value(val)) return false;
+            g_gyro_max_roll_rad = std::stod(val) * CV_PI / 180.0;
+        } else if (a.rfind("--gyro-max-roll-deg=", 0) == 0) {
+            g_gyro_max_roll_rad = std::stod(a.substr(20)) * CV_PI / 180.0;
+        } else if (a == "--gyro-max-pitch-deg") {
+            if (!eat_value(val)) return false;
+            g_gyro_max_pitch_rad = std::stod(val) * CV_PI / 180.0;
+        } else if (a.rfind("--gyro-max-pitch-deg=", 0) == 0) {
+            g_gyro_max_pitch_rad = std::stod(a.substr(21)) * CV_PI / 180.0;
+        } else if (a == "--gyro-max-yaw-deg") {
+            if (!eat_value(val)) return false;
+            g_gyro_max_yaw_rad = std::stod(val) * CV_PI / 180.0;
+        } else if (a.rfind("--gyro-max-yaw-deg=", 0) == 0) {
+            g_gyro_max_yaw_rad = std::stod(a.substr(19)) * CV_PI / 180.0;
+        } else if (a == "--gyro-hp-lpf-alpha") {
+            if (!eat_value(val)) return false;
+            g_gyro_hp_lpf_alpha = std::stod(val);
+        } else if (a.rfind("--gyro-hp-lpf-alpha=", 0) == 0) {
+            g_gyro_hp_lpf_alpha = std::stod(a.substr(20));
+        } else if (a == "--gyro-hp-gain-roll") {
+            if (!eat_value(val)) return false;
+            g_gyro_hp_gain_roll = std::stod(val);
+        } else if (a.rfind("--gyro-hp-gain-roll=", 0) == 0) {
+            g_gyro_hp_gain_roll = std::stod(a.substr(20));
+        } else if (a == "--gyro-hp-gain-pitch") {
+            if (!eat_value(val)) return false;
+            g_gyro_hp_gain_pitch = std::stod(val);
+        } else if (a.rfind("--gyro-hp-gain-pitch=", 0) == 0) {
+            g_gyro_hp_gain_pitch = std::stod(a.substr(21));
+        } else if (a == "--gyro-hp-gain-yaw") {
+            if (!eat_value(val)) return false;
+            g_gyro_hp_gain_yaw = std::stod(val);
+        } else if (a.rfind("--gyro-hp-gain-yaw=", 0) == 0) {
+            g_gyro_hp_gain_yaw = std::stod(a.substr(19));
+        } else if (a == "--gyro-large-rot-thresh-deg") {
+            if (!eat_value(val)) return false;
+            g_gyro_large_rot_thresh_deg = std::stod(val);
+        } else if (a.rfind("--gyro-large-rot-thresh-deg=", 0) == 0) {
+            g_gyro_large_rot_thresh_deg = std::stod(a.substr(28));
+        } else if (a == "--gyro-large-rot-gain-scale") {
+            if (!eat_value(val)) return false;
+            g_gyro_large_rot_gain_scale = std::stod(val);
+        } else if (a.rfind("--gyro-large-rot-gain-scale=", 0) == 0) {
+            g_gyro_large_rot_gain_scale = std::stod(a.substr(28));
         } else if (a == "--profile") {
             if (!eat_value(val)) return false;
             std::string s = val;
@@ -214,26 +300,13 @@ static bool parse_args(int argc, char* argv[]) {
             g_libcamera_xrgb = (std::stoi(val) != 0);
         } else if (a.rfind("--libcamera-xrgb=", 0) == 0) {
             g_libcamera_xrgb = (std::stoi(a.substr(18)) != 0);
-        } else if (a == "--smooth-alpha") {
-            if (!eat_value(val)) return false;
-            g_smooth_alpha = std::stod(val);
-        } else if (a.rfind("--smooth-alpha=", 0) == 0) {
-            g_smooth_alpha = std::stod(a.substr(15));
-        } else if (a == "--max-roll-deg") {
-            if (!eat_value(val)) return false;
-            g_max_roll_rad = std::stod(val) * CV_PI / 180.0;
-        } else if (a.rfind("--max-roll-deg=", 0) == 0) {
-            g_max_roll_rad = std::stod(a.substr(16)) * CV_PI / 180.0;
-        } else if (a == "--max-pitch-deg") {
-            if (!eat_value(val)) return false;
-            g_max_pitch_rad = std::stod(val) * CV_PI / 180.0;
-        } else if (a.rfind("--max-pitch-deg=", 0) == 0) {
-            g_max_pitch_rad = std::stod(a.substr(17)) * CV_PI / 180.0;
-        } else if (a == "--max-yaw-deg") {
-            if (!eat_value(val)) return false;
-            g_max_yaw_rad = std::stod(val) * CV_PI / 180.0;
-        } else if (a.rfind("--max-yaw-deg=", 0) == 0) {
-            g_max_yaw_rad = std::stod(a.substr(15)) * CV_PI / 180.0;
+        } else if (a == "--gyro-warp" || a.rfind("--gyro-warp=", 0) == 0 ||
+                   a == "--smooth-alpha" || a.rfind("--smooth-alpha=", 0) == 0 ||
+                   a == "--max-roll-deg" || a.rfind("--max-roll-deg=", 0) == 0 ||
+                   a == "--max-pitch-deg" || a.rfind("--max-pitch-deg=", 0) == 0 ||
+                   a == "--max-yaw-deg" || a.rfind("--max-yaw-deg=", 0) == 0) {
+            fprintf(stderr, "[ERR] Deprecated arg: %s\n", a.c_str());
+            return false;
         } else {
             fprintf(stderr, "[ERR] Unknown arg: %s\n", a.c_str());
             return false;
@@ -243,6 +316,7 @@ static bool parse_args(int argc, char* argv[]) {
     if (!profile_set && g_offset_sweep.load()) {
         g_profile = (int)RunProfile::CALIB;
     }
+
     return true;
 }
 
@@ -262,6 +336,7 @@ int main(int argc, char* argv[]) {
             break;
         }
     }
+
     ConfigMap cfg;
     if (load_config_if_exists(cfg_path, cfg)) {
         fprintf(stderr, "[CFG] loaded %s\n", cfg_path.c_str());
@@ -271,6 +346,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (!parse_args(argc, argv)) return 0;
+
     RunProfile profile = (RunProfile)g_profile.load();
     if (g_log_every_frames.load() < 0) {
         g_log_every_frames = g_debug_overlay.load() ? (G_FPS * 2) : 0;
@@ -290,7 +366,7 @@ int main(int argc, char* argv[]) {
     GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(server);
 
     GstRTSPMediaFactory* f_stab = make_factory("stabsrc");
-    g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer) "stab");
+    g_signal_connect(f_stab, "media-configure", (GCallback)on_media_configure, (gpointer)"stab");
     gst_rtsp_mount_points_add_factory(mounts, "/cam", f_stab);
 
     g_object_unref(mounts);
@@ -305,22 +381,40 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "==============================\n");
     fprintf(stderr, "  Mode: %s (HYBRID = gyro rotation + LK translation)\n",
             mode_str((EisMode)g_mode.load()));
-    fprintf(stderr, "  IMU offset: %.3f ms  (sweep: %s)\n", g_manual_imu_offset_ms,
+    fprintf(stderr, "  IMU offset: %.3f ms  (sweep: %s)\n",
+            g_manual_imu_offset_ms,
             g_offset_sweep.load() ? "on" : "off");
     fprintf(stderr, "  Profile: %s\n", profile_str((RunProfile)g_profile.load()));
     fprintf(stderr, "  Libcamera XRGB: %s\n", g_libcamera_xrgb.load() ? "true" : "false");
-    fprintf(stderr, "  Gyro alpha=%.3f max(deg) R=%.1f P=%.1f Y=%.1f\n",
-            g_smooth_alpha.load(),
-            g_max_roll_rad.load() * 180.0 / CV_PI,
-            g_max_pitch_rad.load() * 180.0 / CV_PI,
-            g_max_yaw_rad.load() * 180.0 / CV_PI);
-    fprintf(stderr, "  IMU map: roll axis=%d sign=%d | pitch axis=%d sign=%d | yaw axis=%d sign=%d\n",
-            IMU_AXIS_ROLL, IMU_SIGN_ROLL, IMU_AXIS_PITCH, IMU_SIGN_PITCH, IMU_AXIS_YAW, IMU_SIGN_YAW);
+    fprintf(stderr, "  Gyro warp mode: %s\n", gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
+    fprintf(stderr, "  Gyro gain: R=%.2f P=%.2f Y=%.2f\n",
+            g_gyro_gain_roll.load(),
+            g_gyro_gain_pitch.load(),
+            g_gyro_gain_yaw.load());
+    fprintf(stderr, "  Gyro clamp max(deg): R=%.2f P=%.2f Y=%.2f\n",
+            g_gyro_max_roll_rad.load() * 180.0 / CV_PI,
+            g_gyro_max_pitch_rad.load() * 180.0 / CV_PI,
+            g_gyro_max_yaw_rad.load() * 180.0 / CV_PI);
+    fprintf(stderr, "  Gyro HP: alpha=%.3f gain R=%.2f P=%.2f Y=%.2f\n",
+            g_gyro_hp_lpf_alpha.load(),
+            g_gyro_hp_gain_roll.load(),
+            g_gyro_hp_gain_pitch.load(),
+            g_gyro_hp_gain_yaw.load());
+    fprintf(stderr, "  Large-rot protect: thresh=%.2fdeg scale=%.2f\n",
+            g_gyro_large_rot_thresh_deg.load(),
+            g_gyro_large_rot_gain_scale.load());
+    fprintf(stderr,
+            "  IMU map: roll axis=%d sign=%d | pitch axis=%d sign=%d | yaw axis=%d sign=%d\n",
+            IMU_AXIS_ROLL,
+            IMU_SIGN_ROLL,
+            IMU_AXIS_PITCH,
+            IMU_SIGN_PITCH,
+            IMU_AXIS_YAW,
+            IMU_SIGN_YAW);
     fprintf(stderr, "  TS source: %s\n", ts_pref_str((TsSourcePref)g_ts_pref.load()));
-    fprintf(stderr, "  GyroEIS smooth alpha=%.3f  warp=%s\n",
-            SMOOTH_ALPHA, gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
     fprintf(stderr, "  Crop: fixed %.0f%%\n", FIXED_CROP_PERCENT);
-    fprintf(stderr, "  LK trans: %s  every=%d  alpha=%.2f  max_corr=%.1fpx  scale=%.2f\n",
+    fprintf(stderr,
+            "  LK trans: %s  every=%d  alpha=%.2f  max_corr=%.1fpx  scale=%.2f\n",
             g_lk_trans_enable.load() ? "on" : "off",
             g_lk_trans_every_n.load(),
             g_lk_trans_alpha.load(),

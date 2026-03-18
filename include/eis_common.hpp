@@ -17,14 +17,19 @@ inline constexpr int64_t IMU_TARGET_PERIOD_NS = 1000000000LL / IMU_TARGET_HZ;
 inline constexpr int IMU_ADDR = 0x68;
 inline constexpr double GYRO_SENSITIVITY = 131.0;
 
-// Gyro smoothing / clamp (gyro-first path)
-inline constexpr double SMOOTH_ALPHA = 0.95;
-inline constexpr double ROLL_GAIN = 1.0;
-inline constexpr double PITCH_GAIN = 1.0;
-inline constexpr double YAW_GAIN = 1.0;
-inline constexpr double MAX_YAW_RAD = 8.0 * CV_PI / 180.0;
-inline constexpr double MAX_ROLL_RAD = 5.0 * CV_PI / 180.0;
-inline constexpr double MAX_PITCH_RAD = 4.0 * CV_PI / 180.0;
+// Gyro stabilization defaults (delta-direct / highpass)
+inline constexpr double GYRO_GAIN_ROLL = 1.2;
+inline constexpr double GYRO_GAIN_PITCH = 1.2;
+inline constexpr double GYRO_GAIN_YAW = 1.1;
+inline constexpr double GYRO_MAX_ROLL_RAD = 5.0 * CV_PI / 180.0;
+inline constexpr double GYRO_MAX_PITCH_RAD = 4.0 * CV_PI / 180.0;
+inline constexpr double GYRO_MAX_YAW_RAD = 8.0 * CV_PI / 180.0;
+inline constexpr double GYRO_HP_LPF_ALPHA = 0.90;
+inline constexpr double GYRO_HP_GAIN_ROLL = 1.0;
+inline constexpr double GYRO_HP_GAIN_PITCH = 1.0;
+inline constexpr double GYRO_HP_GAIN_YAW = 1.0;
+inline constexpr double GYRO_LARGE_ROT_THRESH_DEG = 3.5;
+inline constexpr double GYRO_LARGE_ROT_GAIN_SCALE = 0.40;
 
 // LK (offset sweep/debug only)
 inline constexpr int LK_MAX_FEATURES = 100;
@@ -99,8 +104,8 @@ enum class TsSourcePref {
 };
 
 enum class GyroWarpMode {
-    JITTER = 0,
-    DELTA = 1
+    DELTA_DIRECT = 0,
+    HIGHPASS = 1
 };
 
 enum class RunProfile {
@@ -146,8 +151,8 @@ inline const char* ts_pref_str(TsSourcePref p) {
 
 inline const char* gyro_warp_str(GyroWarpMode m) {
     switch (m) {
-    case GyroWarpMode::DELTA: return "DELTA";
-    default: return "JITTER";
+    case GyroWarpMode::HIGHPASS: return "HIGHPASS";
+    default: return "DELTA_DIRECT";
     }
 }
 

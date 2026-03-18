@@ -134,6 +134,10 @@ static cv::Vec3d quat_to_euler_deg(const Quaternion& q) {
     return cv::Vec3d(roll, pitch, yaw) * (180.0 / CV_PI);
 }
 
+static cv::Vec3d rad_to_deg(const cv::Vec3d& v) {
+    return v * (180.0 / CV_PI);
+}
+
 static double compute_corr(const std::deque<std::pair<double, double>>& buf) {
     if (buf.size() < 2) return 0.0;
     double sumx = 0, sumy = 0, sumxx = 0, sumyy = 0, sumxy = 0;
@@ -228,7 +232,6 @@ void capture_loop() {
     GstAppSink* appsink = nullptr;
     GError* err = nullptr;
 
-    bool ts_pref_warned = false;
     bool sensor_meta_warned = false;
 
     if (want_libcamera) {
@@ -337,20 +340,24 @@ void capture_loop() {
 
     CameraIntrinsics intr = CameraIntrinsics::from_fov(G_WIDTH, G_HEIGHT, HFOV_DEG, VFOV_DEG);
     EISConfig cfg;
-    cfg.smooth_alpha = g_smooth_alpha.load();
-    cfg.roll_gain = ROLL_GAIN;
-    cfg.pitch_gain = PITCH_GAIN;
-    cfg.yaw_gain = YAW_GAIN;
-    cfg.max_roll_rad = g_max_roll_rad.load();
-    cfg.max_pitch_rad = g_max_pitch_rad.load();
-    cfg.max_yaw_rad = g_max_yaw_rad.load();
+    cfg.gain_roll = g_gyro_gain_roll.load();
+    cfg.gain_pitch = g_gyro_gain_pitch.load();
+    cfg.gain_yaw = g_gyro_gain_yaw.load();
+    cfg.max_roll_rad = g_gyro_max_roll_rad.load();
+    cfg.max_pitch_rad = g_gyro_max_pitch_rad.load();
+    cfg.max_yaw_rad = g_gyro_max_yaw_rad.load();
+    cfg.hp_lpf_alpha = g_gyro_hp_lpf_alpha.load();
+    cfg.hp_gain_roll = g_gyro_hp_gain_roll.load();
+    cfg.hp_gain_pitch = g_gyro_hp_gain_pitch.load();
+    cfg.hp_gain_yaw = g_gyro_hp_gain_yaw.load();
+    cfg.large_rot_thresh_deg = g_gyro_large_rot_thresh_deg.load();
+    cfg.large_rot_gain_scale = g_gyro_large_rot_gain_scale.load();
     cfg.crop_percent = FIXED_CROP_PERCENT;
     cfg.enable_crop = false; // crop after all warps
 
     GyroEIS gyro_eis(intr, cfg, &g_gyro_buffer);
 
     RunProfile profile = (RunProfile)g_profile.load();
-    const bool profile_run = (profile == RunProfile::RUN);
     const bool profile_calib = (profile == RunProfile::CALIB);
     const bool profile_debug = (profile == RunProfile::DEBUG);
 
@@ -610,11 +617,13 @@ void capture_loop() {
         prev_time_ok = true;
 
         gyro_eis.set_warp_mode((GyroWarpMode)g_gyro_warp_mode.load());
+        const bool need_gyro_dbg = dbg || (log_every > 0);
         GyroEISDebug dbginfo{};
+        GyroEISDebug* dbg_ptr = need_gyro_dbg ? &dbginfo : nullptr;
         Mat gyro_out = frame;
         bool gyro_ok = false;
         if (!profile_calib && mode != EisMode::LK) {
-            gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, &dbginfo);
+            gyro_ok = gyro_eis.process(frame, frame_time_ms, time_offset_ms, gyro_out, dbg_ptr);
         }
 
         Mat stabilized = gyro_out;
@@ -682,7 +691,7 @@ void capture_loop() {
         }
 
         double imu_err_ms = 0.0;
-        if (gyro_ok && dbginfo.range.used > 0) {
+        if (gyro_ok && need_gyro_dbg && dbginfo.range.used > 0) {
             imu_err_ms = target_curr_ms - dbginfo.range.max_ts;
             double err_abs = std::abs(imu_err_ms);
             imu_err_sum += err_abs;
@@ -705,9 +714,9 @@ void capture_loop() {
                      gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()));
             putText(stabilized, buf, Point(8, 18), font, 0.4, Scalar(0, 255, 0), 1, LINE_AA);
 
-            cv::Vec3d e_corr = quat_to_euler_deg(dbginfo.q_corr);
-            snprintf(buf, sizeof(buf), "Gyro corr R:%+.2f P:%+.2f Y:%+.2f  crop:%.1f%%",
-                     e_corr[0], e_corr[1], e_corr[2], dbginfo.crop_percent);
+            cv::Vec3d e_corr = rad_to_deg(dbginfo.corr_final_rad);
+            snprintf(buf, sizeof(buf), "Gyro corr R:%+.2f P:%+.2f Y:%+.2f  req_crop:%.1f%%",
+                     e_corr[0], e_corr[1], e_corr[2], dbginfo.required_crop_percent);
             putText(stabilized, buf, Point(8, 33), font, 0.4, Scalar(255, 200, 0), 1, LINE_AA);
 
             // Optical flow overlay (debug only)
@@ -742,44 +751,68 @@ void capture_loop() {
             }
 
             fprintf(stderr,
-                    "[ALIGN] src=%s frame=%.2f target=%.2f win=[%.2f,%.2f] "
-                    "range=[%.2f,%.2f] imu_err=%.2fms\n",
+                    "[ALIGN] src=%s frame=%.2f target=%.2f prev_target=%.2f "
+                    "win=[%.2f,%.2f] used=%d range=[%.2f,%.2f] imu_err=%.2fms status=%s\n",
                     ts_source_str(ts_src),
                     frame_time_ms,
-                    target_curr_ms,
+                    need_gyro_dbg ? dbginfo.target_imu_time_ms : target_curr_ms,
+                    need_gyro_dbg ? dbginfo.prev_target_imu_time_ms : target_prev_ms,
                     dbginfo.range.t0,
                     dbginfo.range.t1,
+                    dbginfo.range.used,
                     dbginfo.range.min_ts,
                     dbginfo.range.max_ts,
-                    imu_err_ms);
+                    imu_err_ms,
+                    need_gyro_dbg ? gyro_process_status_str(dbginfo.status) : "N/A");
 
-            GyroSample last = g_last_gyro_sample;
-            cv::Vec3d e_phys = quat_to_euler_deg(dbginfo.q_phys);
-            cv::Vec3d e_virt = quat_to_euler_deg(dbginfo.q_virtual);
-            cv::Vec3d e_corr = quat_to_euler_deg(dbginfo.q_corr);
-            fprintf(stderr,
-                    "[GYRO] raw(gx,gy,gz)=%.1f %.1f %.1f  rate(rad/s)=%.3f %.3f %.3f  "
-                    "phys(deg)=%.2f %.2f %.2f  virt(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  hz=%.1f\n",
-                    last.raw[0], last.raw[1], last.raw[2],
-                    last.w_rad[0], last.w_rad[1], last.w_rad[2],
-                    e_phys[0], e_phys[1], e_phys[2],
-                    e_virt[0], e_virt[1], e_virt[2],
-                    e_corr[0], e_corr[1], e_corr[2],
-                    g_imu_actual_hz.load());
+            if (mode != EisMode::LK && !profile_calib) {
+                GyroSample last = g_last_gyro_sample;
+                cv::Vec3d e_phys = quat_to_euler_deg(dbginfo.q_phys);
+                cv::Vec3d e_corr = rad_to_deg(dbginfo.corr_final_rad);
+                fprintf(stderr,
+                        "[GYRO] raw(gx,gy,gz)=%.1f %.1f %.1f  rate(rad/s)=%.3f %.3f %.3f  "
+                        "phys(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  hz=%.1f\n",
+                        last.raw[0], last.raw[1], last.raw[2],
+                        last.w_rad[0], last.w_rad[1], last.w_rad[2],
+                        e_phys[0], e_phys[1], e_phys[2],
+                        e_corr[0], e_corr[1], e_corr[2],
+                        g_imu_actual_hz.load());
 
-            fprintf(stderr,
-                    "[CORR] warp=%s raw(deg)=%.2f %.2f %.2f  clamped(deg)=%.2f %.2f %.2f  "
-                    "req_scale=%.2f req_crop=%.1f%% actual_crop=%.1f%%\n",
-                    gyro_warp_str((GyroWarpMode)g_gyro_warp_mode.load()),
-                    dbginfo.e_corr_raw[0] * 180.0 / CV_PI,
-                    dbginfo.e_corr_raw[1] * 180.0 / CV_PI,
-                    dbginfo.e_corr_raw[2] * 180.0 / CV_PI,
-                    dbginfo.e_corr_clamped[0] * 180.0 / CV_PI,
-                    dbginfo.e_corr_clamped[1] * 180.0 / CV_PI,
-                    dbginfo.e_corr_clamped[2] * 180.0 / CV_PI,
-                    dbginfo.required_scale,
-                    dbginfo.required_crop_percent,
-                    (!profile_calib && FIXED_CROP_PERCENT > 0.0) ? FIXED_CROP_PERCENT : 0.0);
+                if ((GyroWarpMode)g_gyro_warp_mode.load() == GyroWarpMode::DELTA_DIRECT) {
+                    const cv::Vec3d raw_deg = rad_to_deg(dbginfo.delta_raw_rad);
+                    fprintf(stderr,
+                            "[DELTA] raw(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  "
+                            "delta_angle=%.2fdeg  pix=%.2f req_scale=%.2f req_crop=%.1f%%\n",
+                            raw_deg[0], raw_deg[1], raw_deg[2],
+                            e_corr[0], e_corr[1], e_corr[2],
+                            dbginfo.delta_angle_deg,
+                            dbginfo.pixel_displacement_est,
+                            dbginfo.required_scale,
+                            dbginfo.required_crop_percent);
+                } else {
+                    const cv::Vec3d raw_deg = rad_to_deg(dbginfo.delta_raw_rad);
+                    const cv::Vec3d lp_deg = rad_to_deg(dbginfo.delta_lp_rad);
+                    const cv::Vec3d hp_deg = rad_to_deg(dbginfo.delta_hp_rad);
+                    fprintf(stderr,
+                            "[HIGHPASS] raw(deg)=%.2f %.2f %.2f  lp(deg)=%.2f %.2f %.2f  "
+                            "hp(deg)=%.2f %.2f %.2f  corr(deg)=%.2f %.2f %.2f  "
+                            "pix=%.2f req_scale=%.2f req_crop=%.1f%%\n",
+                            raw_deg[0], raw_deg[1], raw_deg[2],
+                            lp_deg[0], lp_deg[1], lp_deg[2],
+                            hp_deg[0], hp_deg[1], hp_deg[2],
+                            e_corr[0], e_corr[1], e_corr[2],
+                            dbginfo.pixel_displacement_est,
+                            dbginfo.required_scale,
+                            dbginfo.required_crop_percent);
+                }
+
+                fprintf(stderr,
+                        "[PROTECT] large_rot=%d gain_scaled=%d scale=%.2f clamp=%d\n",
+                        dbginfo.large_rot_detected ? 1 : 0,
+                        dbginfo.gain_scaled ? 1 : 0,
+                        dbginfo.gain_scale_applied,
+                        dbginfo.clamp_applied ? 1 : 0);
+            }
 
             if (lk_ok && gyro_delta_ok) {
                 fprintf(stderr,

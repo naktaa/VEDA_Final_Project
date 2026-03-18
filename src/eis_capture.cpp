@@ -168,7 +168,7 @@ static std::string make_periodic_log_path() {
 #endif
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tmv);
-    return std::string("logs/eis_periodic_") + ts + ".log";
+    return std::string("logs/eis_periodic_") + ts + ".txt";
 }
 
 static void log_dual(FILE* fp, const char* fmt, ...) {

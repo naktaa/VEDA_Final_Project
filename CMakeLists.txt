@@ -41,6 +41,7 @@ add_executable(move_raw
   src/move_raw.cpp
   src/eis_globals.cpp
   src/eis_input.cpp
+  src/gyro_eis.cpp
   src/libcamera_grabber.cpp
   src/rtsp_server.cpp
   src/tank_drive.cpp

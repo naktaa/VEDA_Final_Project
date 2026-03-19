@@ -21,20 +21,30 @@ Required packages:
 
 ## Run
 ```bash
-./mqtt_tank_drive --host 127.0.0.1 --port 1883 --topic wiserisk/rc/control
+./mqtt_tank_drive
 ```
+
+Default MQTT:
+- Host: `192.168.100.10`
+- Port: `1883`
+- Topic: `wiserisk/rc/control`
 
 Default RTSP output:
 - URL: `rtsp://<PI_IP>:8555/cam`
-- Format: `640x480 @ 20fps`, vertical+horizontal flip, H.264 hardware encoding (`v4l2h264enc`)
+- Format: `640x480 @ 20fps`, rotate-180 flip, H.264 hardware encoding (`v4l2h264enc`)
+- Low-latency: leaky queues enabled, I-frame period set to 20
 
 ## Optional RTSP Args
 ```bash
 --no-rtsp
 --rtsp-port 8555
 --rtsp-path /cam
---rtsp-launch "( libcamerasrc ! video/x-raw,width=640,height=480,framerate=20/1 ! videoflip method=vertical-flip ! videoflip method=horizontal-flip ! videoconvert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" ! video/x-h264,level=(string)4,profile=(string)baseline ! rtph264pay name=pay0 pt=96 config-interval=1 )"
+--rtsp-launch "( libcamerasrc ! video/x-raw,width=640,height=480,framerate=20/1 ! videoflip method=rotate-180 ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! videoconvert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=20\" ! video/x-h264,level=(string)4,profile=(string)baseline ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! rtph264pay name=pay0 pt=96 config-interval=1 )"
 ```
+
+## Client low-latency tips
+- VLC: lower Network caching (e.g. `100ms` or lower).
+- Prefer UDP transport when possible to reduce end-to-end delay.
 
 ## Supported MQTT Payload
 ```json

@@ -15,7 +15,7 @@ namespace stream_config {
     inline constexpr int DEFAULT_HEIGHT = 480;
     inline constexpr int DEFAULT_FPS = 20;
     inline constexpr int DEFAULT_BITRATE = 1500000;
-    inline constexpr int DEFAULT_IFRAME_PERIOD = 30;
+    inline constexpr int DEFAULT_IFRAME_PERIOD = 20;
     inline constexpr bool DEFAULT_FLIP_VERTICAL = true;
     inline constexpr bool DEFAULT_FLIP_HORIZONTAL = true;
 
@@ -25,21 +25,24 @@ namespace stream_config {
             ",height=" + std::to_string(DEFAULT_HEIGHT) +
             ",framerate=" + std::to_string(DEFAULT_FPS) + "/1 ";
 
-        if (DEFAULT_FLIP_VERTICAL) {
+        if (DEFAULT_FLIP_VERTICAL && DEFAULT_FLIP_HORIZONTAL) {
+            launch += "! videoflip method=rotate-180 ";
+        } else if (DEFAULT_FLIP_VERTICAL) {
             launch += "! videoflip method=vertical-flip ";
-        }
-        if (DEFAULT_FLIP_HORIZONTAL) {
+        } else if (DEFAULT_FLIP_HORIZONTAL) {
             launch += "! videoflip method=horizontal-flip ";
         }
 
         launch +=
+            "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
             "! videoconvert "
             "! video/x-raw,format=I420 "
             "! v4l2h264enc extra-controls=\"controls,video_bitrate=" +
             std::to_string(DEFAULT_BITRATE) +
             ",h264_i_frame_period=" + std::to_string(DEFAULT_IFRAME_PERIOD) + "\" "
-                                                                              "! video/x-h264,level=(string)4,profile=(string)baseline "
-                                                                              "! rtph264pay name=pay0 pt=96 config-interval=1 )";
+            "! video/x-h264,level=(string)4,profile=(string)baseline "
+            "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
+            "! rtph264pay name=pay0 pt=96 config-interval=1 )";
         return launch;
     }
 

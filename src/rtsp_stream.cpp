@@ -39,6 +39,7 @@ bool RtspStreamServer::start(const RtspConfig& cfg) {
     GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
     gst_rtsp_media_factory_set_launch(factory, cfg.launch.c_str());
     gst_rtsp_media_factory_set_shared(factory, TRUE);
+    gst_rtsp_media_factory_set_suspend_mode(factory, GST_RTSP_SUSPEND_MODE_NONE);
     gst_rtsp_mount_points_add_factory(mounts, cfg.path.c_str(), factory);
     g_object_unref(mounts);
 
@@ -89,4 +90,3 @@ void RtspStreamServer::stop() {
     delete impl_;
     impl_ = nullptr;
 }
-

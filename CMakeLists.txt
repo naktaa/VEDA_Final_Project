@@ -7,14 +7,7 @@ add_compile_options(-O3 -DNDEBUG)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
-pkg_check_modules(GST REQUIRED
-  gstreamer-1.0
-  gstreamer-app-1.0
-  gstreamer-video-1.0
-  gstreamer-rtsp-server-1.0
-)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc video videoio)
 
 add_executable(mqtt_tank_drive
   src/mqtt_tank_drive.cpp
@@ -22,12 +15,14 @@ add_executable(mqtt_tank_drive
   src/camera_capture.cpp
   src/rtsp_stream.cpp
   src/tank_drive.cpp
+  src/eis_processor.cpp
 )
 
 target_include_directories(mqtt_tank_drive PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${MOSQUITTO_INCLUDE_DIRS}
   ${GST_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 target_compile_options(mqtt_tank_drive PRIVATE
@@ -38,5 +33,6 @@ target_compile_options(mqtt_tank_drive PRIVATE
 target_link_libraries(mqtt_tank_drive
   ${MOSQUITTO_LIBRARIES}
   ${GST_LIBRARIES}
+  ${OpenCV_LIBS}
   wiringPi
 )

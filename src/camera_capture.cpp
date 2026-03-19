@@ -12,6 +12,7 @@
 
 #include "rtsp_stream.hpp"
 #include "stream_config.hpp"
+#include "eis_processor.hpp"
 
 struct CameraCapture::Impl {
     std::atomic<bool>* app_running = nullptr;
@@ -19,9 +20,9 @@ struct CameraCapture::Impl {
     RtspStreamServer* rtsp_server = nullptr;
 
     GstElement* pipeline = nullptr;
-    GstElement* sink = nullptr;
     GstAppSink* appsink = nullptr;
     std::thread worker;
+    EisProcessor eis_processor;
 };
 
 CameraCapture::~CameraCapture() {
@@ -101,21 +102,12 @@ bool CameraCapture::start(std::atomic<bool>& app_running, RtspStreamServer& rtsp
                 continue;
             }
 
-            const std::size_t row_bytes = (std::size_t)w * 3U;
-            const std::size_t total_bytes = row_bytes * (std::size_t)h;
-            const unsigned char* src_ptr = map.data;
+            Mat frame(h, w, CV_8UC3, map.data, stride);
+            
+            // EIS 적용
+            impl->eis_processor.process(frame);
 
-            if ((std::size_t)stride != row_bytes) {
-                packed.resize(total_bytes);
-                for (int y = 0; y < h; ++y) {
-                    const unsigned char* row_src = map.data + (std::size_t)y * (std::size_t)stride;
-                    unsigned char* row_dst = packed.data() + (std::size_t)y * row_bytes;
-                    std::memcpy(row_dst, row_src, row_bytes);
-                }
-                src_ptr = packed.data();
-            }
-
-            impl->rtsp_server->push_bgr_frame(src_ptr, total_bytes);
+            impl->rtsp_server->push_bgr_frame(frame.data, frame.total() * frame.elemSize());
 
             gst_buffer_unmap(buffer, &map);
             gst_sample_unref(sample);

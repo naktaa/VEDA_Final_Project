@@ -62,6 +62,5 @@ private:
     KalmanState kf_theta_, kf_tx_, kf_ty_;
     
     cv::Mat prev_gray_;
-    cv::Mat prev_frame_;
     int frame_count_ = 0;
 };

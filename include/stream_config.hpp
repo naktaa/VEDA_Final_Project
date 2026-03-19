@@ -27,13 +27,8 @@ namespace stream_config {
             " is-live=true format=time do-timestamp=true block=false "
             "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ";
 
-        if (DEFAULT_FLIP_VERTICAL && DEFAULT_FLIP_HORIZONTAL) {
-            launch += "! videoflip method=rotate-180 ";
-        } else if (DEFAULT_FLIP_VERTICAL) {
-            launch += "! videoflip method=vertical-flip ";
-        } else if (DEFAULT_FLIP_HORIZONTAL) {
-            launch += "! videoflip method=horizontal-flip ";
-        }
+        // videoflip 제거 (EisProcessor에서 처리)
+
 
         launch +=
             "! videoconvert "

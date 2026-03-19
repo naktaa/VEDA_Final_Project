@@ -44,15 +44,17 @@ EisProcessor::EisProcessor() {
 void EisProcessor::process(cv::Mat& frame) {
     if (frame.empty()) return;
 
+    cv::rotate(frame, frame, cv::ROTATE_180);
     cv::Mat curr_gray;
     cv::cvtColor(frame, curr_gray, cv::COLOR_BGR2GRAY);
 
     if (frame_count_ == 0) {
         prev_gray_ = curr_gray.clone();
-        prev_frame_ = frame.clone();
         frame_count_++;
-        return; // 첫 프레임은 보정 없이 출력
+        return; 
     }
+
+    cv::Mat raw_frame = frame.clone(); // 다음 프레임 비교를 위한 원본 저장용
 
     std::vector<cv::Point2f> features_prev, features_curr;
     std::vector<uchar> status;
@@ -117,11 +119,11 @@ void EisProcessor::process(cv::Mat& frame) {
         sy * sin(da), sy *  cos(da), dy);
 
     cv::Mat stabilized;
-    cv::warpAffine(prev_frame_, stabilized, smoothed, frame.size());
+    cv::warpAffine(frame, stabilized, smoothed, frame.size());
 
     // Crop & Resize
-    int vert_border = config_.border_crop * frame.rows / frame.cols;
     if (config_.border_crop > 0) {
+        int vert_border = config_.border_crop * frame.rows / frame.cols;
         cv::Rect roi(config_.border_crop, vert_border, 
                      frame.cols - 2 * config_.border_crop, 
                      frame.rows - 2 * vert_border);
@@ -139,6 +141,5 @@ void EisProcessor::process(cv::Mat& frame) {
     }
 
     frame = stabilized;
-    prev_gray_ = curr_gray.clone();
-    prev_frame_ = frame.clone();
+    prev_gray_ = curr_gray;
 }

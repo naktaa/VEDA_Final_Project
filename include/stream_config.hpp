@@ -16,8 +16,8 @@ namespace stream_config {
     inline constexpr int DEFAULT_WIDTH = 640;
     inline constexpr int DEFAULT_HEIGHT = 480;
     inline constexpr int DEFAULT_FPS = 20;
-    inline constexpr int DEFAULT_BITRATE = 1500000;
-    inline constexpr int DEFAULT_IFRAME_PERIOD = 20;
+    inline constexpr int DEFAULT_BITRATE = 2500000;
+    inline constexpr int DEFAULT_IFRAME_PERIOD = 10;
     inline constexpr bool DEFAULT_FLIP_VERTICAL = true;
     inline constexpr bool DEFAULT_FLIP_HORIZONTAL = true;
 

@@ -20,6 +20,7 @@ struct CameraCapture::Impl {
     RtspStreamServer* rtsp_server = nullptr;
 
     GstElement* pipeline = nullptr;
+    GstElement* sink = nullptr;
     GstAppSink* appsink = nullptr;
     std::thread worker;
     EisProcessor eis_processor;
@@ -102,7 +103,7 @@ bool CameraCapture::start(std::atomic<bool>& app_running, RtspStreamServer& rtsp
                 continue;
             }
 
-            Mat frame(h, w, CV_8UC3, map.data, stride);
+            cv::Mat frame(h, w, CV_8UC3, map.data, stride);
             
             // EIS 적용
             impl->eis_processor.process(frame);

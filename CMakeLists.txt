@@ -36,3 +36,8 @@ target_link_libraries(mqtt_tank_drive
   ${OpenCV_LIBS}
   wiringPi
 )
+
+# 설정 파일이 빌드 디렉토리에 없으면 복사하여 로컬 튜닝 환경 구축
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config_lk_local.ini")
+  configure_file(config_lk_local.ini config_lk_local.ini COPYONLY)
+endif()

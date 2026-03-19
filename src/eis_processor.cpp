@@ -54,8 +54,6 @@ void EisProcessor::process(cv::Mat& frame) {
         return; 
     }
 
-    cv::Mat raw_frame = frame.clone(); // 다음 프레임 비교를 위한 원본 저장용
-
     std::vector<cv::Point2f> features_prev, features_curr;
     std::vector<uchar> status;
     std::vector<float> err_vec;
@@ -65,7 +63,6 @@ void EisProcessor::process(cv::Mat& frame) {
 
     if (features_prev.size() < 10) {
         prev_gray_ = curr_gray.clone();
-        prev_frame_ = frame.clone();
         return;
     }
 
@@ -81,14 +78,12 @@ void EisProcessor::process(cv::Mat& frame) {
 
     if (good_prev.size() < 6) {
         prev_gray_ = curr_gray.clone();
-        prev_frame_ = frame.clone();
         return;
     }
 
     cv::Mat affine = cv::estimateAffinePartial2D(good_prev, good_curr);
     if (affine.empty()) {
         prev_gray_ = curr_gray.clone();
-        prev_frame_ = frame.clone();
         return;
     }
 

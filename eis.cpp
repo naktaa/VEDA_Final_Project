@@ -46,7 +46,7 @@ using namespace cv;
 
 static const int G_WIDTH = 640;
 static const int G_HEIGHT = 480;
-static const int G_FPS = 24;
+static const int G_FPS = 20;
 
 // MPU-6050
 static const int IMU_ADDR = 0x68;
@@ -310,11 +310,14 @@ static void on_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media, gpoint
 
 static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
     GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
+    const bool is_cam = (strcmp(appsrc_name, "stabsrc") == 0);
+    const int video_bitrate = is_cam ? 1000000 : 1500000;
+    const int i_frame_period = is_cam ? 20 : 30;
     std::string launch =
         "( appsrc name=" + std::string(appsrc_name) + " is-live=true format=time do-timestamp=true block=false "
                                                       "! videoconvert "
                                                       "! video/x-raw,format=I420 "
-                                                      "! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" "
+                                                      "! v4l2h264enc extra-controls=\"controls,video_bitrate=" + std::to_string(video_bitrate) + ",h264_i_frame_period=" + std::to_string(i_frame_period) + "\" "
                                                       "! video/x-h264,level=(string)4,profile=(string)baseline "
                                                       "! rtph264pay name=pay0 pt=96 config-interval=1 )";
     gst_rtsp_media_factory_set_launch(factory, launch.c_str());
@@ -434,7 +437,7 @@ static void imu_loop() {
 static void capture_loop() {
     std::string cap_pipe =
         "libcamerasrc "
-        "! video/x-raw,format=RGBx,width=640,height=480,framerate=24/1 "
+        "! video/x-raw,format=RGBx,width=640,height=480,framerate=" + std::to_string(G_FPS) + "/1 "
         "! videoconvert ! video/x-raw,format=BGR "
         "! appsink name=appsink drop=true max-buffers=1 sync=false";
 

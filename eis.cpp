@@ -46,11 +46,10 @@ namespace manual_drive {
     constexpr double STEER_RATE = 3.50;
 
     // Mixing / PWM tuning
-    constexpr double PIVOT_THROTTLE_THRESHOLD = 0.08;
-    constexpr double MIX_DEADZONE = 0.03;
-    constexpr int MIN_EFFECTIVE_PWM = 45;
-    constexpr int START_BOOST_PWM = 85;
-    constexpr int START_BOOST_TICKS = 8; // 8 * 5ms = ~40ms
+    constexpr double MIX_DEADZONE = 0.05;
+    constexpr int MIN_EFFECTIVE_PWM = 105;
+    constexpr bool INVERT_LEFT_MOTOR = false;
+    constexpr bool INVERT_RIGHT_MOTOR = true;
 
     // wiringPi pin numbers (hardware PWM)
     //   L_EN -> GPIO18 (wPi 1,  physical 12) PWM0
@@ -81,8 +80,6 @@ namespace manual_drive {
         int right_pwm = 0;
         int left_dir = STOP;
         int right_dir = STOP;
-        int left_start_boost_ticks = 0;
-        int right_start_boost_ticks = 0;
     };
 
     struct DriveInputFlags {
@@ -170,8 +167,15 @@ namespace manual_drive {
     }
 
     void applyDriveOutput(const DriveState& state) {
-        setMotorControl(L_EN, L_IN1, L_IN2, state.left_pwm, state.left_dir);
-        setMotorControl(R_EN, R_IN1, R_IN2, state.right_pwm, state.right_dir);
+        auto mapDir = [](int dir, bool invert) {
+            if (!invert) return dir;
+            if (dir == FORWARD) return BACKWARD;
+            if (dir == BACKWARD) return FORWARD;
+            return STOP;
+        };
+
+        setMotorControl(L_EN, L_IN1, L_IN2, state.left_pwm, mapDir(state.left_dir, INVERT_LEFT_MOTOR));
+        setMotorControl(R_EN, R_IN1, R_IN2, state.right_pwm, mapDir(state.right_dir, INVERT_RIGHT_MOTOR));
     }
 
     void setMotorFromMix(double mix, int base_speed, int& out_pwm, int& out_dir) {
@@ -182,42 +186,34 @@ namespace manual_drive {
             return;
         }
 
-        int pwm = static_cast<int>(std::lround(mag * static_cast<double>(base_speed)));
+        // Deadzone + remap:
+        // [deadzone, 1.0] -> [min_effective_pwm, base_speed]
+        const int min_pwm = std::min(clampPwm(MIN_EFFECTIVE_PWM), clampPwm(base_speed));
+        const double norm =
+            (mag - MIX_DEADZONE) / std::max(1e-6, (1.0 - MIX_DEADZONE));
+        const double t = std::max(0.0, std::min(1.0, norm));
+        int pwm = static_cast<int>(std::lround(
+            static_cast<double>(min_pwm) + t * static_cast<double>(base_speed - min_pwm)));
         pwm = clampPwm(pwm);
-        if (pwm > 0) pwm = std::max(pwm, MIN_EFFECTIVE_PWM);
         out_pwm = pwm;
         out_dir = (mix >= 0.0) ? FORWARD : BACKWARD;
     }
 
     void computeTankOutput(DriveState& state, int base_speed) {
-        const int prev_left_dir = state.left_dir;
-        const int prev_right_dir = state.right_dir;
-        const int prev_left_pwm = state.left_pwm;
-        const int prev_right_pwm = state.right_pwm;
-
         const double throttle = clampUnit(state.current_throttle);
         const double steer = clampUnit(state.current_steer);
 
         double left_mix = 0.0;
         double right_mix = 0.0;
 
-        if (std::abs(throttle) < PIVOT_THROTTLE_THRESHOLD) {
-            // Near stop: allow pivot turn.
+        if (std::abs(steer) >= MIX_DEADZONE) {
+            // Steering input always means pivot turn (simple in-place rotate).
             left_mix = -steer;
             right_mix = steer;
         }
         else {
-            // Driving: differential steering. Keep both tracks in same direction.
-            left_mix = throttle - steer;
-            right_mix = throttle + steer;
-            if (throttle > 0.0) {
-                left_mix = std::max(0.0, left_mix);
-                right_mix = std::max(0.0, right_mix);
-            }
-            else {
-                left_mix = std::min(0.0, left_mix);
-                right_mix = std::min(0.0, right_mix);
-            }
+            left_mix = throttle;
+            right_mix = throttle;
         }
 
         const double max_mag = std::max(std::abs(left_mix), std::abs(right_mix));
@@ -228,28 +224,6 @@ namespace manual_drive {
 
         setMotorFromMix(clampUnit(left_mix), base_speed, state.left_pwm, state.left_dir);
         setMotorFromMix(clampUnit(right_mix), base_speed, state.right_pwm, state.right_dir);
-
-        if (prev_left_dir == STOP && prev_left_pwm == 0 && state.left_dir != STOP && state.left_pwm > 0) {
-            state.left_start_boost_ticks = START_BOOST_TICKS;
-        }
-        if (prev_right_dir == STOP && prev_right_pwm == 0 && state.right_dir != STOP && state.right_pwm > 0) {
-            state.right_start_boost_ticks = START_BOOST_TICKS;
-        }
-        if (state.left_dir == STOP || state.left_pwm == 0) {
-            state.left_start_boost_ticks = 0;
-        }
-        if (state.right_dir == STOP || state.right_pwm == 0) {
-            state.right_start_boost_ticks = 0;
-        }
-
-        if (state.left_start_boost_ticks > 0) {
-            state.left_pwm = std::max(state.left_pwm, START_BOOST_PWM);
-            state.left_start_boost_ticks--;
-        }
-        if (state.right_start_boost_ticks > 0) {
-            state.right_pwm = std::max(state.right_pwm, START_BOOST_PWM);
-            state.right_start_boost_ticks--;
-        }
     }
 
     void updateDriveState(const DriveCommand& cmd, DriveState& state, int base_speed, double dt_sec) {
@@ -384,7 +358,7 @@ namespace manual_drive {
     void printHelp() {
         fprintf(stderr, "\n=== Tank Manual Drive ===\n");
         fprintf(stderr, "W/S: target throttle +1 / -1 (hold to keep)\n");
-        fprintf(stderr, "A/D (also Q/E): steer left/right (drive=curve, stop=pivot)\n");
+        fprintf(stderr, "A/D (also Q/E): pivot turn left/right (in-place)\n");
         fprintf(stderr, "Space: brake (fast decel), X: emergency stop\n");
         fprintf(stderr, "+/-: base speed up/down (0~255)\n");
         fprintf(stderr, "H: help, ESC: quit\n");

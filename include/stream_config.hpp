@@ -16,7 +16,7 @@ namespace stream_config {
     inline constexpr int DEFAULT_WIDTH = 640;
     inline constexpr int DEFAULT_HEIGHT = 480;
     inline constexpr int DEFAULT_FPS = 20;
-    inline constexpr int DEFAULT_BITRATE = 2500000;
+    inline constexpr int DEFAULT_BITRATE = 4000000;
     inline constexpr int DEFAULT_IFRAME_PERIOD = 10;
     inline constexpr bool DEFAULT_FLIP_VERTICAL = true;
     inline constexpr bool DEFAULT_FLIP_HORIZONTAL = true;
@@ -41,7 +41,7 @@ namespace stream_config {
             "! v4l2h264enc extra-controls=\"controls,video_bitrate=" +
             std::to_string(DEFAULT_BITRATE) +
             ",h264_i_frame_period=" + std::to_string(DEFAULT_IFRAME_PERIOD) + "\" "
-            "! video/x-h264,level=(string)4,profile=(string)baseline "
+            "! video/x-h264,level=(string)4,profile=(string)main "
             "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
             "! rtph264pay name=pay0 pt=96 config-interval=1 )";
         return launch;

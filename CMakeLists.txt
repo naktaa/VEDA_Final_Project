@@ -16,6 +16,8 @@ pkg_check_modules(GST REQUIRED
 
 add_executable(mqtt_tank_drive
   src/mqtt_tank_drive.cpp
+  src/mqtt_drive.cpp
+  src/rtsp_stream.cpp
   src/tank_drive.cpp
 )
 

@@ -26,14 +26,14 @@ Required packages:
 
 Default RTSP output:
 - URL: `rtsp://<PI_IP>:8555/cam`
-- Format: `640x480 @ 20fps`, vertical flip, H.264 hardware encoding (`v4l2h264enc`)
+- Format: `640x480 @ 20fps`, vertical+horizontal flip, H.264 hardware encoding (`v4l2h264enc`)
 
 ## Optional RTSP Args
 ```bash
 --no-rtsp
 --rtsp-port 8555
 --rtsp-path /cam
---rtsp-launch "( libcamerasrc ! video/x-raw,width=640,height=480,framerate=20/1 ! videoflip method=vertical-flip ! videoconvert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" ! video/x-h264,level=(string)4,profile=(string)baseline ! rtph264pay name=pay0 pt=96 config-interval=1 )"
+--rtsp-launch "( libcamerasrc ! video/x-raw,width=640,height=480,framerate=20/1 ! videoflip method=vertical-flip ! videoflip method=horizontal-flip ! videoconvert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" ! video/x-h264,level=(string)4,profile=(string)baseline ! rtph264pay name=pay0 pt=96 config-interval=1 )"
 ```
 
 ## Supported MQTT Payload

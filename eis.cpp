@@ -44,6 +44,7 @@ namespace manual_drive {
     constexpr double THROTTLE_RELEASE_DECEL_RATE = 1.60;
     constexpr double BRAKE_DECEL_RATE = 4.50;
     constexpr double STEER_RATE = 3.50;
+    constexpr int ROTATE_PWM = 180;
 
     // Mixing / PWM tuning
     constexpr double MIX_DEADZONE = 0.05;
@@ -201,20 +202,8 @@ namespace manual_drive {
 
     void computeTankOutput(DriveState& state, int base_speed) {
         const double throttle = clampUnit(state.current_throttle);
-        const double steer = clampUnit(state.current_steer);
-
-        double left_mix = 0.0;
-        double right_mix = 0.0;
-
-        if (std::abs(steer) >= MIX_DEADZONE) {
-            // Steering input always means pivot turn (simple in-place rotate).
-            left_mix = -steer;
-            right_mix = steer;
-        }
-        else {
-            left_mix = throttle;
-            right_mix = throttle;
-        }
+        double left_mix = throttle;
+        double right_mix = throttle;
 
         const double max_mag = std::max(std::abs(left_mix), std::abs(right_mix));
         if (max_mag > 1.0) {
@@ -239,21 +228,45 @@ namespace manual_drive {
             return;
         }
 
+        // Brake is safety-priority over everything else.
+        if (cmd.brake) {
+            state.current_throttle =
+                approach(state.current_throttle, 0.0, BRAKE_DECEL_RATE * dt_sec);
+            state.current_steer = 0.0;
+            computeTankOutput(state, base_speed);
+            return;
+        }
+
+        // A/D pivot has priority over throttle logic: immediate strong rotate.
+        const int rotate_dir = (cmd.target_steer > 0.0) ? 1 : ((cmd.target_steer < 0.0) ? -1 : 0);
+        if (rotate_dir != 0) {
+            state.current_throttle = 0.0;
+            state.current_steer = static_cast<double>(rotate_dir);
+            const int rpwm = clampPwm(ROTATE_PWM);
+            if (rotate_dir < 0) { // left pivot
+                state.left_dir = BACKWARD;
+                state.right_dir = FORWARD;
+            }
+            else { // right pivot
+                state.left_dir = FORWARD;
+                state.right_dir = BACKWARD;
+            }
+            state.left_pwm = rpwm;
+            state.right_pwm = rpwm;
+            return;
+        }
+
         const double target_throttle = clampUnit(cmd.brake ? 0.0 : cmd.target_throttle);
-        const double target_steer = clampUnit(cmd.brake ? 0.0 : cmd.target_steer);
 
         double throttle_rate = THROTTLE_RELEASE_DECEL_RATE;
-        if (cmd.brake) {
-            throttle_rate = BRAKE_DECEL_RATE;
-        }
-        else if (std::abs(target_throttle) > 1e-6 && state.current_throttle * target_throttle >= 0.0 &&
+        if (std::abs(target_throttle) > 1e-6 && state.current_throttle * target_throttle >= 0.0 &&
                  std::abs(target_throttle) > std::abs(state.current_throttle)) {
             throttle_rate = THROTTLE_ACCEL_RATE;
         }
 
         state.current_throttle =
             approach(state.current_throttle, target_throttle, throttle_rate * dt_sec);
-        state.current_steer = approach(state.current_steer, target_steer, STEER_RATE * dt_sec);
+        state.current_steer = 0.0;
 
         computeTankOutput(state, base_speed);
     }

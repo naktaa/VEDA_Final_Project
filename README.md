@@ -1,6 +1,8 @@
-# Tank MQTT Drive
+# Tank MQTT Drive + RTSP
 
-`wiserisk/rc/control` MQTT 토픽을 받아 탱크 주행(`drive`)만 제어하는 최소 프로젝트입니다.
+Minimal project for:
+- MQTT-based tank driving control (`drive` group)
+- RTSP video streaming (`rtsp://<PI_IP>:8555/cam`)
 
 ## Build
 ```bash
@@ -10,17 +12,30 @@ cmake ..
 make -j
 ```
 
-필수 라이브러리:
+Required packages:
 - `wiringPi`
-- `libmosquitto` (`libmosquitto-dev`)
+- `libmosquitto-dev`
+- `libgstreamer1.0-dev`
+- `libgstrtspserver-1.0-dev`
+- GStreamer plugins including `libcamerasrc` and an H.264 encoder (for default launch)
 
 ## Run
 ```bash
 ./mqtt_tank_drive --host 127.0.0.1 --port 1883 --topic wiserisk/rc/control
 ```
 
-## Supported MQTT Commands
-Payload 예시:
+Default RTSP output:
+- URL: `rtsp://<PI_IP>:8555/cam`
+
+## Optional RTSP Args
+```bash
+--no-rtsp
+--rtsp-port 8555
+--rtsp-path /cam
+--rtsp-launch "( libcamerasrc ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 ! rtph264pay name=pay0 pt=96 config-interval=1 )"
+```
+
+## Supported MQTT Payload
 ```json
 {
   "type": "tank_control",
@@ -33,18 +48,18 @@ Payload 예시:
 }
 ```
 
-처리 조건:
+Accepted filters:
 - `type == "tank_control"`
 - `target == "tank"`
 - `group == "drive"`
 
-지원 `command`:
+Supported commands:
 - `forward`
 - `backward`
 - `turn_left`
 - `turn_right`
 
-동작 규칙:
-- `active=true`: 해당 동작 시작
-- 동일 `command`의 `active=false`: 정지
-- `group=ptz`는 무시
+Behavior:
+- `active=true`: start motion
+- matching `command` + `active=false`: stop motion
+- `group=ptz` is ignored

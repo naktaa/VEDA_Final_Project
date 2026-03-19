@@ -6,7 +6,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 
+#include <gst/gst.h>
+#include <gst/rtsp-server/rtsp-server.h>
 #include <mosquitto.h>
 
 namespace {
@@ -15,12 +18,31 @@ constexpr const char* kDefaultHost = "127.0.0.1";
 constexpr int kDefaultPort = 1883;
 constexpr int kDefaultKeepAliveSec = 30;
 constexpr const char* kDefaultTopic = "wiserisk/rc/control";
+constexpr const char* kDefaultRtspPort = "8555";
+constexpr const char* kDefaultRtspPath = "/cam";
+constexpr const char* kDefaultRtspLaunch =
+    "( libcamerasrc ! video/x-raw,width=1280,height=720,framerate=30/1 "
+    "! videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 "
+    "! rtph264pay name=pay0 pt=96 config-interval=1 )";
 
 std::atomic<bool> g_running{true};
 std::string g_active_drive_cmd;
 
 struct MqttConfig {
     std::string topic = kDefaultTopic;
+};
+
+struct RtspConfig {
+    bool enable = true;
+    std::string service = kDefaultRtspPort;
+    std::string path = kDefaultRtspPath;
+    std::string launch = kDefaultRtspLaunch;
+};
+
+struct RtspRuntime {
+    GMainLoop* loop = nullptr;
+    GstRTSPServer* server = nullptr;
+    std::thread loop_thread;
 };
 
 void sigint_handler(int) {
@@ -136,7 +158,76 @@ void on_message(struct mosquitto*, void*, const struct mosquitto_message* msg) {
 }
 
 void print_usage(const char* prog) {
-    fprintf(stderr, "Usage: %s [--host <addr>] [--port <n>] [--topic <topic>]\n", prog);
+    fprintf(stderr, "Usage: %s [options]\n", prog);
+    fprintf(stderr, "  --host <addr>           MQTT broker host (default: 127.0.0.1)\n");
+    fprintf(stderr, "  --port <n>              MQTT broker port (default: 1883)\n");
+    fprintf(stderr, "  --topic <topic>         MQTT topic (default: wiserisk/rc/control)\n");
+    fprintf(stderr, "  --no-rtsp               disable RTSP server\n");
+    fprintf(stderr, "  --rtsp-port <port>      RTSP port (default: 8555)\n");
+    fprintf(stderr, "  --rtsp-path <path>      RTSP mount path (default: /cam)\n");
+    fprintf(stderr, "  --rtsp-launch <launch>  GStreamer RTSP factory launch string\n");
+}
+
+bool start_rtsp_server(const RtspConfig& cfg, RtspRuntime& rtsp) {
+    if (!cfg.enable) return true;
+
+    if (!gst_is_initialized()) {
+        gst_init(nullptr, nullptr);
+    }
+
+    rtsp.server = gst_rtsp_server_new();
+    if (!rtsp.server) {
+        fprintf(stderr, "[RTSP] server create failed\n");
+        return false;
+    }
+
+    gst_rtsp_server_set_service(rtsp.server, cfg.service.c_str());
+
+    GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(rtsp.server);
+    GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
+    gst_rtsp_media_factory_set_launch(factory, cfg.launch.c_str());
+    gst_rtsp_media_factory_set_shared(factory, TRUE);
+    gst_rtsp_mount_points_add_factory(mounts, cfg.path.c_str(), factory);
+    g_object_unref(mounts);
+
+    if (gst_rtsp_server_attach(rtsp.server, nullptr) == 0) {
+        fprintf(stderr, "[RTSP] attach failed\n");
+        g_object_unref(rtsp.server);
+        rtsp.server = nullptr;
+        return false;
+    }
+
+    rtsp.loop = g_main_loop_new(nullptr, FALSE);
+    if (!rtsp.loop) {
+        fprintf(stderr, "[RTSP] main loop create failed\n");
+        g_object_unref(rtsp.server);
+        rtsp.server = nullptr;
+        return false;
+    }
+
+    rtsp.loop_thread = std::thread([&rtsp]() {
+        g_main_loop_run(rtsp.loop);
+    });
+
+    fprintf(stderr, "[RTSP] stream ready: rtsp://<PI_IP>:%s%s\n", cfg.service.c_str(), cfg.path.c_str());
+    return true;
+}
+
+void stop_rtsp_server(RtspRuntime& rtsp) {
+    if (rtsp.loop) {
+        g_main_loop_quit(rtsp.loop);
+    }
+    if (rtsp.loop_thread.joinable()) {
+        rtsp.loop_thread.join();
+    }
+    if (rtsp.loop) {
+        g_main_loop_unref(rtsp.loop);
+        rtsp.loop = nullptr;
+    }
+    if (rtsp.server) {
+        g_object_unref(rtsp.server);
+        rtsp.server = nullptr;
+    }
 }
 
 } // namespace
@@ -145,6 +236,7 @@ int main(int argc, char* argv[]) {
     const char* host = kDefaultHost;
     int port = kDefaultPort;
     MqttConfig cfg;
+    RtspConfig rtsp_cfg;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
@@ -153,6 +245,17 @@ int main(int argc, char* argv[]) {
             port = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--topic") == 0 && i + 1 < argc) {
             cfg.topic = argv[++i];
+        } else if (std::strcmp(argv[i], "--no-rtsp") == 0) {
+            rtsp_cfg.enable = false;
+        } else if (std::strcmp(argv[i], "--rtsp-port") == 0 && i + 1 < argc) {
+            rtsp_cfg.service = argv[++i];
+        } else if (std::strcmp(argv[i], "--rtsp-path") == 0 && i + 1 < argc) {
+            rtsp_cfg.path = argv[++i];
+            if (!rtsp_cfg.path.empty() && rtsp_cfg.path[0] != '/') {
+                rtsp_cfg.path.insert(rtsp_cfg.path.begin(), '/');
+            }
+        } else if (std::strcmp(argv[i], "--rtsp-launch") == 0 && i + 1 < argc) {
+            rtsp_cfg.launch = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -169,10 +272,17 @@ int main(int argc, char* argv[]) {
     if (!tank_drive::init()) return 1;
     tank_drive::set_idle_autostop(false);
 
+    RtspRuntime rtsp_runtime;
+    if (!start_rtsp_server(rtsp_cfg, rtsp_runtime)) {
+        tank_drive::shutdown();
+        return 1;
+    }
+
     mosquitto_lib_init();
     mosquitto* mosq = mosquitto_new("tank_mqtt_drive", true, &cfg);
     if (!mosq) {
         fprintf(stderr, "[MQTT] mosquitto_new failed\n");
+        stop_rtsp_server(rtsp_runtime);
         tank_drive::shutdown();
         mosquitto_lib_cleanup();
         return 1;
@@ -186,6 +296,7 @@ int main(int argc, char* argv[]) {
     if (rc != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "[MQTT] connect error: %s\n", mosquitto_strerror(rc));
         mosquitto_destroy(mosq);
+        stop_rtsp_server(rtsp_runtime);
         tank_drive::shutdown();
         mosquitto_lib_cleanup();
         return 1;
@@ -211,6 +322,7 @@ int main(int argc, char* argv[]) {
     mosquitto_disconnect(mosq);
     mosquitto_destroy(mosq);
     mosquitto_lib_cleanup();
+    stop_rtsp_server(rtsp_runtime);
     tank_drive::shutdown();
     return 0;
 }

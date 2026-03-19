@@ -120,7 +120,6 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         MiniMapWidget.h
         CctvOverlayWidget.cpp
         HomographyCalib.cpp
-
         MiniMapWidget.cpp
         MqttPublisher.h
         MqttPublisher.cpp
@@ -204,14 +203,6 @@ install(TARGETS main_window
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(main_window)
 endif()
-
-
-
-
-
-
-
-
 
 
 target_sources(main_window PRIVATE

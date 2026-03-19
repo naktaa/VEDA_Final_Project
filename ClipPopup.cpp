@@ -1,13 +1,15 @@
-// ClipPopup.cpp
+﻿// ClipPopup.cpp
 #include "ClipPopup.h"
+#include "MqttPublisher.h"
 
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QTimer>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <QMediaPlayer>
 #include <QAudioOutput>
@@ -33,8 +35,11 @@ ClipPopup::ClipPopup(QWidget* parent) : QWidget(parent)
     m_player->setVideoOutput(m_video);
 
     m_net = new QNetworkAccessManager(this);
+    m_pub = new MqttPublisher(this);
+    m_pub->start("192.168.100.10", 1883, "qt-clip-popup-pub");
 
     connect(m_btnDownload, &QPushButton::clicked, this, &ClipPopup::onDownload);
+    connect(m_btnSend, &QPushButton::clicked, this, &ClipPopup::onSend);
     connect(m_btnClose, &QPushButton::clicked, this, [this]{
         if (m_player) m_player->stop();
         close();
@@ -67,11 +72,13 @@ void ClipPopup::buildUi()
     m_video->setMinimumHeight(220);
 
     m_btnDownload = new QPushButton("Download", this);
+    m_btnSend     = new QPushButton("Send", this);
     m_btnClose    = new QPushButton("Close", this);
 
     auto* btns = new QHBoxLayout();
     btns->addStretch();
     btns->addWidget(m_btnDownload);
+    btns->addWidget(m_btnSend);
     btns->addWidget(m_btnClose);
 
     auto* root = new QVBoxLayout(this);
@@ -82,13 +89,14 @@ void ClipPopup::buildUi()
 
     setLayout(root);
 
-    // 배경
+    // 諛곌꼍
     setStyleSheet("background-color:#101010;");
 }
 
 void ClipPopup::loadAndPlay(const QUrl& url)
 {
     m_currentUrl = url;
+    m_btnSend->setEnabled(url.isValid() && !url.isEmpty());
 
     const bool canDownload = (url.isValid() && (url.scheme()=="http" || url.scheme()=="https"));
     m_btnDownload->setEnabled(canDownload);
@@ -106,20 +114,19 @@ void ClipPopup::playClip(const QString& cam,
                          const QUrl& url,
                          int clipSec)
 {
+    Q_UNUSED(clipSec);
+    m_currentCam = cam;
+    m_currentEventName = eventName;
+    m_currentUtcShort = utcShort;
     m_labelEvent->setText(QString("Event: %1").arg(eventName));
     m_labelCam->setText(QString("Cam: %1").arg(cam));
     m_labelTime->setText(QString("Time: %1").arg(utcShort));
 
     loadAndPlay(url);
-
-    // 자동 종료(clipSec + 1초)
-    QTimer::singleShot((clipSec + 1) * 1000, this, &ClipPopup::onAutoCloseTimeout);
 }
 
 void ClipPopup::onAutoCloseTimeout()
 {
-    if (m_player) m_player->stop();
-    close();
 }
 
 void ClipPopup::onDownload()
@@ -129,7 +136,7 @@ void ClipPopup::onDownload()
         return;
     }
     if (!(m_currentUrl.scheme()=="http" || m_currentUrl.scheme()=="https")) {
-        QMessageBox::warning(this, "Download", "HTTP/HTTPS만 다운로드 가능");
+        QMessageBox::warning(this, "Download", "Only HTTP/HTTPS downloads are supported.");
         return;
     }
 
@@ -148,7 +155,7 @@ void ClipPopup::onDownload()
 
     m_outFile = new QFile(savePath, this);
     if (!m_outFile->open(QIODevice::WriteOnly)) {
-        QMessageBox::warning(this, "Download", "파일 열기 실패");
+        QMessageBox::warning(this, "Download", "Failed to open output file.");
         m_outFile->deleteLater();
         m_outFile = nullptr;
         return;
@@ -187,9 +194,9 @@ void ClipPopup::onDownload()
 
         if (m_reply->error() != QNetworkReply::NoError) {
             QFile::remove(savePath);
-            QMessageBox::warning(this, "Download", "다운로드 실패: " + m_reply->errorString());
+            QMessageBox::warning(this, "Download", "Download failed: " + m_reply->errorString());
         } else {
-            QMessageBox::information(this, "Download", "저장 완료:\n" + savePath);
+            QMessageBox::information(this, "Download", "Saved to:\n" + savePath);
         }
 
         if (m_progress) { m_progress->close(); m_progress->deleteLater(); m_progress = nullptr; }
@@ -197,3 +204,48 @@ void ClipPopup::onDownload()
         if (m_outFile) { m_outFile->deleteLater(); m_outFile = nullptr; }
     });
 }
+
+void ClipPopup::onSend()
+{
+    if (!m_pub) {
+        QMessageBox::warning(this, "Send", "MQTT publisher is not available.");
+        return;
+    }
+    if (!m_currentUrl.isValid() || m_currentUrl.isEmpty()) {
+        QMessageBox::warning(this, "Send", "Clip URL is not available.");
+        return;
+    }
+
+    QJsonObject payload;
+    payload["type"] = "clip_forward_request";
+    payload["clip_url"] = m_currentUrl.toString();
+    payload["cam"] = m_currentCam;
+    payload["event"] = m_currentEventName;
+    payload["utc"] = m_currentUtcShort;
+    payload["target"] = "control_room";
+    payload["requested_by"] = "clip_popup";
+
+    const bool ok = m_pub->publishJson(
+        "wiserisk/clips/forward",
+        QJsonDocument(payload).toJson(QJsonDocument::Compact),
+        1,
+        false);
+
+    if (ok) {
+        QMessageBox::information(this, "Send", "Forward request sent.");
+    } else {
+        QMessageBox::warning(this, "Send", "Failed to publish forward request.");
+    }
+}
+
+void ClipPopup::keyPressEvent(QKeyEvent* event)
+{
+    if (event && event->key() == Qt::Key_Escape) {
+        if (m_player) m_player->stop();
+        close();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+

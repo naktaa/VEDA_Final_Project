@@ -44,6 +44,7 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_appsink = nullptr;
     GstElement *m_crop = nullptr;
+    GstBus *m_bus = nullptr;
 
     // 프레임 저장
     QImage m_frame;

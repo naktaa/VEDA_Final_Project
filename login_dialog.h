@@ -17,8 +17,8 @@ class LoginDialog : public QDialog
 
 public:
     enum class UserRole {
-        Executive,    // 총책?�자
-        ControlRoom   // 관?�실
+        Executive,    // 총책?�자
+        ControlRoom   // 관?�실
     };
 
 public:
@@ -40,6 +40,9 @@ private:
     void setupCustomTitleBar();
     bool validateLocal(const QString& id, const QString& pw, UserRole& outRole) const;
     void setStatus(const QString& msg, bool isError = false);
+    void shakeLoginCard();
+    void updateCapsLockWarning();
+    void startLoginSuccessAnimation();
 
 private:
     Ui::LoginDialog *ui;

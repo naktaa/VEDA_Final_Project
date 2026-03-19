@@ -1,4 +1,4 @@
-#include "mainwindow.h"
+﻿#include "mainwindow.h"
 #include "ui_mainwindow.h"
 
 #include "ClipPopup.h"
@@ -24,13 +24,16 @@
 #include <QJsonObject>
 #include <QDateTime>
 #include <QGraphicsDropShadowEffect>
+#include <QGuiApplication>
 #include <QLineF>
 #include <QKeyEvent>
 #include <QListWidget>
 #include <QPushButton>
 #include <QLabel>
 #include <QComboBox>
+#include <QLineEdit>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
 #include <QScrollBar>
@@ -45,6 +48,7 @@
 #include <QMouseEvent>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QScreen>
 #include <algorithm>
 #include <cmath>
 
@@ -58,6 +62,7 @@
 namespace {
 constexpr auto kVisionPoseBridgeCommandTopic = "wiserisk/commands/vision_pose_bridge";
 constexpr auto kVisionPoseBridgeStatusType = "vision_pose_bridge_status";
+constexpr auto kTankControlTopic = "wiserisk/rc/control";
 constexpr auto kRuViewZoneConfigPath = "C:/Users/1-14/real_final/start_zone12_dual.sh";
 const QSize kCctvFrameSize(1024, 768);
 constexpr qint64 kHumanBoxRenderThrottleMs = 180;
@@ -164,10 +169,10 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
     ui->setupUi(this);
     setupCustomTitleBar();
     buildResponsiveLayout();
-    // centralOverlayHost ?�에?�만 겹치�?구성
+    // centralOverlayHost ?占쎌뿉?占쎈쭔 寃뱀튂占?援ъ꽦
     auto* stack = new QStackedLayout(ui->centralOverlayHost);
     stack->setContentsMargins(0,0,0,0);
-    stack->setStackingMode(QStackedLayout::StackAll); // ???�심: ??보이�?겹침
+    stack->setStackingMode(QStackedLayout::StackAll); // ???占쎌떖: ??蹂댁씠占?寃뱀묠
 
     stack->addWidget(ui->labelCentralView);
     stack->addWidget(ui->labelCentralMap);
@@ -182,6 +187,8 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
         if (m_captureOverlay) m_captureOverlay->setMapOverlayVisible(m_mapOverlayEnabled);
         syncCentralOverlayGeometry();
         updateCentralLayerOrder();
+        saveUiSettings();
+        rebuildPrimaryNavList();
         appendLog(QString("Map overlay %1").arg(m_mapOverlayEnabled ? "ON" : "OFF"));
     });
     if (auto* btnRc = findChild<QPushButton*>("btnRC")) {
@@ -205,6 +212,7 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
             }
             syncCentralOverlayGeometry();
             updateCentralLayerOrder();
+            rebuildPrimaryNavList();
             appendLog(QString("RC goal mode %1").arg(on ? "ON" : "OFF"));
         });
         btnRc->hide();
@@ -228,6 +236,8 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
             }
             updateStatusBarText();
             refreshEventFilter();
+            saveUiSettings();
+            rebuildPrimaryNavList();
             appendLog(QString("RuView control command sent: %1").arg(on ? "ON" : "OFF"));
         });
     }
@@ -240,6 +250,8 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
             if (!on) {
                 if (m_humanBoxOverlay) m_humanBoxOverlay->setHumanBoxes({}, false);
             }
+            saveUiSettings();
+            rebuildPrimaryNavList();
             appendLog(QString("Detection %1").arg(on ? "ON" : "OFF"));
         });
     }
@@ -269,11 +281,8 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
     connect(m_systemUsageTimer, &QTimer::timeout, this, &MainWindow::updateSystemUsageTree);
     m_systemUsageTimer->start();
 
-    m_centralPlayingUrl.clear();
-    m_tankPlayingUrl.clear();
-
     // MQTT
-    m_mqtt = new MqttSubscriber(nullptr); // parent 주면 moveToThread?�서 문제?�었지
+    m_mqtt = new MqttSubscriber(nullptr); // parent 二쇰㈃ moveToThread?占쎌꽌 臾몄젣?占쎌뿀吏
     connect(m_mqtt, &MqttSubscriber::eventReceived,
             this, &MainWindow::onMqttEvent, Qt::QueuedConnection);
     connect(m_mqtt, &MqttSubscriber::logLine,
@@ -313,7 +322,7 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
     connect(m_pub, &MqttPublisher::logLine,
             this, &MainWindow::onMqttLogLine, Qt::QueuedConnection);
 
-    // Central overlay (경보 ?�버?�이)
+    // Central overlay (寃쎈낫 ?占쎈쾭?占쎌씠)
     if (ui->centralOverlayHost) {
         m_overlay = new CctvOverlayWidget(ui->centralOverlayHost);
         m_overlay->setGeometry(ui->centralOverlayHost->contentsRect());
@@ -368,10 +377,10 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
         connect(ui->labelCentralMap, &MiniMapWidget::worldClicked,
                 this, &MainWindow::onMiniMapWorldClicked);
         ui->labelCentralMap->hide();
-        // (?�택) 지???�릭 막고 CCTV ?�릭�?받게
+        // (?占쏀깮) 吏???占쎈┃ 留됯퀬 CCTV ?占쎈┃占?諛쏄쾶
         // ui->labelCentralMap->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     } else {
-        appendLog("labelCentralMap is null (Promote/objectName ?�인)");
+        appendLog("labelCentralMap is null (Promote/objectName ?占쎌씤)");
     }
     if (auto* rcMap = findChild<MiniMapWidget*>("labelCentralRC")) {
         rcMap->setWorldSize(5.0, 5.0);
@@ -391,7 +400,7 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
     m_mapOverlayEnabled = false;
     m_nodeOverlayEnabled = false;
 
-    // 브로�??�버 IP�??�속
+    // 釉뚮줈占??占쎈쾭 IP占??占쎌냽
     m_mqtt->start("192.168.100.10", 1883, "wiserisk/#");
     m_pub->start("192.168.100.10", 1883, "qt-main-goal-pub");
 
@@ -414,6 +423,7 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
                            .arg(m_userId.isEmpty() ? "Unknown" : m_userId, roleText);
     updateStatusBarText();
     appendLog("System started");
+    loadUiSettings();
 
     auto* ruviewStatusTimer = new QTimer(this);
     connect(ruviewStatusTimer, &QTimer::timeout, this, [this]{
@@ -429,13 +439,13 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
     });
     ruviewStatusTimer->start(1000);
 
-    // ??중앙 기본 채널 (Central CCTV 버튼/로직�??�일)
+    // ??以묒븰 湲곕낯 梨꾨꼸 (Central CCTV 踰꾪듉/濡쒖쭅占??占쎌씪)
     QTimer::singleShot(0, this, [this]{
         applyMainSplitterDefaultSizes();
         updateCentralAspectRatio();
         updateSideVideoAspectRatios();
         syncCentralOverlayGeometry();
-        switchCentralChannel(1); // centralcctv �?로직 ?��?/?�실???�행
+        switchCentralChannel(1); // centralcctv 占?濡쒖쭅 ?占쏙옙?/?占쎌떎???占쏀뻾
         updateCentralLayerOrder();
     });
     QTimer::singleShot(120, this, [this]{
@@ -617,8 +627,8 @@ QListWidget, QTreeWidget, QPlainTextEdit {
     selection-color: #ffffff;
 }
 QListWidget#primaryNavList {
-    background-color: #242b3d;
-    border: 1px solid #353f5c;
+    background-color: #232a3a;
+    border: 1px solid #39445f;
     border-radius: 9px;
     padding: 10px 8px;
     outline: none;
@@ -632,11 +642,11 @@ QListWidget#primaryNavList::item {
     color: #5f6b84;
 }
 QListWidget#primaryNavList::item:selected {
-    background-color: #303852;
+    background-color: #37435d;
     color: #eef3ff;
 }
 QListWidget#primaryNavList::item:hover:!selected {
-    background-color: #2b3349;
+    background-color: #313b53;
     color: #f0f4ff;
 }
 QFrame[navItemFrame="true"] {
@@ -645,14 +655,16 @@ QFrame[navItemFrame="true"] {
     border-radius: 6px;
 }
 QFrame[navItemFrame="true"][selected="true"] {
-    background-color: #303852;
+    background-color: #36425d;
+    border: 1px solid #4a5c86;
 }
 QFrame[navItemFrame="true"][action="true"] {
-    background-color: #283046;
+    background-color: #2a3144;
+    border: 1px solid #313b54;
 }
 QFrame[navItemFrame="true"][action="true"][selected="true"] {
-    background-color: #34405d;
-    border: 1px solid #53658f;
+    background-color: #3a4968;
+    border: 1px solid #6478a8;
 }
 QLabel[navTitle="true"] {
     color: #eef3ff;
@@ -733,24 +745,55 @@ QLabel {
     color: #e8edff;
 }
 QWidget#ruviewInfoCard {
-    background-color: #262d40;
-    border: 1px solid #353f5c;
+    background-color: #252d3f;
+    border: 1px solid #3a4663;
     border-radius: 8px;
 }
 QGroupBox#groupMsg {
-    background-color: #242b3d;
-    border: 1px solid #353f5c;
+    background-color: #22293a;
+    border: 1px solid #3a4663;
     border-radius: 9px;
 }
 QGroupBox#groupWard {
-    background-color: #262d40;
-    border: 1px solid #353f5c;
+    background-color: #252d3f;
+    border: 1px solid #3a4663;
     border-radius: 8px;
 }
 QFrame#robotStatusCard {
-    background-color: #20273a;
-    border: 1px solid #313d59;
+    background-color: #1f2637;
+    border: 1px solid #3a4663;
     border-radius: 10px;
+}
+QFrame#tankControlCard {
+    background-color: #21293b;
+    border: 1px solid #3a4663;
+    border-radius: 10px;
+}
+QLabel[tankControlTitle="true"] {
+    color: #f2f6ff;
+    font-size: 13px;
+    font-weight: 800;
+}
+QLabel[tankControlStatus="true"] {
+    color: #95a4c2;
+    font-size: 11px;
+    font-weight: 700;
+}
+QPushButton[tankControlButton="true"] {
+    min-width: 84px;
+    min-height: 34px;
+    border-radius: 8px;
+    background-color: #29344d;
+    border: 1px solid #44557e;
+    color: #eef3ff;
+    padding: 8px 10px;
+}
+QPushButton[tankControlButton="true"]:hover {
+    background-color: #334062;
+}
+QPushButton[tankControlButton="true"]:pressed {
+    background-color: #b37a2f;
+    border-color: #d19a4a;
 }
 QLabel[robotTitle="true"] {
     color: #f2f6ff;
@@ -824,6 +867,50 @@ QComboBox#eventFilterCombo QAbstractItemView {
     selection-background-color: #3b4766;
     selection-color: #ffffff;
 }
+QLineEdit#eventFilterSearch {
+    background-color: #2c354a;
+    color: #eef3ff;
+    border: 1px solid #3c4866;
+    border-radius: 8px;
+    padding: 4px 10px;
+    min-height: 22px;
+}
+QLineEdit#eventFilterSearch:focus {
+    border-color: #6476a8;
+}
+QLabel#eventCountBadge {
+    background-color: #344361;
+    color: #eef3ff;
+    border: 1px solid #53678f;
+    border-radius: 8px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 800;
+}
+QListWidget#listEvent {
+    background-color: #1c2231;
+    border: 1px solid #34415d;
+    border-radius: 10px;
+    padding: 6px;
+    outline: none;
+}
+QListWidget#listEvent::item {
+    background-color: #252d3f;
+    border: 1px solid #33415e;
+    border-radius: 8px;
+    margin: 0 0 6px 0;
+    padding: 8px 10px;
+    color: #d9e2f7;
+}
+QListWidget#listEvent::item:selected {
+    background-color: #32415f;
+    border: 1px solid #5970a0;
+    color: #ffffff;
+}
+QListWidget#listEvent::item:hover:!selected {
+    background-color: #2b3750;
+    border: 1px solid #455579;
+}
 QStatusBar {
     background-color: #121621;
     color: #9da8cf;
@@ -836,6 +923,11 @@ QStatusBar {
     ui->textMsgLog->setReadOnly(true);
     ui->textMsgLog->setMaximumBlockCount(1000);
     ui->textMsgLog->setFont(QFont("Consolas", 10));
+    if (ui->listEvent) {
+        ui->listEvent->setSpacing(4);
+        ui->listEvent->setAlternatingRowColors(false);
+        ui->listEvent->setUniformItemSizes(false);
+    }
 
     auto styleSmallToggle = [](QPushButton* b) {
         if (!b) return;        b->setMinimumHeight(20);
@@ -852,7 +944,7 @@ QStatusBar {
     if (auto* b = findChild<QPushButton*>("btnRC")) b->setText("Node");
     if (auto* b = findChild<QPushButton*>("Humanbtn")) {
         b->setVisible(true);
-        b->setText(QStringLiteral("사람 감지"));
+        b->setText(QStringLiteral("?щ엺 媛먯?"));
         b->setMinimumHeight(38);
         b->setMaximumHeight(38);
         b->setMaximumWidth(QWIDGETSIZE_MAX);
@@ -975,18 +1067,100 @@ void MainWindow::buildResponsiveLayout()
         auto* v = new QVBoxLayout(tankAspectHost);
         v->setContentsMargins(0, 0, 0, 0);
         v->setSpacing(0);
+        v->addStretch(1);
         auto* row = new QHBoxLayout();
         row->setContentsMargins(0, 0, 0, 0);
         row->setSpacing(0);
         auto* left = new QSpacerItem(1, 1, QSizePolicy::Expanding, QSizePolicy::Minimum);
         auto* right = new QSpacerItem(1, 1, QSizePolicy::Expanding, QSizePolicy::Minimum);
         row->addItem(left);
-        row->addWidget(ui->labelTankView, 0, Qt::AlignTop | Qt::AlignHCenter);
+        row->addWidget(ui->labelTankView, 0, Qt::AlignCenter);
         row->addItem(right);
         v->addLayout(row);
         v->addStretch(1);
         tankLayout->addWidget(tankAspectHost, 1);
     }
+    auto* tankControlCard = new QFrame(tankCard);
+    tankControlCard->setObjectName("tankControlCard");
+    auto* tankControlLayout = new QVBoxLayout(tankControlCard);
+    tankControlLayout->setContentsMargins(12, 12, 12, 12);
+    tankControlLayout->setSpacing(10);
+
+    auto* tankControlHeader = new QHBoxLayout();
+    tankControlHeader->setContentsMargins(0, 0, 0, 0);
+    tankControlHeader->setSpacing(8);
+    auto* tankControlTitle = new QLabel("Tank Controls", tankControlCard);
+    tankControlTitle->setProperty("tankControlTitle", true);
+    m_tankControlStatusLabel = new QLabel("Ready", tankControlCard);
+    m_tankControlStatusLabel->setProperty("tankControlStatus", true);
+    tankControlHeader->addWidget(tankControlTitle, 1);
+    tankControlHeader->addWidget(m_tankControlStatusLabel, 0, Qt::AlignRight);
+    tankControlLayout->addLayout(tankControlHeader);
+
+    auto* tankControlBody = new QHBoxLayout();
+    tankControlBody->setContentsMargins(0, 0, 0, 0);
+    tankControlBody->setSpacing(12);
+
+    auto* driveCard = new QFrame(tankControlCard);
+    auto* driveLayout = new QVBoxLayout(driveCard);
+    driveLayout->setContentsMargins(0, 0, 0, 0);
+    driveLayout->setSpacing(6);
+    auto* driveTitle = new QLabel("Drive", driveCard);
+    driveTitle->setProperty("tankControlStatus", true);
+    driveLayout->addWidget(driveTitle, 0, Qt::AlignLeft);
+    auto* driveGrid = new QGridLayout();
+    driveGrid->setContentsMargins(0, 0, 0, 0);
+    driveGrid->setHorizontalSpacing(8);
+    driveGrid->setVerticalSpacing(8);
+    auto* btnForward = new QPushButton("FORWARD", driveCard);
+    auto* btnBackward = new QPushButton("REVERSE", driveCard);
+    auto* btnTurnLeft = new QPushButton("TURN LEFT", driveCard);
+    auto* btnTurnRight = new QPushButton("TURN RIGHT", driveCard);
+    const auto driveButtons = {btnForward, btnBackward, btnTurnLeft, btnTurnRight};
+    for (auto* button : driveButtons) button->setProperty("tankControlButton", true);
+    driveGrid->addWidget(btnForward, 0, 1);
+    driveGrid->addWidget(btnTurnLeft, 1, 0);
+    driveGrid->addWidget(btnBackward, 1, 1);
+    driveGrid->addWidget(btnTurnRight, 1, 2);
+    driveLayout->addLayout(driveGrid);
+    tankControlBody->addWidget(driveCard, 1);
+
+    auto* ptzCard = new QFrame(tankControlCard);
+    auto* ptzLayout = new QVBoxLayout(ptzCard);
+    ptzLayout->setContentsMargins(0, 0, 0, 0);
+    ptzLayout->setSpacing(6);
+    auto* ptzTitle = new QLabel("Pan / Tilt", ptzCard);
+    ptzTitle->setProperty("tankControlStatus", true);
+    ptzLayout->addWidget(ptzTitle, 0, Qt::AlignLeft);
+    auto* ptzGrid = new QGridLayout();
+    ptzGrid->setContentsMargins(0, 0, 0, 0);
+    ptzGrid->setHorizontalSpacing(8);
+    ptzGrid->setVerticalSpacing(8);
+    auto* btnTiltUp = new QPushButton("TILT UP", ptzCard);
+    auto* btnTiltDown = new QPushButton("TILT DOWN", ptzCard);
+    auto* btnPanLeft = new QPushButton("PAN LEFT", ptzCard);
+    auto* btnPanRight = new QPushButton("PAN RIGHT", ptzCard);
+    const auto ptzButtons = {btnTiltUp, btnTiltDown, btnPanLeft, btnPanRight};
+    for (auto* button : ptzButtons) button->setProperty("tankControlButton", true);
+    ptzGrid->addWidget(btnTiltUp, 0, 1);
+    ptzGrid->addWidget(btnPanLeft, 1, 0);
+    ptzGrid->addWidget(btnTiltDown, 1, 1);
+    ptzGrid->addWidget(btnPanRight, 1, 2);
+    ptzLayout->addLayout(ptzGrid);
+    tankControlBody->addWidget(ptzCard, 1);
+
+    tankControlLayout->addLayout(tankControlBody);
+    tankLayout->addWidget(tankControlCard, 0);
+
+    bindTankControlButton(btnForward, "drive", "forward");
+    bindTankControlButton(btnBackward, "drive", "backward");
+    bindTankControlButton(btnTurnLeft, "drive", "turn_left");
+    bindTankControlButton(btnTurnRight, "drive", "turn_right");
+    bindTankControlButton(btnTiltUp, "ptz", "tilt_up");
+    bindTankControlButton(btnTiltDown, "ptz", "tilt_down");
+    bindTankControlButton(btnPanLeft, "ptz", "pan_left");
+    bindTankControlButton(btnPanRight, "ptz", "pan_right");
+
     m_primaryViewStack->addWidget(tankCard);
     centralLayout->addWidget(m_primaryViewStack, 1);
 
@@ -1088,6 +1262,15 @@ void MainWindow::buildResponsiveLayout()
     batteryRow->addStretch();
     batteryRow->addWidget(m_robotBatteryValueLabel);
     robotLayout->addLayout(batteryRow);
+    auto* lastSeenRow = new QHBoxLayout();
+    auto* lastSeenLabel = new QLabel("Last Seen", m_robotStatusCard);
+    lastSeenLabel->setProperty("robotLabel", true);
+    m_robotLastSeenLabel = new QLabel("-", m_robotStatusCard);
+    m_robotLastSeenLabel->setProperty("robotValue", true);
+    lastSeenRow->addWidget(lastSeenLabel);
+    lastSeenRow->addStretch();
+    lastSeenRow->addWidget(m_robotLastSeenLabel);
+    robotLayout->addLayout(lastSeenRow);
     const auto robotChildren = m_robotStatusCard->findChildren<QWidget*>();
     for (QWidget* child : robotChildren) {
         if (child && child != m_robotStatusCard) {
@@ -1310,11 +1493,14 @@ void MainWindow::rebuildPrimaryNavList()
             (entry.second == PrimaryViewMode::Detection) ? "Human detection tools" :
             (entry.second == PrimaryViewMode::RuView) ? "Blind spot monitoring" :
             "Tank camera workspace";
-        const QString badge =
-            (entry.second == PrimaryViewMode::Map) ? (m_mapNavExpanded ? "▾" : "▸") :
-            (entry.second == PrimaryViewMode::Detection) ? (m_humanBoxEnabled ? "ON" : "OFF") :
-            (entry.second == PrimaryViewMode::RuView) ? (m_ruviewUiEnabled ? "ON" : "OFF") :
-            "";
+        QString badge;
+        if (entry.second == PrimaryViewMode::Map) {
+            badge = m_mapNavExpanded ? "v" : ">";
+        } else if (entry.second == PrimaryViewMode::Detection) {
+            badge = m_humanBoxEnabled ? "ON" : "OFF";
+        } else if (entry.second == PrimaryViewMode::RuView) {
+            badge = m_ruviewUiEnabled ? "ON" : "OFF";
+        }
         const QString modeKey =
             (entry.second == PrimaryViewMode::Map) ? "map" :
             (entry.second == PrimaryViewMode::Detection) ? "detection" :
@@ -1359,6 +1545,7 @@ void MainWindow::onPrimaryNavItemClicked(QListWidgetItem* item)
             m_activePrimaryNavActionToken.clear();
             applyPrimaryViewMode(PrimaryViewMode::Map);
         }
+        saveUiSettings();
         rebuildPrimaryNavList();
     } else if (token == "mode:detection") {
         m_activePrimaryNavActionToken = "action:Humanbtn";
@@ -1412,14 +1599,20 @@ void MainWindow::applyPrimaryViewMode(PrimaryViewMode mode)
     }
 
     if (mode == PrimaryViewMode::Tank) {
+        appendLog(QString("Primary mode -> Tank, cached url=%1")
+                      .arg(m_tankPlayingUrl.isEmpty() ? "<empty>" : m_tankPlayingUrl));
         if (ui && ui->labelCentralView) {
             ui->labelCentralView->stopStream();
         }
         if (ui && ui->labelTankView && !m_tankPlayingUrl.isEmpty()) {
+            appendLog(QString("Tank startStream -> %1").arg(m_tankPlayingUrl));
             ui->labelTankView->startStream(m_tankPlayingUrl);
+        } else {
+            appendLog("Tank startStream skipped: labelTankView missing or URL empty");
         }
     } else {
         if (ui && ui->labelTankView) {
+            appendLog("Tank stopStream (leaving tank mode)");
             ui->labelTankView->stopStream();
         }
         if (ui && ui->labelCentralView && !m_centralPlayingUrl.isEmpty()) {
@@ -1432,28 +1625,60 @@ void MainWindow::applyPrimaryViewMode(PrimaryViewMode mode)
     updateSideVideoAspectRatios();
     syncCentralOverlayGeometry();
     updateCentralLayerOrder();
+
+    QTimer::singleShot(0, this, [this]() {
+        if (isMaximized() || isFullScreen()) return;
+
+        QScreen* targetScreen = screen();
+        if (!targetScreen) targetScreen = QGuiApplication::primaryScreen();
+        if (!targetScreen) return;
+
+        const QRect avail = targetScreen->availableGeometry();
+        QRect g = geometry();
+        bool changed = false;
+
+        if (g.height() > avail.height()) {
+            g.setHeight(avail.height());
+            changed = true;
+        }
+        if (g.bottom() > avail.bottom()) {
+            g.moveBottom(avail.bottom());
+            changed = true;
+        }
+        if (g.top() < avail.top()) {
+            g.moveTop(avail.top());
+            changed = true;
+        }
+
+        if (changed) setGeometry(g);
+    });
 }
 
 void MainWindow::initCentralStreamMap()
 {
-    // 중앙 채널 버튼(centralcctv)??
+    // 以묒븰 梨꾨꼸 踰꾪듉(centralcctv)??
     m_centralRtsp[1] = "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp";
 }
 
 void MainWindow::initStreamMap()
 {
-    // ???�리?�서 ?�제�?존재?�는 ?�트림만 ?�록 (뻥카??미등�?
+    // ???占쎈━?占쎌꽌 ?占쎌젣占?議댁옱?占쎈뒗 ?占쏀듃由쇰쭔 ?占쎈줉 (六μ뭅??誘몃벑占?
     m_wardStreams.clear();
 
-    // Main1 -> CentralView (?�제)
+    // Main1 -> CentralView (?占쎌젣)
     //m_wardStreams["Main1"] = { "rtsp://192.168.100.8:8554/live", QString() };
 
-    // T1 -> TankView (?�제)
-    m_wardStreams["T1"]    = { "rtsp://192.168.100.8:8554/live", QString() };
+    // T1 -> TankView (?占쎌젣)
+    m_wardStreams["T1"]    = { "rtsp://192.168.100.5:8555/cam", QString() };
+    appendLog(QString("Tank stream registered: T1 -> %1").arg(m_wardStreams["T1"].rawRtsp));
 
-    // P1 -> PatrolView (?�제)
+    // P1 -> PatrolView (?占쎌젣)
 
-    // Main2/Main3/T2/T3/P2/P3 ???��????�록?��? ?�음 (= ?��?/뻥카)
+    // Main2/Main3/T2/T3/P2/P3 ???占쏙옙????占쎈줉?占쏙옙? ?占쎌쓬 (= ?占쏙옙?/六μ뭅)
+
+    // Preselect the default tank stream so Tank view can start immediately.
+    appendLog("Selecting default tank stream: T1");
+    switchTankStreamTo("T1");
 }
 
 void MainWindow::initWardTree()
@@ -1483,6 +1708,13 @@ void MainWindow::initWardTree()
 void MainWindow::updateSystemUsageTree()
 {
     if (!m_cpuUsageItem || !m_memoryUsageItem || !m_gpuUsageItem) return;
+    const auto applyUsageColor = [](QTreeWidgetItem* item, double value) {
+        if (!item) return;
+        QColor color("#dce3ff");
+        if (value >= 85.0) color = QColor("#ff8d8d");
+        else if (value >= 65.0) color = QColor("#f3c86b");
+        item->setForeground(0, QBrush(color));
+    };
 
 #ifdef Q_OS_WIN
     FILETIME idleTime{}, kernelTime{}, userTime{};
@@ -1504,6 +1736,7 @@ void MainWindow::updateSystemUsageTree()
                 m_currentCpuUsage = usage;
                 appendUsageHistory(m_cpuUsageHistory, usage);
                 cpuText = QString("CPU  %1%").arg(usage, 0, 'f', 0);
+                applyUsageColor(m_cpuUsageItem, usage);
             }
         }
 
@@ -1529,6 +1762,7 @@ void MainWindow::updateSystemUsageTree()
                 .arg(totalGb, 0, 'f', 1));
         m_currentMemoryUsage = static_cast<double>(mem.dwMemoryLoad);
         appendUsageHistory(m_memoryUsageHistory, m_currentMemoryUsage);
+        applyUsageColor(m_memoryUsageItem, m_currentMemoryUsage);
     }
 #else
     m_cpuUsageItem->setText(0, "CPU  -");
@@ -1568,6 +1802,12 @@ void MainWindow::requestGpuUsageUpdate()
             m_currentGpuUsage = ok ? value : -1.0;
             if (ok) appendUsageHistory(m_gpuUsageHistory, value);
             m_gpuUsageItem->setText(0, ok ? QString("GPU  %1%").arg(value, 0, 'f', 0) : "GPU  -");
+            if (ok) {
+                QColor color("#dce3ff");
+                if (value >= 85.0) color = QColor("#ff8d8d");
+                else if (value >= 65.0) color = QColor("#f3c86b");
+                m_gpuUsageItem->setForeground(0, QBrush(color));
+            }
             if (m_systemUsageWindow) {
                 m_systemUsageWindow->setUsageData(
                     m_currentCpuUsage,
@@ -1648,7 +1888,7 @@ void MainWindow::onWardItemClicked(QTreeWidgetItem* item, int column)
         return;
     }
 
-    // 그룹?�면 ?��?�?
+    // 洹몃９?占쎈㈃ ?占쏙옙?占?
     if (item->childCount() > 0) {
         item->setExpanded(!item->isExpanded());
         return;
@@ -1656,13 +1896,13 @@ void MainWindow::onWardItemClicked(QTreeWidgetItem* item, int column)
 
     const QString key = item->text(0).trimmed();
 
-    // ???��?/뻥카�??�무 것도 ????
+    // ???占쏙옙?/六μ뭅占??占쎈Т 寃껊룄 ????
     if (!m_wardStreams.contains(key)) {
         appendLog(QString("Dummy item (no stream): %1").arg(key));
         return;
     }
 
-    // ????prefix�?�??�우??
+    // ????prefix占?占??占쎌슦??
     if (key.startsWith("Main")) {
         switchCentralStreamTo(key);
     } else if (key.startsWith("T")) {
@@ -1680,7 +1920,7 @@ void MainWindow::switchCentralStreamTo(const QString& key)
     }
 
     const auto p = m_wardStreams.value(key);
-    const QString url = p.rawRtsp.trimmed(); // raw�??�용
+    const QString url = p.rawRtsp.trimmed(); // raw占??占쎌슜
 
     if (url.isEmpty()) return;
     if (m_centralPlayingUrl == url) {
@@ -1700,12 +1940,13 @@ void MainWindow::switchCentralStreamTo(const QString& key)
 void MainWindow::switchTankStreamTo(const QString& key)
 {
     if (!ui->labelTankView) {
-        appendLog("labelTankView not found (Promote/objectName ?�인)");
+        appendLog("labelTankView not found (Promote/objectName ?占쎌씤)");
         return;
     }
 
     const auto p = m_wardStreams.value(key);
     const QString url = p.rawRtsp.trimmed();
+    appendLog(QString("switchTankStreamTo(%1) -> %2").arg(key, url.isEmpty() ? "<empty>" : url));
 
     if (url.isEmpty()) return;
     if (m_tankPlayingUrl == url) {
@@ -1714,6 +1955,7 @@ void MainWindow::switchTankStreamTo(const QString& key)
     }
 
     if (m_primaryViewMode == PrimaryViewMode::Tank) {
+        appendLog(QString("Tank immediate startStream -> %1").arg(url));
         ui->labelTankView->stopStream();
         ui->labelTankView->startStream(url);
     }
@@ -1725,7 +1967,7 @@ void MainWindow::switchTankStreamTo(const QString& key)
 void MainWindow::switchPatrolStreamTo(const QString& key)
 {
     if (!ui->labelPatrolView) {
-        appendLog("labelPatrolView not found (Promote/objectName ?�인)");
+        appendLog("labelPatrolView not found (Promote/objectName ?占쎌씤)");
         return;
     }
 
@@ -1758,12 +2000,12 @@ void MainWindow::onEventClicked(QListWidgetItem* item)
 
     const EventItem& ev = m_events[idx];
 
-    // ===== MQTT ?�벤???�릭 ?�생 =====
+    // ===== MQTT ?占쎈깽???占쎈┃ ?占쎌깮 =====
     if (ev.source == "mqtt") {
         return;
     }
 
-    // ===== 기존 ward ?�벤??처리 ?��? =====
+    // ===== 湲곗〈 ward ?占쎈깽??泥섎━ ?占쏙옙? =====
     if (m_role == UserRole::ControlRoom && ev.source == "ward" && ev.privacyClip.isEmpty()) {
         appendLog("ControlRoom: ward privacy clip missing -> cannot play");
         return;
@@ -1850,7 +2092,7 @@ void MainWindow::onOpenAllCctv()
         });
     }
 
-    // AllCCTV???�트�?�?주입
+    // AllCCTV???占쏀듃占?占?二쇱엯
     QMap<int, QString> rtsp;
     rtsp[1] = m_centralRtsp.value(1);
 
@@ -1926,6 +2168,22 @@ void MainWindow::setupEventFilterUi()
     auto* msgLayout = findChild<QVBoxLayout*>("verticalLayout_msg");
     if (!msgLayout) return;
 
+    auto* searchRow = new QWidget(this);
+    auto* searchLayout = new QHBoxLayout(searchRow);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+    searchLayout->setSpacing(6);
+    auto* searchLabel = new QLabel("Search", searchRow);
+    searchLabel->setObjectName("eventFilterLabel");
+    m_eventSearchEdit = new QLineEdit(searchRow);
+    m_eventSearchEdit->setObjectName("eventFilterSearch");
+    m_eventSearchEdit->setPlaceholderText("Find events...");
+    connect(m_eventSearchEdit, &QLineEdit::textChanged, this, [this](const QString&) {
+        refreshEventFilter();
+    });
+    searchLayout->addWidget(searchLabel);
+    searchLayout->addWidget(m_eventSearchEdit, 1);
+    msgLayout->insertWidget(1, searchRow);
+
     auto* row = new QWidget(this);
     auto* hl = new QHBoxLayout(row);
     hl->setContentsMargins(0, 0, 0, 0);
@@ -1945,7 +2203,166 @@ void MainWindow::setupEventFilterUi()
 
     hl->addWidget(label);
     hl->addWidget(m_eventFilter, 1);
-    msgLayout->insertWidget(1, row);
+    msgLayout->insertWidget(2, row);
+
+    auto* controlsRow = new QWidget(this);
+    auto* controlsLayout = new QHBoxLayout(controlsRow);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+    m_eventSortButton = new QPushButton("Newest", controlsRow);
+    m_eventSortButton->setCheckable(true);
+    m_eventSortButton->setChecked(true);
+    m_eventPauseButton = new QPushButton("Pause", controlsRow);
+    m_eventPauseButton->setCheckable(true);
+    m_eventClearButton = new QPushButton("Clear", controlsRow);
+    m_autoClipPopupButton = new QPushButton("Auto Clip", controlsRow);
+    m_autoClipPopupButton->setCheckable(true);
+    m_autoClipPopupButton->setChecked(true);
+    m_eventCountLabel = new QLabel("0", controlsRow);
+    m_eventCountLabel->setObjectName("eventCountBadge");
+    connect(m_eventPauseButton, &QPushButton::toggled, this, [this](bool on) {
+        m_eventListPaused = on;
+        if (m_eventPauseButton) m_eventPauseButton->setText(on ? "Paused" : "Pause");
+    });
+    connect(m_eventSortButton, &QPushButton::toggled, this, [this](bool on) {
+        m_eventAutoSortEnabled = on;
+        if (m_eventSortButton) m_eventSortButton->setText(on ? "Newest" : "Append");
+        saveUiSettings();
+    });
+    connect(m_eventClearButton, &QPushButton::clicked, this, [this]() {
+        if (ui && ui->listEvent) ui->listEvent->clear();
+        m_events.clear();
+        updateEventCountBadge();
+        appendLog("Event list cleared");
+    });
+    connect(m_autoClipPopupButton, &QPushButton::toggled, this, [this](bool on) {
+        m_autoClipPopupEnabled = on;
+        saveUiSettings();
+    });
+    controlsLayout->addWidget(m_eventSortButton);
+    controlsLayout->addWidget(m_eventPauseButton);
+    controlsLayout->addWidget(m_eventClearButton);
+    controlsLayout->addWidget(m_autoClipPopupButton);
+    controlsLayout->addStretch();
+    controlsLayout->addWidget(m_eventCountLabel);
+    msgLayout->insertWidget(3, controlsRow);
+
+    connect(m_eventFilter, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { saveUiSettings(); });
+}
+
+void MainWindow::loadUiSettings()
+{
+    QSettings s("VEDA", "SentinelFusion");
+
+    m_mapNavExpanded = s.value("main/map_nav_expanded", true).toBool();
+    m_eventAutoSortEnabled = s.value("main/event_auto_sort", true).toBool();
+    m_autoClipPopupEnabled = s.value("main/autoclip_enabled", true).toBool();
+
+    if (m_eventSortButton) {
+        const QSignalBlocker blocker(m_eventSortButton);
+        m_eventSortButton->setChecked(m_eventAutoSortEnabled);
+        m_eventSortButton->setText(m_eventAutoSortEnabled ? "Newest" : "Append");
+    }
+
+    if (m_autoClipPopupButton) {
+        const QSignalBlocker blocker(m_autoClipPopupButton);
+        m_autoClipPopupButton->setChecked(m_autoClipPopupEnabled);
+    }
+
+    if (m_eventFilter) {
+        const QSignalBlocker blocker(m_eventFilter);
+        m_eventFilter->setCurrentIndex(s.value("main/event_filter_index", 0).toInt());
+    }
+
+    const bool mapEnabled = s.value("main/map_overlay_enabled", false).toBool();
+    const bool detectionEnabled = s.value("main/detection_enabled", false).toBool();
+    const bool ruviewEnabled = s.value("main/ruview_enabled", false).toBool();
+
+    if (mapEnabled != m_mapOverlayEnabled) {
+        if (auto* b = findChild<QPushButton*>("btnMap")) b->click();
+    }
+    if (detectionEnabled != m_humanBoxEnabled) {
+        if (auto* b = findChild<QPushButton*>("Humanbtn")) b->click();
+    }
+    if (ruviewEnabled != m_ruviewUiEnabled) {
+        if (auto* b = findChild<QPushButton*>("ruviewbtn")) b->click();
+    }
+
+    rebuildPrimaryNavList();
+    refreshEventFilter();
+}
+
+void MainWindow::saveUiSettings() const
+{
+    QSettings s("VEDA", "SentinelFusion");
+    s.setValue("main/detection_enabled", m_humanBoxEnabled);
+    s.setValue("main/ruview_enabled", m_ruviewUiEnabled);
+    s.setValue("main/autoclip_enabled", m_autoClipPopupEnabled);
+    s.setValue("main/event_filter_index", m_eventFilter ? m_eventFilter->currentIndex() : 0);
+    s.setValue("main/map_overlay_enabled", m_mapOverlayEnabled);
+    s.setValue("main/map_nav_expanded", m_mapNavExpanded);
+    s.setValue("main/event_auto_sort", m_eventAutoSortEnabled);
+}
+
+QString MainWindow::buildEventDedupKey(const MqttEvent& ev, const QString& srcLabel, const QString& locationLabel) const
+{
+    return QString("%1|%2|%3|%4|%5|%6|%7|%8|%9")
+        .arg(srcLabel, locationLabel, ev.topic, ev.rule, ev.action, ev.level, ev.objectType, ev.sensorId, ev.cam);
+}
+
+QString MainWindow::formatEventItemText(const QString& firstLine, const QString& secondLine, int duplicateCount) const
+{
+    QString second = secondLine;
+    if (duplicateCount > 1) {
+        second += QString(" x%1").arg(duplicateCount);
+    }
+    return firstLine + "\n " + second;
+}
+
+bool MainWindow::tryMergeDuplicateEvent(const QString& dedupKey,
+                                        const QString& firstLine,
+                                        const QString& secondLine,
+                                        const MqttEvent& ev,
+                                        const QString& src,
+                                        const QString& utcShort,
+                                        const QColor& color)
+{
+    if (!ui || !ui->listEvent) return false;
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    for (int i = 0; i < ui->listEvent->count(); ++i) {
+        auto* item = ui->listEvent->item(i);
+        if (!item) continue;
+        if (item->data(Qt::UserRole + 10).toString() != dedupKey) continue;
+
+        const qint64 lastMs = item->data(Qt::UserRole + 11).toLongLong();
+        if (nowMs - lastMs > 3000) continue;
+
+        const int nextCount = std::max(1, item->data(Qt::UserRole + 14).toInt()) + 1;
+        item->setData(Qt::UserRole + 1, ev.clipUrl);
+        item->setData(Qt::UserRole + 2, ev.clipSec > 0 ? ev.clipSec : 5);
+        item->setData(Qt::UserRole + 3, ev.topic);
+        item->setData(Qt::UserRole + 4, ev.cam);
+        item->setData(Qt::UserRole + 5, utcShort);
+        item->setData(Qt::UserRole + 6, src);
+        item->setData(Qt::UserRole + 7, ev.level);
+        item->setData(Qt::UserRole + 11, nowMs);
+        item->setData(Qt::UserRole + 12, firstLine);
+        item->setData(Qt::UserRole + 13, secondLine);
+        item->setData(Qt::UserRole + 14, nextCount);
+        item->setText(formatEventItemText(firstLine, secondLine, nextCount));
+        item->setForeground(QBrush(color));
+        item->setHidden(!shouldShowEventItem(item));
+
+        if (m_eventAutoSortEnabled && i > 0) {
+            auto* moved = ui->listEvent->takeItem(i);
+            ui->listEvent->insertItem(0, moved);
+        }
+        return true;
+    }
+
+    return false;
 }
 
 bool MainWindow::shouldShowEventItem(const QListWidgetItem* item) const
@@ -1958,6 +2375,15 @@ bool MainWindow::shouldShowEventItem(const QListWidgetItem* item) const
     const QString topic = item->data(Qt::UserRole + 3).toString();
     const bool isRuview = src.compare("ruview", Qt::CaseInsensitive) == 0;
     const bool isCctv = !isRuview;
+    const QString keyword = m_eventSearchEdit ? m_eventSearchEdit->text().trimmed() : QString();
+
+    if (!keyword.isEmpty()) {
+        const QString haystack = QString("%1 %2 %3")
+                                     .arg(item->text())
+                                     .arg(topic)
+                                     .arg(src);
+        if (!haystack.contains(keyword, Qt::CaseInsensitive)) return false;
+    }
 
     if (mode == 0) return true; // All
     if (mode == 1) return isCctv && topic.compare("IvaArea", Qt::CaseInsensitive) == 0;
@@ -1969,11 +2395,20 @@ bool MainWindow::shouldShowEventItem(const QListWidgetItem* item) const
 void MainWindow::refreshEventFilter()
 {
     if (!ui || !ui->listEvent) return;
+    int visibleCount = 0;
     for (int i = 0; i < ui->listEvent->count(); ++i) {
         auto* item = ui->listEvent->item(i);
         if (!item) continue;
-        item->setHidden(!shouldShowEventItem(item));
+        const bool show = shouldShowEventItem(item);
+        item->setHidden(!show);
+        if (show) ++visibleCount;
     }
+    if (m_eventCountLabel) m_eventCountLabel->setText(QString::number(visibleCount));
+}
+
+void MainWindow::updateEventCountBadge()
+{
+    refreshEventFilter();
 }
 
 void MainWindow::clearRuViewUiState()
@@ -2028,16 +2463,19 @@ void MainWindow::updateSideVideoAspectRatios()
         if (availW <= 0 || availH <= 0) return;
         if (availW < 180 || availH < 120) return;
 
+        // Tank view should span the full available width and use a shorter height.
+        const double tankAspect = 16.0 / 9.0;
         int targetW = availW;
-        int targetH = static_cast<int>(std::round(targetW / m_sideVideoAspect));
+        int targetH = static_cast<int>(std::round(targetW / tankAspect));
         if (targetH > availH) {
             targetH = availH;
-            targetW = static_cast<int>(std::round(targetH * m_sideVideoAspect));
         }
         targetW = std::max(1, targetW);
         targetH = std::max(1, targetH);
         target->setMinimumSize(targetW, targetH);
         target->setMaximumSize(targetW, targetH);
+        target->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        target->show();
         target->resize(targetW, targetH);
         target->updateGeometry();
     };
@@ -2230,6 +2668,57 @@ bool MainWindow::publishRuViewControl(bool enabled)
     );
 }
 
+bool MainWindow::publishTankControl(const QString& group, const QString& command, bool active)
+{
+    if (!m_pub) {
+        appendLog(QString("Tank control skipped: publisher missing (%1/%2)").arg(group, command));
+        if (m_tankControlStatusLabel) m_tankControlStatusLabel->setText("MQTT offline");
+        return false;
+    }
+
+    QJsonObject payload;
+    payload["type"] = "tank_control";
+    payload["target"] = "tank";
+    payload["group"] = group;
+    payload["command"] = command;
+    payload["active"] = active;
+    payload["source"] = "qt_main_window";
+    payload["ts_ms"] = QDateTime::currentMSecsSinceEpoch();
+
+    const bool ok = m_pub->publishJson(
+        QString::fromUtf8(kTankControlTopic),
+        QJsonDocument(payload).toJson(QJsonDocument::Compact),
+        1,
+        false);
+
+    if (ok) {
+        appendLog(QString("Tank control published: %1/%2 active=%3")
+                      .arg(group, command, active ? "true" : "false"));
+        if (m_tankControlStatusLabel) {
+            m_tankControlStatusLabel->setText(
+                active ? QString("%1: %2").arg(group.toUpper(), command)
+                       : QString("%1: idle").arg(group.toUpper()));
+        }
+    } else {
+        appendLog(QString("Tank control publish failed: %1/%2").arg(group, command));
+        if (m_tankControlStatusLabel) m_tankControlStatusLabel->setText("Publish failed");
+    }
+
+    return ok;
+}
+
+void MainWindow::bindTankControlButton(QPushButton* button, const QString& group, const QString& command)
+{
+    if (!button) return;
+
+    connect(button, &QPushButton::pressed, this, [this, group, command]() {
+        publishTankControl(group, command, true);
+    });
+    connect(button, &QPushButton::released, this, [this, group, command]() {
+        publishTankControl(group, command, false);
+    });
+}
+
 void MainWindow::syncRuViewToggle(bool enabled)
 {
     if (auto* ruviewBtn = findChild<QPushButton*>("ruviewbtn")) {
@@ -2301,6 +2790,9 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         const int battery = static_cast<int>(std::clamp(ev.rcBattery, 0.0, 100.0));
         if (m_robotBatteryValueLabel) {
             m_robotBatteryValueLabel->setText(QString("%1%").arg(battery));
+        }
+        if (m_robotLastSeenLabel) {
+            m_robotLastSeenLabel->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
         }
         if (m_robotStatusWindow) {
             m_robotStatusWindow->setRobotStatus(ev);
@@ -2406,6 +2898,8 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
 
         updateStatusBarText();
         refreshEventFilter();
+        saveUiSettings();
+        rebuildPrimaryNavList();
         return;
     }
 
@@ -2441,6 +2935,8 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         }
         m_lastHumanEventListUtc = now;
     }
+
+    if (m_eventListPaused) return;
 
     QString utcShort = ev.utc;
     int dot = utcShort.indexOf('.');
@@ -2478,8 +2974,8 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         ? ev.sensorId
         : (!ev.zone.isEmpty() && ruview ? displayRuviewZoneLabel(ev.zone)
                                         : (!ev.zone.isEmpty() ? ev.zone : ev.cam));
-    QString firstLine = QString("[ %1 | %2 | %3 ]").arg(utcShort, locationLabel, srcLabel);
-
+    const QString clipMarker = ev.clipUrl.isEmpty() ? QString() : QStringLiteral("[clip] ");
+    QString firstLine = QString("%1[ %2 | %3 | %4 ]").arg(clipMarker, utcShort, locationLabel, srcLabel);
     QStringList second;
     second << ev.topic;
     if (!ev.sensorId.isEmpty() && !ruview) second << ev.sensorId;
@@ -2492,42 +2988,56 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
             second << QString("nodes=%1/%2").arg(ev.detectedNodes).arg(ev.activeNodes);
         }
     }
-
-    QString line = firstLine + "\n " + second.join(" | ");
-
-    auto* lw = new QListWidgetItem(line);
-    lw->setData(Qt::UserRole, idx);
-
-    lw->setData(Qt::UserRole + 1, ev.clipUrl);
-    lw->setData(Qt::UserRole + 2, ev.clipSec > 0 ? ev.clipSec : 5);
-    lw->setData(Qt::UserRole + 3, ev.topic);
-    lw->setData(Qt::UserRole + 4, ev.cam);
-    lw->setData(Qt::UserRole + 5, utcShort);
-    lw->setData(Qt::UserRole + 6, src);
-    lw->setData(Qt::UserRole + 7, ev.level);
-
+    const QString secondLine = second.join(" | ");
+    const QString dedupKey = buildEventDedupKey(ev, srcLabel, locationLabel);
+    QColor itemColor("#cfd8ea");
     if (ruview) {
         const bool alertZone = isRuviewAlertZoneKey(ev.zone);
-        QColor c = QColor(150, 150, 150);
+        itemColor = QColor(150, 150, 150);
         if (ev.state && alertZone) {
-            c = QColor(255, 90, 90);
+            itemColor = QColor(255, 90, 90);
             if (ev.level.compare("node", Qt::CaseInsensitive) == 0) {
-                c = QColor(230, 150, 60);
+                itemColor = QColor(230, 150, 60);
             }
         }
-        lw->setForeground(QBrush(c));
     } else {
         auto it = m_eventColor.find(ev.topic);
         if (it != m_eventColor.end()) {
-            lw->setForeground(QBrush(it.value()));
+            itemColor = it.value();
         }
     }
-
-    ui->listEvent->addItem(lw);
-    lw->setHidden(!shouldShowEventItem(lw));
-    ui->listEvent->scrollToBottom();
-
-    if (isIvaAreaEvent && !ev.clipUrl.isEmpty()) {
+    if (tryMergeDuplicateEvent(dedupKey, firstLine, secondLine, ev, src, utcShort, itemColor)) {
+        updateEventCountBadge();
+        if (m_eventAutoSortEnabled) ui->listEvent->scrollToTop();
+        else ui->listEvent->scrollToBottom();
+    } else {
+        auto* lw = new QListWidgetItem(formatEventItemText(firstLine, secondLine, 1));
+        lw->setSizeHint(QSize(0, 58));
+        lw->setData(Qt::UserRole, idx);
+        lw->setData(Qt::UserRole + 1, ev.clipUrl);
+        lw->setData(Qt::UserRole + 2, ev.clipSec > 0 ? ev.clipSec : 5);
+        lw->setData(Qt::UserRole + 3, ev.topic);
+        lw->setData(Qt::UserRole + 4, ev.cam);
+        lw->setData(Qt::UserRole + 5, utcShort);
+        lw->setData(Qt::UserRole + 6, src);
+        lw->setData(Qt::UserRole + 7, ev.level);
+        lw->setData(Qt::UserRole + 10, dedupKey);
+        lw->setData(Qt::UserRole + 11, QDateTime::currentMSecsSinceEpoch());
+        lw->setData(Qt::UserRole + 12, firstLine);
+        lw->setData(Qt::UserRole + 13, secondLine);
+        lw->setData(Qt::UserRole + 14, 1);
+        lw->setForeground(QBrush(itemColor));
+        if (m_eventAutoSortEnabled) ui->listEvent->insertItem(0, lw);
+        else ui->listEvent->addItem(lw);
+        lw->setHidden(!shouldShowEventItem(lw));
+        updateEventCountBadge();
+        if (m_eventAutoSortEnabled) ui->listEvent->scrollToTop();
+        else ui->listEvent->scrollToBottom();
+    }
+    if (m_autoClipPopupEnabled && isIvaAreaEvent && !ev.clipUrl.isEmpty()) {
+        if (m_clipPopup && m_clipPopup->isVisible()) {
+            return;
+        }
         if (!m_clipPopup) {
             m_clipPopup = new ClipPopup(this);
             m_clipPopup->setAttribute(Qt::WA_DeleteOnClose, false);
@@ -2734,6 +3244,14 @@ void MainWindow::saveOverlayTweak() const
     s.setValue("overlay/dy", m_tweakDy);
     s.setValue("overlay/scale", m_tweakScale);
     s.setValue("overlay/rot_deg", m_tweakRotDeg);
+    const int baseW = (m_homographyBaseSize.width() > 0)
+        ? m_homographyBaseSize.width()
+        : (m_overlay ? m_overlay->width() : 0);
+    const int baseH = (m_homographyBaseSize.height() > 0)
+        ? m_homographyBaseSize.height()
+        : (m_overlay ? m_overlay->height() : 0);
+    s.setValue("overlay/base_w", baseW);
+    s.setValue("overlay/base_h", baseH);
     s.setValue("overlay/calib_count", m_calibImgPts.size());
     for (int i = 0; i < m_calibImgPts.size(); ++i) {
         s.setValue(QString("overlay/calib_%1_x").arg(i), m_calibImgPts[i].x());
@@ -2748,6 +3266,9 @@ void MainWindow::loadOverlayTweak()
     m_tweakDy = s.value("overlay/dy", 0.0).toDouble();
     m_tweakScale = s.value("overlay/scale", 1.0).toDouble();
     m_tweakRotDeg = s.value("overlay/rot_deg", 0.0).toDouble();
+    m_homographyBaseSize = QSize(
+        s.value("overlay/base_w", 0).toInt(),
+        s.value("overlay/base_h", 0).toInt());
     const int n = s.value("overlay/calib_count", 0).toInt();
     if (n == 4) {
         m_calibImgPts.clear();
@@ -3145,6 +3666,8 @@ void MainWindow::applyCalibImagePoints(const QVector<QPointF>& imgPts)
     // After save, allow immediate map overlay preview/toggle with btnMap.
     m_mapOverlayEnabled = true;
     if (m_overlay) m_overlay->setMapVisible(true);
+    rebuildPrimaryNavList();
+    saveUiSettings();
     saveOverlayTweak();
     publishHomographyImageToWorld();
 
@@ -3374,6 +3897,14 @@ void MainWindow::resizeEvent(QResizeEvent* e)
     applyBtnHeight(findChild<QPushButton*>("btnMap"));
     applyBtnHeight(findChild<QPushButton*>("ruviewbtn"));
     applyBtnHeight(findChild<QPushButton*>("btnOpenAllCctv"));
+    const auto tankControlButtons = findChildren<QPushButton*>();
+    for (QPushButton* button : tankControlButtons) {
+        if (button && button->property("tankControlButton").toBool()) {
+            const int tankBtnH = std::max(30, btnH + 10);
+            button->setMinimumHeight(tankBtnH);
+            button->setMaximumHeight(tankBtnH);
+        }
+    }
     if (m_tankHeaderHost) {
         m_tankHeaderHost->setMinimumHeight(btnH + 4);
         m_tankHeaderHost->setMaximumHeight(btnH + 4);
@@ -3415,6 +3946,9 @@ void MainWindow::showEvent(QShowEvent* event)
 {
     QMainWindow::showEvent(event);
     QTimer::singleShot(0, this, [this]{
+        if (m_overlay && m_hasHomography) {
+            applyOverlayTransform();
+        }
         rebuildPrimaryNavList();
         if (m_primaryNavList) {
             m_primaryNavList->doItemsLayout();

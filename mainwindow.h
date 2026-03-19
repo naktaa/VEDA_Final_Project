@@ -37,6 +37,8 @@ class QShowEvent;
 class TitleBarWidget;
 class QLabel;
 class QComboBox;
+class QLineEdit;
+class QPushButton;
 class QListWidget;
 class QListWidgetItem;
 class QProcess;
@@ -154,11 +156,25 @@ private:
     bool isRuViewEvent(const MqttEvent& ev) const;
     void applyRuViewZoneVisual(bool present, double confidence);
     bool publishRuViewControl(bool enabled);
+    bool publishTankControl(const QString& group, const QString& command, bool active);
+    void bindTankControlButton(QPushButton* button, const QString& group, const QString& command);
     void syncRuViewToggle(bool enabled);
     void setupRuViewInfoUi();
     void setupEventFilterUi();
     void refreshEventFilter();
     bool shouldShowEventItem(const QListWidgetItem* item) const;
+    void updateEventCountBadge();
+    void loadUiSettings();
+    void saveUiSettings() const;
+    QString buildEventDedupKey(const MqttEvent& ev, const QString& srcLabel, const QString& locationLabel) const;
+    QString formatEventItemText(const QString& firstLine, const QString& secondLine, int duplicateCount) const;
+    bool tryMergeDuplicateEvent(const QString& dedupKey,
+                                const QString& firstLine,
+                                const QString& secondLine,
+                                const MqttEvent& ev,
+                                const QString& src,
+                                const QString& utcShort,
+                                const QColor& color);
     void clearRuViewUiState();
     void updateCentralAspectRatio();
     void updateSideVideoAspectRatios();
@@ -245,6 +261,15 @@ private:
     QLabel* m_ruviewConfLabel = nullptr;
     QLabel* m_ruviewNodesLabel = nullptr;
     QComboBox* m_eventFilter = nullptr;
+    QLineEdit* m_eventSearchEdit = nullptr;
+    QLabel* m_eventCountLabel = nullptr;
+    QPushButton* m_eventPauseButton = nullptr;
+    QPushButton* m_eventClearButton = nullptr;
+    QPushButton* m_autoClipPopupButton = nullptr;
+    QPushButton* m_eventSortButton = nullptr;
+    bool m_eventListPaused = false;
+    bool m_autoClipPopupEnabled = true;
+    bool m_eventAutoSortEnabled = true;
     QHash<QString, QString> m_ruviewNodeZoneMap;
     QHash<QString, QDateTime> m_recentCctvZoneSeenUtc;
     QHash<QString, QDateTime> m_recentRuviewAlertUtc;
@@ -256,6 +281,7 @@ private:
     QLabel* m_robotPoseLabel = nullptr;
     QLabel* m_robotSpeedLabel = nullptr;
     QLabel* m_robotBatteryValueLabel = nullptr;
+    QLabel* m_robotLastSeenLabel = nullptr;
     RobotStatusWindow* m_robotStatusWindow = nullptr;
     MqttEvent m_lastRobotStatusEvent;
 
@@ -282,6 +308,7 @@ private:
     CaptureCalibOverlay* m_captureOverlay = nullptr;
     QSplitter* m_mainSplitter = nullptr;
     QWidget* m_tankHeaderHost = nullptr;
+    QLabel* m_tankControlStatusLabel = nullptr;
     QString m_activePrimaryNavActionToken;
     QWidget* m_patrolHeaderHost = nullptr;
     QStackedWidget* m_primaryViewStack = nullptr;

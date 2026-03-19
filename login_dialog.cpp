@@ -1,15 +1,25 @@
-﻿#include "login_dialog.h"
+#include "login_dialog.h"
 #include "ui_login_dialog.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QGraphicsDropShadowEffect>
-#include <QMessageBox>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
+#include <QLineEdit>
+#include <QSettings>
 #include <QVBoxLayout>
 #include <QSize>
 #include "TitleBarWidget.h"
 #include "FramelessHelper.h"
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 LoginDialog::LoginDialog(QWidget *parent)
     : QDialog(parent)
@@ -150,6 +160,9 @@ QLabel#ID, QLabel#Password {
         ui->editPw->setMaximumWidth(282);
         ui->editPw->setMinimumHeight(40);
         ui->editPw->setMaximumHeight(40);
+        connect(ui->editPw, &QLineEdit::textChanged, this, [this](const QString&) {
+            updateCapsLockWarning();
+        });
     }
     if (ui->btnLogin) {
         ui->btnLogin->setMinimumWidth(172);
@@ -169,7 +182,13 @@ QLabel#ID, QLabel#Password {
         ui->labelStatus->setStyleSheet("color: rgba(154, 164, 199, 0.55); background: transparent; font-size: 10px; font-weight: 700;");
     }
 
+    QSettings settings("VEDA", "SentinelFusion");
+    if (ui->editId) {
+        ui->editId->setText(settings.value("login/last_id").toString());
+    }
+
     ui->editId->setFocus();
+    updateCapsLockWarning();
 
     ui->btnLogin->setDefault(true);
 }
@@ -201,6 +220,7 @@ void LoginDialog::on_btnLogin_clicked()
 
     if (id.isEmpty() || pw.isEmpty()) {
         setStatus("ID/PW required", true);
+        shakeLoginCard();
         return;
     }
 
@@ -209,16 +229,18 @@ void LoginDialog::on_btnLogin_clicked()
     UserRole role;
     if (!validateLocal(id, pw, role)) {
         setStatus("Login failed", true);
-        QMessageBox::warning(this, "Login", "Invalid ID or password.");
+        shakeLoginCard();
         return;
     }
 
     // ?깃났
     m_userId = id;
     m_role = role;
+    QSettings settings("VEDA", "SentinelFusion");
+    settings.setValue("login/last_id", id);
 
     setStatus("Login success");
-    accept();
+    startLoginSuccessAnimation();
 }
 
 bool LoginDialog::validateLocal(const QString& id, const QString& pw, UserRole& outRole) const
@@ -269,6 +291,52 @@ void LoginDialog::setStatus(const QString& msg, bool isError)
 
 
 
+void LoginDialog::shakeLoginCard()
+{
+    if (!ui || !ui->verticalLayoutWidget) return;
+
+    auto* card = ui->verticalLayoutWidget;
+    const QRect base = card->geometry();
+
+    auto* anim = new QPropertyAnimation(card, "geometry", card);
+    anim->setDuration(280);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    anim->setKeyValueAt(0.0, base);
+    anim->setKeyValueAt(0.10, QRect(base.x() - 14, base.y(), base.width(), base.height()));
+    anim->setKeyValueAt(0.25, QRect(base.x() + 12, base.y(), base.width(), base.height()));
+    anim->setKeyValueAt(0.45, QRect(base.x() - 10, base.y(), base.width(), base.height()));
+    anim->setKeyValueAt(0.65, QRect(base.x() + 8, base.y(), base.width(), base.height()));
+    anim->setKeyValueAt(0.82, QRect(base.x() - 4, base.y(), base.width(), base.height()));
+    anim->setKeyValueAt(1.0, base);
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+void LoginDialog::updateCapsLockWarning()
+{
+    if (!ui || !ui->labelStatus || !ui->editPw) return;
+#ifdef Q_OS_WIN
+    const bool capsOn = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
+#else
+    const bool capsOn = false;
+#endif
+    if (capsOn && ui->editPw->hasFocus()) {
+        ui->labelStatus->setText("CAPS LOCK is ON");
+        ui->labelStatus->setStyleSheet("color: #f3c86b; font-weight: 700; background: transparent; font-size: 10px;");
+    }
+}
+
+void LoginDialog::startLoginSuccessAnimation()
+{
+    auto* anim = new QPropertyAnimation(this, "windowOpacity", this);
+    anim->setDuration(180);
+    anim->setStartValue(1.0);
+    anim->setEndValue(0.0);
+    connect(anim, &QPropertyAnimation::finished, this, [this]() {
+        setWindowOpacity(1.0);
+        accept();
+    });
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
+}
 void LoginDialog::setupCustomTitleBar()
 {
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);

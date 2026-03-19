@@ -50,6 +50,10 @@ void GstVideoWidget::stopStream()
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
     }
 
+    if (m_bus) {
+        gst_object_unref(m_bus);
+        m_bus = nullptr;
+    }
     if (m_crop) {
         gst_object_unref(m_crop);
         m_crop = nullptr;
@@ -84,15 +88,25 @@ void GstVideoWidget::startStream(const QString &url)
     const int OUT_H = 960;
 
     // ??appsink�??�레?�을 Qt�?가?�온??(?�버?�이 100% 가??
+    const bool isRtsp = url.trimmed().startsWith("rtsp://", Qt::CaseInsensitive);
+    QString source = QString("uridecodebin uri=\"%1\"").arg(url);
+    if (isRtsp) {
+        // Prefer RTSP over TCP for embedded cameras/relays that stall on UDP.
+        source += " source::protocols=tcp source::latency=100";
+    }
+
     QString pipeStr = QString(
-                          "rtspsrc location=%1 protocols=tcp latency=120 ! "
-                          "queue max-size-buffers=2 ! rtph264depay ! h264parse ! "
-                          "avdec_h264 ! videoconvert ! "
+                          "%1 ! "
+                          "queue max-size-buffers=2 ! "
+                          "videoconvert ! "
                           "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
                           "videoscale ! "
                           "video/x-raw,format=BGRA,width=%2,height=%3 ! "
                           "appsink name=vsink sync=false max-buffers=1 drop=true emit-signals=false"
-                          ).arg(url).arg(OUT_W).arg(OUT_H);
+                          ).arg(source).arg(OUT_W).arg(OUT_H);
+
+    qDebug() << "[GstVideoWidget] startStream:" << url;
+    qDebug() << "[GstVideoWidget] pipeline:" << pipeStr;
 
     GError *err = nullptr;
     m_pipeline = gst_parse_launch(pipeStr.toUtf8().constData(), &err);
@@ -104,6 +118,7 @@ void GstVideoWidget::startStream(const QString &url)
 
     m_crop = gst_bin_get_by_name(GST_BIN(m_pipeline), "zcrop");
     m_appsink = gst_bin_get_by_name(GST_BIN(m_pipeline), "vsink");
+    m_bus = gst_element_get_bus(m_pipeline);
 
     if (!m_appsink) {
         qDebug() << "[GstVideoWidget] appsink not found";
@@ -128,6 +143,38 @@ void GstVideoWidget::startStream(const QString &url)
 
 void GstVideoWidget::onPullFrame()
 {
+    if (m_bus) {
+        while (GstMessage* msg = gst_bus_pop(m_bus)) {
+            switch (GST_MESSAGE_TYPE(msg)) {
+            case GST_MESSAGE_ERROR: {
+                GError* err = nullptr;
+                gchar* dbg = nullptr;
+                gst_message_parse_error(msg, &err, &dbg);
+                qDebug() << "[GstVideoWidget] ERROR:"
+                         << (err ? err->message : "unknown")
+                         << (dbg ? dbg : "");
+                if (err) g_error_free(err);
+                if (dbg) g_free(dbg);
+                break;
+            }
+            case GST_MESSAGE_WARNING: {
+                GError* err = nullptr;
+                gchar* dbg = nullptr;
+                gst_message_parse_warning(msg, &err, &dbg);
+                qDebug() << "[GstVideoWidget] WARNING:"
+                         << (err ? err->message : "unknown")
+                         << (dbg ? dbg : "");
+                if (err) g_error_free(err);
+                if (dbg) g_free(dbg);
+                break;
+            }
+            default:
+                break;
+            }
+            gst_message_unref(msg);
+        }
+    }
+
     if (!m_appsink) return;
 
     GstSample* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(m_appsink), 0);

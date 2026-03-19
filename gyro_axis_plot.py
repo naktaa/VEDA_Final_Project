@@ -94,8 +94,10 @@ line_ax, = ax2.plot([], [], label="angle x (deg)")
 line_ay, = ax2.plot([], [], label="angle y (deg)")
 line_az, = ax2.plot([], [], label="angle z (deg)")
 
-RATE_YLIM = 80   # 좁게 보기 (deg/s)
-ANG_YLIM = 30    # 좁게 보기 (deg)
+# Narrower fixed ranges than the original so fine vibration is easier to see,
+# while still keeping enough headroom for moderate manual motion.
+RATE_YLIM = 30.0   # original 80 -> about 1/3
+ANG_YLIM = 12.0    # original 30 -> a bit under 1/2
 
 ax1.set_ylim(-RATE_YLIM, RATE_YLIM)
 ax1.set_ylabel("gyro rate (deg/s)")
@@ -107,6 +109,17 @@ ax2.set_xlabel("sample index")
 ax2.set_ylabel("integrated angle (deg)")
 ax2.grid(True)
 ax2.legend()
+
+text_rate = ax1.text(
+    0.01, 0.98, "", transform=ax1.transAxes,
+    ha="left", va="top",
+    bbox=dict(boxstyle="round", facecolor="white", alpha=0.75),
+)
+text_ang = ax2.text(
+    0.01, 0.98, "", transform=ax2.transAxes,
+    ha="left", va="top",
+    bbox=dict(boxstyle="round", facecolor="white", alpha=0.75),
+)
 
 
 def update(frame):
@@ -149,6 +162,15 @@ def update(frame):
     ax1.set_xlim(0, max(len(gx_buf), WINDOW_SIZE))
     ax2.set_xlim(0, max(len(gx_buf), WINDOW_SIZE))
 
+    text_rate.set_text(
+        f"gx={gx:+6.2f}  gy={gy:+6.2f}  gz={gz:+6.2f}\n"
+        f"scale=+/-{RATE_YLIM:.0f} deg/s"
+    )
+    text_ang.set_text(
+        f"angx={angx:+6.2f}  angy={angy:+6.2f}  angz={angz:+6.2f}\n"
+        f"scale=+/-{ANG_YLIM:.0f} deg"
+    )
+
     # dominant axis indicator
     axis = "x"
     vmax = abs(gx)
@@ -159,7 +181,7 @@ def update(frame):
         axis = "z"
     ax1.set_title(f"Gyro rates (dominant axis: {axis})")
 
-    return line_gx, line_gy, line_gz, line_ax, line_ay, line_az
+    return line_gx, line_gy, line_gz, line_ax, line_ay, line_az, text_rate, text_ang
 
 
 ani = FuncAnimation(fig, update, interval=50)

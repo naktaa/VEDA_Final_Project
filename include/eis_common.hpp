@@ -17,10 +17,13 @@ inline constexpr int64_t IMU_TARGET_PERIOD_NS = 1000000000LL / IMU_TARGET_HZ;
 inline constexpr int IMU_ADDR = 0x68;
 inline constexpr double GYRO_SENSITIVITY = 131.0;
 
-// Gyro stabilization defaults (delta-direct / highpass)
+// Gyro stabilization defaults.
+// Tuned to start from "RC car high-frequency vibration" assumptions:
+// - prefer high-pass gyro mode
+// - keep yaw correction conservative to avoid fighting intentional turns
 inline constexpr double GYRO_GAIN_ROLL = 1.2;
 inline constexpr double GYRO_GAIN_PITCH = 1.2;
-inline constexpr double GYRO_GAIN_YAW = 1.1;
+inline constexpr double GYRO_GAIN_YAW = 0.45;
 inline constexpr double GYRO_MAX_ROLL_RAD = 5.0 * CV_PI / 180.0;
 inline constexpr double GYRO_MAX_PITCH_RAD = 4.0 * CV_PI / 180.0;
 inline constexpr double GYRO_MAX_YAW_RAD = 8.0 * CV_PI / 180.0;

@@ -17,7 +17,7 @@ std::atomic<bool> g_debug_overlay{DEFAULT_DEBUG_OVERLAY};
 std::atomic<int> g_log_every_frames{-1};
 std::atomic<int> g_ts_pref{(int)TsSourcePref::SENSOR};
 std::atomic<bool> g_offset_sweep{false};
-std::atomic<int> g_gyro_warp_mode{(int)GyroWarpMode::DELTA_DIRECT};
+std::atomic<int> g_gyro_warp_mode{(int)GyroWarpMode::HIGHPASS};
 double g_manual_imu_offset_ms = 0.0;
 std::atomic<int> g_profile{(int)RunProfile::RUN};
 std::atomic<bool> g_libcamera_xrgb{DEFAULT_LIBCAMERA_XRGB};

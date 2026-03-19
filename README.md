@@ -15,6 +15,9 @@ make
 
 기본 RTSP 포트는 `8555` 입니다.
 현재 코드에서는 테스트 환경에 맞춰 입력 영상을 **상하 반전**합니다.
+현재 기본 gyro 튜닝은 **RC카 고주파 떨림 우선** 기준으로 맞춰져 있습니다.
+- 기본 gyro warp mode: `highpass`
+- 기본 yaw gain: 보수적으로 낮춤 (`0.45`)
 
 ### 옵션
 ```text
@@ -52,3 +55,24 @@ rtsp://<장치_IP>:8555/cam   (보정)
 - 시작 시 정지 상태에서 gyro bias 자동 보정
 - bias 제거 후 적분
 - hybrid에서는 고주파 회전 성분만 보조로 사용
+
+## RC카 현장 테스트 권장 순서
+1. gyro 단독 확인
+```bash
+./eis --mode gyro --profile debug --overlay 1 --log-every-frames 10
+```
+2. 타임스탬프 정렬 확인
+```bash
+./eis --mode gyro --offset-sweep --profile debug --overlay 1 --log-every-frames 10
+```
+3. hybrid 확인
+```bash
+./eis --mode hybrid --profile debug --overlay 1 --log-every-frames 10
+```
+
+권장 확인 로그:
+- `[TS] source=SENSOR`
+- `[SYNC] offset=...`
+- `[CMP] ... corr=...`
+- `[HIGHPASS] ... corr(deg)=...`
+- `[PROTECT] large_rot=... gain_scaled=...`

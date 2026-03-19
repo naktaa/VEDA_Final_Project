@@ -21,8 +21,11 @@ constexpr const char* kDefaultTopic = "wiserisk/rc/control";
 constexpr const char* kDefaultRtspPort = "8555";
 constexpr const char* kDefaultRtspPath = "/cam";
 constexpr const char* kDefaultRtspLaunch =
-    "( libcamerasrc ! video/x-raw,width=1280,height=720,framerate=30/1 "
-    "! videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 "
+    "( libcamerasrc ! video/x-raw,width=640,height=480,framerate=20/1 "
+    "! videoconvert "
+    "! video/x-raw,format=I420 "
+    "! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" "
+    "! video/x-h264,level=(string)4,profile=(string)baseline "
     "! rtph264pay name=pay0 pt=96 config-interval=1 )";
 
 std::atomic<bool> g_running{true};

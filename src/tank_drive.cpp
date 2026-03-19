@@ -32,7 +32,8 @@ namespace {
     int g_last_print_r = 999;
     int g_last_print_pwm = -1;
     std::chrono::steady_clock::time_point g_last_motion;
-    const int motion_hold_timeout_ms = 200;
+    int g_motion_hold_timeout_ms = 200;
+    bool g_idle_autostop_enabled = true;
 
     int clampPwm(int v) { return std::max(0, std::min(255, v)); }
 
@@ -71,6 +72,16 @@ namespace {
         if (!g_motor_ready) return;
         setMotorControl(L_EN, L_IN1, L_IN2, 0, STOP);
         setMotorControl(R_EN, R_IN1, R_IN2, 0, STOP);
+    }
+
+    void logStateIfChanged() {
+        if (g_left_cmd != g_last_print_l || g_right_cmd != g_last_print_r || g_pwm != g_last_print_pwm) {
+            fprintf(stderr, "[TANK] L=%d R=%d PWM=%d\n", g_left_cmd, g_right_cmd, g_pwm);
+            fflush(stderr);
+            g_last_print_l = g_left_cmd;
+            g_last_print_r = g_right_cmd;
+            g_last_print_pwm = g_pwm;
+        }
     }
 
     void printHelp() {
@@ -183,22 +194,35 @@ bool handle_key(char ch) {
     if (consumed) {
         g_last_motion = std::chrono::steady_clock::now();
         applyDrive(g_left_cmd, g_right_cmd, g_pwm);
-        if (g_left_cmd != g_last_print_l || g_right_cmd != g_last_print_r || g_pwm != g_last_print_pwm) {
-            fprintf(stderr, "[TANK] L=%d R=%d PWM=%d\n", g_left_cmd, g_right_cmd, g_pwm);
-            fflush(stderr);
-            g_last_print_l = g_left_cmd;
-            g_last_print_r = g_right_cmd;
-            g_last_print_pwm = g_pwm;
-        }
+        logStateIfChanged();
     }
     return consumed;
 }
 
+void command_drive(int left_cmd, int right_cmd) {
+    if (!g_motor_ready) return;
+    g_left_cmd = (left_cmd > 0) ? 1 : (left_cmd < 0 ? -1 : 0);
+    g_right_cmd = (right_cmd > 0) ? 1 : (right_cmd < 0 ? -1 : 0);
+    g_last_motion = std::chrono::steady_clock::now();
+    applyDrive(g_left_cmd, g_right_cmd, g_pwm);
+    logStateIfChanged();
+}
+
+void stop() {
+    command_drive(0, 0);
+}
+
+void set_idle_autostop(bool enabled, int timeout_ms) {
+    g_idle_autostop_enabled = enabled;
+    g_motion_hold_timeout_ms = std::max(0, timeout_ms);
+}
+
 void tick() {
     if (!g_motor_ready) return;
+    if (!g_idle_autostop_enabled) return;
     const auto now = std::chrono::steady_clock::now();
     const auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_last_motion).count();
-    if ((g_left_cmd != 0 || g_right_cmd != 0) && idle_ms > motion_hold_timeout_ms) {
+    if ((g_left_cmd != 0 || g_right_cmd != 0) && idle_ms > g_motion_hold_timeout_ms) {
         g_left_cmd = 0;
         g_right_cmd = 0;
         applyDrive(g_left_cmd, g_right_cmd, g_pwm);

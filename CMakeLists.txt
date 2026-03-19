@@ -17,6 +17,7 @@ pkg_check_modules(GST REQUIRED
   gstreamer-rtsp-server-1.0
 )
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
+pkg_check_modules(MOSQUITTO libmosquitto)
 
 add_executable(eis
   src/main.cpp
@@ -47,6 +48,13 @@ add_executable(move_raw
   src/tank_drive.cpp
   src/eis_config.cpp
 )
+
+if (MOSQUITTO_FOUND)
+  add_executable(mqtt_tank_drive
+    src/mqtt_tank_drive.cpp
+    src/tank_drive.cpp
+  )
+endif()
 
 target_include_directories(eis PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -85,6 +93,24 @@ target_link_libraries(move_raw
   ${LIBCAMERA_LIBRARIES}
   wiringPi
 )
+
+if (MOSQUITTO_FOUND)
+  target_include_directories(mqtt_tank_drive PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MOSQUITTO_INCLUDE_DIRS}
+  )
+
+  target_compile_options(mqtt_tank_drive PRIVATE
+    ${MOSQUITTO_CFLAGS_OTHER}
+  )
+
+  target_link_libraries(mqtt_tank_drive
+    ${MOSQUITTO_LIBRARIES}
+    wiringPi
+  )
+else()
+  message(WARNING "libmosquitto not found: mqtt_tank_drive target will not be built")
+endif()
 
 target_include_directories(eis_LKonly PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include

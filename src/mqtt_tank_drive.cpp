@@ -22,6 +22,7 @@ constexpr const char* kDefaultRtspPort = "8555";
 constexpr const char* kDefaultRtspPath = "/cam";
 constexpr const char* kDefaultRtspLaunch =
     "( libcamerasrc ! video/x-raw,width=640,height=480,framerate=20/1 "
+    "! videoflip method=vertical-flip "
     "! videoconvert "
     "! video/x-raw,format=I420 "
     "! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=30\" "

@@ -46,7 +46,7 @@ using namespace cv;
 
 static const int G_WIDTH = 640;
 static const int G_HEIGHT = 480;
-static const int G_FPS = 20;
+static const int G_FPS = 15;
 
 // MPU-6050
 static const int IMU_ADDR = 0x68;
@@ -310,9 +310,8 @@ static void on_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media, gpoint
 
 static GstRTSPMediaFactory* make_factory(const char* appsrc_name) {
     GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
-    const bool is_cam = (strcmp(appsrc_name, "stabsrc") == 0);
-    const int video_bitrate = is_cam ? 1000000 : 1500000;
-    const int i_frame_period = is_cam ? 20 : 30;
+    const int video_bitrate = 700000;
+    const int i_frame_period = 15;
     std::string launch =
         "( appsrc name=" + std::string(appsrc_name) + " is-live=true format=time do-timestamp=true block=false "
                                                       "! videoconvert "
@@ -506,6 +505,8 @@ static void capture_loop() {
         Mat frame;
         if (!pull_frame(frame) || frame.empty()) continue;
 
+        flip(frame, frame, 0);
+
         GstAppSrc* rawsrc;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
@@ -560,3 +561,5 @@ int main(int argc, char* argv[]) {
     g_main_loop_unref(loop);
     return 0;
 }
+
+

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 struct RtspConfig {
@@ -8,6 +9,8 @@ struct RtspConfig {
     std::string path;
     std::string launch;
 };
+
+struct RtspStreamServerImpl;
 
 class RtspStreamServer {
 public:
@@ -20,8 +23,8 @@ public:
 
     bool start(const RtspConfig& cfg);
     void stop();
+    bool push_bgr_frame(const unsigned char* data, std::size_t bytes);
 
 private:
-    struct Impl;
-    Impl* impl_ = nullptr;
+    RtspStreamServerImpl* impl_ = nullptr;
 };

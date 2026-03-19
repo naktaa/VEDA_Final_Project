@@ -11,6 +11,8 @@ namespace stream_config {
 
     inline constexpr const char* DEFAULT_RTSP_PORT = "8555";
     inline constexpr const char* DEFAULT_RTSP_PATH = "/cam";
+    inline constexpr const char* RTSP_APPSRC_NAME = "stabsrc";
+    inline constexpr const char* CAPTURE_APPSINK_NAME = "appsink";
     inline constexpr int DEFAULT_WIDTH = 640;
     inline constexpr int DEFAULT_HEIGHT = 480;
     inline constexpr int DEFAULT_FPS = 20;
@@ -21,9 +23,9 @@ namespace stream_config {
 
     inline std::string make_default_rtsp_launch() {
         std::string launch =
-            "( libcamerasrc ! video/x-raw,width=" + std::to_string(DEFAULT_WIDTH) +
-            ",height=" + std::to_string(DEFAULT_HEIGHT) +
-            ",framerate=" + std::to_string(DEFAULT_FPS) + "/1 ";
+            "( appsrc name=" + std::string(RTSP_APPSRC_NAME) +
+            " is-live=true format=time do-timestamp=true block=false "
+            "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ";
 
         if (DEFAULT_FLIP_VERTICAL && DEFAULT_FLIP_HORIZONTAL) {
             launch += "! videoflip method=rotate-180 ";
@@ -34,7 +36,6 @@ namespace stream_config {
         }
 
         launch +=
-            "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
             "! videoconvert "
             "! video/x-raw,format=I420 "
             "! v4l2h264enc extra-controls=\"controls,video_bitrate=" +
@@ -44,6 +45,17 @@ namespace stream_config {
             "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
             "! rtph264pay name=pay0 pt=96 config-interval=1 )";
         return launch;
+    }
+
+    inline std::string make_default_capture_launch() {
+        return
+            "libcamerasrc "
+            "! video/x-raw,format=RGBx,width=" + std::to_string(DEFAULT_WIDTH) +
+            ",height=" + std::to_string(DEFAULT_HEIGHT) +
+            ",framerate=" + std::to_string(DEFAULT_FPS) + "/1 "
+            "! videoconvert ! video/x-raw,format=BGR "
+            "! appsink name=" + std::string(CAPTURE_APPSINK_NAME) +
+            " drop=true max-buffers=1 sync=false";
     }
 
 } // namespace stream_config

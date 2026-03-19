@@ -11,12 +11,15 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 pkg_check_modules(GST REQUIRED
   gstreamer-1.0
+  gstreamer-app-1.0
+  gstreamer-video-1.0
   gstreamer-rtsp-server-1.0
 )
 
 add_executable(mqtt_tank_drive
   src/mqtt_tank_drive.cpp
   src/mqtt_drive.cpp
+  src/camera_capture.cpp
   src/rtsp_stream.cpp
   src/tank_drive.cpp
 )

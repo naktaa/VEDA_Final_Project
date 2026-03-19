@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "camera_capture.hpp"
 #include "mqtt_drive.hpp"
 #include "rtsp_stream.hpp"
 #include "stream_config.hpp"
@@ -95,14 +96,26 @@ int main(int argc, char* argv[]) {
     if (!tank_drive::init()) return 1;
     tank_drive::set_idle_autostop(false);
 
+    CameraCapture camera_capture;
     RtspStreamServer rtsp_server;
-    if (!rtsp_server.start(rtsp_cfg)) {
-        tank_drive::shutdown();
-        return 1;
+    if (rtsp_cfg.enable) {
+        if (!rtsp_server.start(rtsp_cfg)) {
+            tank_drive::shutdown();
+            return 1;
+        }
+        if (!camera_capture.start(g_running, rtsp_server)) {
+            rtsp_server.stop();
+            tank_drive::shutdown();
+            return 1;
+        }
     }
 
     const bool mqtt_ok = run_mqtt_drive_loop(mqtt_cfg, g_running);
 
+    g_running = false;
+    if (rtsp_cfg.enable) {
+        camera_capture.stop();
+    }
     rtsp_server.stop();
     tank_drive::shutdown();
     return mqtt_ok ? 0 : 1;

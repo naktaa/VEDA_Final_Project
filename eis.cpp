@@ -49,6 +49,8 @@ namespace manual_drive {
     constexpr double PIVOT_THROTTLE_THRESHOLD = 0.08;
     constexpr double MIX_DEADZONE = 0.03;
     constexpr int MIN_EFFECTIVE_PWM = 45;
+    constexpr int START_BOOST_PWM = 85;
+    constexpr int START_BOOST_TICKS = 8; // 8 * 5ms = ~40ms
 
     // wiringPi pin numbers (hardware PWM)
     //   L_EN -> GPIO18 (wPi 1,  physical 12) PWM0
@@ -79,6 +81,8 @@ namespace manual_drive {
         int right_pwm = 0;
         int left_dir = STOP;
         int right_dir = STOP;
+        int left_start_boost_ticks = 0;
+        int right_start_boost_ticks = 0;
     };
 
     struct DriveInputFlags {
@@ -186,6 +190,11 @@ namespace manual_drive {
     }
 
     void computeTankOutput(DriveState& state, int base_speed) {
+        const int prev_left_dir = state.left_dir;
+        const int prev_right_dir = state.right_dir;
+        const int prev_left_pwm = state.left_pwm;
+        const int prev_right_pwm = state.right_pwm;
+
         const double throttle = clampUnit(state.current_throttle);
         const double steer = clampUnit(state.current_steer);
 
@@ -219,6 +228,28 @@ namespace manual_drive {
 
         setMotorFromMix(clampUnit(left_mix), base_speed, state.left_pwm, state.left_dir);
         setMotorFromMix(clampUnit(right_mix), base_speed, state.right_pwm, state.right_dir);
+
+        if (prev_left_dir == STOP && prev_left_pwm == 0 && state.left_dir != STOP && state.left_pwm > 0) {
+            state.left_start_boost_ticks = START_BOOST_TICKS;
+        }
+        if (prev_right_dir == STOP && prev_right_pwm == 0 && state.right_dir != STOP && state.right_pwm > 0) {
+            state.right_start_boost_ticks = START_BOOST_TICKS;
+        }
+        if (state.left_dir == STOP || state.left_pwm == 0) {
+            state.left_start_boost_ticks = 0;
+        }
+        if (state.right_dir == STOP || state.right_pwm == 0) {
+            state.right_start_boost_ticks = 0;
+        }
+
+        if (state.left_start_boost_ticks > 0) {
+            state.left_pwm = std::max(state.left_pwm, START_BOOST_PWM);
+            state.left_start_boost_ticks--;
+        }
+        if (state.right_start_boost_ticks > 0) {
+            state.right_pwm = std::max(state.right_pwm, START_BOOST_PWM);
+            state.right_start_boost_ticks--;
+        }
     }
 
     void updateDriveState(const DriveCommand& cmd, DriveState& state, int base_speed, double dt_sec) {

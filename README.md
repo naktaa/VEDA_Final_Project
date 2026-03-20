@@ -33,14 +33,14 @@ Default MQTT:
 Default RTSP output:
 - URL: `rtsp://<PI_IP>:8555/cam`
 - Format: `640x480 @ 20fps`, rotate-180 flip, H.264 hardware encoding (`v4l2h264enc`)
-- Low-latency: leaky queues enabled, I-frame period set to 5, NV12 + stream-relative PTS
+- Low-latency: leaky queues enabled, I-frame period set to 5, NV12 capture + stream-relative PTS
 
 ## Optional RTSP Args
 ```bash
 --no-rtsp
 --rtsp-port 8555
 --rtsp-path /cam
---rtsp-launch "( appsrc name=stabsrc is-live=true format=time do-timestamp=false block=false ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! videoflip method=rotate-180 ! video/x-raw,format=NV12 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=5\" ! video/x-h264,level=(string)4,profile=(string)baseline ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! rtph264pay name=pay0 pt=96 config-interval=1 )"
+--rtsp-launch "( appsrc name=stabsrc is-live=true format=time do-timestamp=false block=false ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! videoflip method=rotate-180 ! videoconvert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=5\" ! video/x-h264,level=(string)4,profile=(string)baseline ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! rtph264pay name=pay0 pt=96 config-interval=1 )"
 ```
 
 ## Client low-latency tips

@@ -16,3 +16,5 @@ Makefile
 
 # VSCode
 .vscode/
+
+rc/rc_control_node

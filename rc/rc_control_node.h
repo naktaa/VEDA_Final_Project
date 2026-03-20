@@ -102,6 +102,7 @@ private:
     double max_speed_cmps_ = 70.0;
     double max_yaw_rate_rps_ = 0.5;
     double tolerance_cm_ = 10.0;
+    double rotate_yaw_offset_rad_ = 5.0 * 3.14159265358979323846 / 180.0;
 
     struct mosquitto* mosq_ = nullptr;
     std::atomic<bool> running_{false};

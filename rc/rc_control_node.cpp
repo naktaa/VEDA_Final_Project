@@ -493,7 +493,13 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
         // 제자리 회전만
         out_status.mode  = "ROTATE";
         cmd.speed_cmps   = 0.0;
-        cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
+        double rotate_err = err_yaw;
+        if (std::fabs(rotate_err) > rotate_yaw_offset_rad_) {
+            rotate_err -= (rotate_err > 0.0 ? rotate_yaw_offset_rad_ : -rotate_yaw_offset_rad_);
+        } else {
+            rotate_err = 0.0;
+        }
+        cmd.yaw_rate_rps = clamp(k_yaw_ * rotate_err, -max_yaw_rate_rps_, max_yaw_rate_rps_);
         return cmd;
     }
 

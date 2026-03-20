@@ -124,17 +124,17 @@ static bool getMarkerConfig(int id, double cubeSize, MarkerConfig& out)
         case 24: // front
             out.R_c_m = cv::Matx33d(1,0,0, 0,0,1, 0,-1,0);
             out.t_c_m = cv::Vec3d(0.0, h, 0.0);
-            out.priority = 1;
+            out.priority = 3;
             return true;
         case 23: // right
             out.R_c_m = cv::Matx33d(0,0,1, -1,0,0, 0,-1,0);
             out.t_c_m = cv::Vec3d(h, 0.0, 0.0);
-            out.priority = 2;
+            out.priority = 1;
             return true;
         case 25: // left
             out.R_c_m = cv::Matx33d(0,0,-1, 1,0,0, 0,-1,0);
             out.t_c_m = cv::Vec3d(-h, 0.0, 0.0);
-            out.priority = 3;
+            out.priority = 2;
             return true;
         case 22: // back
             out.R_c_m = cv::Matx33d(-1,0,0, 0,0,-1, 0,-1,0);

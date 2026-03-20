@@ -1,5 +1,6 @@
 /*
-컴파일 : g++ -std=c++17 test.cpp -o test `pkg-config --cflags --libs opencv4`
+컴파일 : g++ -std=c++17 test.cpp -o test $(pkg-config --cflags --libs opencv4)
+
 실행 : ./test "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" config/H_img2world.yaml config/camera.yaml 0.17 0.17
 
 */
@@ -114,7 +115,7 @@ static bool getMarkerConfig(int id, double cubeSize, MarkerConfig& out)
             out.priority = 0;
             return true;
         case 24:
-            out.R_c_m = cv::Matx33d(1, 0, 0, 0, 0, 1, 0, -1, 0);
+            out.R_c_m = cv::Matx33d(0, 1, 0, 0, 0, 1, 1, 0, 0);
             out.t_c_m = cv::Vec3d(0.0, h, 0.0);
             out.priority = 1;
             return true;
@@ -129,7 +130,7 @@ static bool getMarkerConfig(int id, double cubeSize, MarkerConfig& out)
             out.priority = 3;
             return true;
         case 22:
-            out.R_c_m = cv::Matx33d(-1, 0, 0, 0, 0, -1, 0, -1, 0);
+            out.R_c_m = cv::Matx33d(0, -1, 0, 0, 0, -1, 1, 0, 0);
             out.t_c_m = cv::Vec3d(0.0, -h, 0.0);
             out.priority = 4;
             return true;
@@ -248,7 +249,10 @@ int main(int argc, char** argv)
             const cv::Matx33d R_cam_cube = R_cam_marker * R_m_c;
             const cv::Matx33d R_world_cube = R_world_cam * R_cam_cube;
             const cv::Vec3d forward = R_world_cube * cv::Vec3d(0.0, 1.0, 0.0);
-            const double yaw = normalizeAngle(-std::atan2(forward[1], forward[0]));
+            double yaw = normalizeAngle(-std::atan2(forward[1], forward[0]));
+            if (id == 22 || id == 24) {
+                yaw = normalizeAngle(yaw + CV_PI);
+            }
             yawById[id] = yaw;
         }
 

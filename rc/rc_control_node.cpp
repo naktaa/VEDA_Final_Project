@@ -171,14 +171,14 @@ void RcControlNode::stop() {
 
 void RcControlNode::setControlParams(double k_linear,
                                      double k_yaw,
-                                     double max_speed_mps,
+                                     double max_speed_cmps,
                                      double max_yaw_rate_rps,
-                                     double tolerance_m) {
+                                     double tolerance_cm) {
     k_linear_        = k_linear;
     k_yaw_           = k_yaw;
-    max_speed_mps_   = max_speed_mps;
+    max_speed_cmps_   = max_speed_cmps;
     max_yaw_rate_rps_ = max_yaw_rate_rps;
-    tolerance_m_     = tolerance_m;
+    tolerance_cm_     = tolerance_cm;
 }
 
 void RcControlNode::onConnectStatic(struct mosquitto* mosq, void* obj, int rc) {
@@ -326,7 +326,7 @@ void RcControlNode::controlStep() {
         std::cout << "[POSE] x=" << pose.x << " y=" << pose.y
                   << " yaw=" << pose.yaw << "\n";
         std::cout << "[CMD] mode=" << status.mode
-                  << "  v=" << cmd.speed_mps
+                  << "  v=" << cmd.speed_cmps
                   << "  w=" << cmd.yaw_rate_rps
                   << "  dist=" << status.err_dist
                   << "  err_yaw=" << status.err_yaw << "\n";
@@ -338,8 +338,8 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
                                          const RcGoal& goal,
                                          RcStatus& out_status) const {
     constexpr double PI = 3.14159265358979323846;
-    constexpr double ROTATE_ENTER_TH = 25.0 * PI / 180.0;  // 25도 초과 → 회전 모드
-    constexpr double ROTATE_EXIT_TH  = 10.0 * PI / 180.0;  // 10도 이내 → 전진 모드
+    constexpr double ROTATE_ENTER_TH = 35.0 * PI / 180.0;  // 35도 초과 → 회전 모드
+    constexpr double ROTATE_EXIT_TH  = 20.0 * PI / 180.0;  // 20도 이내 → 전진 모드
 
     const double dx   = goal.x - pose.x;
     const double dy   = goal.y - pose.y;
@@ -369,7 +369,7 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
 
     out_status.mode = "TRACKING";
 
-    if (dist <= tolerance_m_) {
+    if (dist <= tolerance_cm_) {
         reached_           = true;
         rotating_          = false;
         out_status.mode    = "REACHED";
@@ -387,14 +387,14 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
     if (rotating_) {
         // 제자리 회전만
         out_status.mode  = "ROTATE";
-        cmd.speed_mps    = 0.0;
+        cmd.speed_cmps   = 0.0;
         cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
         return cmd;
     }
 
     // 전진 + 미세 조향
     const double heading_scale = std::max(0.2, std::cos(abs_err));
-    cmd.speed_mps    = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_mps_);
+    cmd.speed_cmps   = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_cmps_);
     cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
     return cmd;
 }
@@ -418,11 +418,11 @@ bool RcControlNode::publishStatus(const RcStatus& status) {
 void RcControlNode::sendCommandToRc(const RcCommand& cmd) const {
     if (!motor_ready_) return;
 
-    double v_left  = cmd.speed_mps - (cmd.yaw_rate_rps * track_width_m_ * 0.5);
-    double v_right = cmd.speed_mps + (cmd.yaw_rate_rps * track_width_m_ * 0.5);
+    double v_left  = cmd.speed_cmps - (cmd.yaw_rate_rps * track_width_cm_ * 0.5);
+    double v_right = cmd.speed_cmps + (cmd.yaw_rate_rps * track_width_cm_ * 0.5);
 
-    if (std::fabs(v_left)  < speed_deadband_mps_) v_left  = 0.0;
-    if (std::fabs(v_right) < speed_deadband_mps_) v_right = 0.0;
+    if (std::fabs(v_left)  < speed_deadband_cmps_) v_left  = 0.0;
+    if (std::fabs(v_right) < speed_deadband_cmps_) v_right = 0.0;
 
     const int left_dir  = (v_left  > 0.0) ? FORWARD  : (v_left  < 0.0 ? BACKWARD : STOP);
     const int right_dir = (v_right > 0.0) ? FORWARD  : (v_right < 0.0 ? BACKWARD : STOP);
@@ -501,11 +501,11 @@ void RcControlNode::setMotorControl(int en, int in1, int in2, int speed_pwm, int
 #endif
 }
 
-int RcControlNode::speedToPwm(double speed_mps) const {
-    const double a = std::fabs(speed_mps);
-    if (a < speed_deadband_mps_) return 0;
+int RcControlNode::speedToPwm(double speed_cmps) const {
+    const double a = std::fabs(speed_cmps);
+    if (a < speed_deadband_cmps_) return 0;
 
-    const double ratio = std::min(1.0, a / std::max(0.01, wheel_max_speed_mps_));
+    const double ratio = std::min(1.0, a / std::max(0.01, wheel_max_speed_cmps_));
     int pwm = static_cast<int>(std::lround(ratio * pwm_max_));
     if (pwm > 0) pwm = std::max(pwm, pwm_min_effective_);
     return std::min(pwm, pwm_max_);
@@ -564,7 +564,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);
-    node.setControlParams(0.8, 1.0, 0.4, 1.5, 25.0);
+    node.setControlParams(0.5, 0.6, 0.5, 1.5, 25.0);
 
     if (!node.start()) return 1;
     node.run();

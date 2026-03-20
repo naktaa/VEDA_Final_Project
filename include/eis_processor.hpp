@@ -14,10 +14,17 @@ public:
         int max_features = 200;
         double feature_quality = 0.01;
         double feature_min_dist = 30.0;
+        int lk_win_size = 31;
+        int lk_max_level = 4;
 
         // Kalman parameters
         double kf_q = 0.004;
-        double kf_r = 0.5;
+        double kf_r = 1.5;
+
+        // Stabilization
+        double ransac_thresh = 3.0;
+        double max_correction_px = 5.0;
+        double max_correction_rad = 0.02;
 
         // Visuals
         int border_crop = 30;
@@ -62,5 +69,6 @@ private:
     KalmanState kf_theta_, kf_tx_, kf_ty_;
     
     cv::Mat prev_gray_;
+    cv::Mat prev_frame_;
     int frame_count_ = 0;
 };

@@ -22,8 +22,10 @@ bool copy_nv12_frame(const GstVideoFrame& frame, int width, int height,
     const std::size_t expected_bytes = stream_config::nv12_frame_bytes(width, height);
     packed.resize(expected_bytes);
 
-    const unsigned char* y_src = GST_VIDEO_FRAME_PLANE_DATA(&frame, 0);
-    const unsigned char* uv_src = GST_VIDEO_FRAME_PLANE_DATA(&frame, 1);
+    const unsigned char* y_src =
+        static_cast<const unsigned char*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
+    const unsigned char* uv_src =
+        static_cast<const unsigned char*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 1));
     const int y_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
     const int uv_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 1);
     if (!y_src || !uv_src || y_stride < width || uv_stride < width) return false;

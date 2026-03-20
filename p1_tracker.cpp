@@ -418,9 +418,6 @@ int main(int argc, char** argv)
 
             const cv::Vec3d forward = R_world_cube * cv::Vec3d(0.0, 1.0, 0.0);
             double yaw = normalizeAngle(-std::atan2(forward[1], forward[0]));
-            if (ids[bestIdx] == 22 || ids[bestIdx] == 24) {
-                yaw = normalizeAngle(yaw + CV_PI);
-            }
             const long long ts = nowMs();
 
             char buf[256];

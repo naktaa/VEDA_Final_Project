@@ -25,7 +25,7 @@ namespace {
 
 void set_appsrc_caps(GstAppSrc* appsrc) {
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
-                                        "format", G_TYPE_STRING, "BGR",
+                                        "format", G_TYPE_STRING, "NV12",
                                         "width", G_TYPE_INT, stream_config::DEFAULT_WIDTH,
                                         "height", G_TYPE_INT, stream_config::DEFAULT_HEIGHT,
                                         "framerate", GST_TYPE_FRACTION, stream_config::DEFAULT_FPS, 1, nullptr);
@@ -34,7 +34,7 @@ void set_appsrc_caps(GstAppSrc* appsrc) {
     g_object_set(G_OBJECT(appsrc),
                  "is-live", TRUE,
                  "format", GST_FORMAT_TIME,
-                 "do-timestamp", TRUE,
+                 "do-timestamp", FALSE,
                  "block", FALSE,
                  nullptr);
 }
@@ -127,7 +127,8 @@ bool RtspStreamServer::start(const RtspConfig& cfg) {
     return true;
 }
 
-bool RtspStreamServer::push_bgr_frame(const unsigned char* data, std::size_t bytes) {
+bool RtspStreamServer::push_frame(const unsigned char* data, std::size_t bytes,
+                                  uint64_t pts, uint64_t duration) {
     if (!data || bytes == 0 || !impl_) return false;
 
     GstAppSrc* appsrc = nullptr;
@@ -148,12 +149,14 @@ bool RtspStreamServer::push_bgr_frame(const unsigned char* data, std::size_t byt
     std::memcpy(map.data, data, bytes);
     gst_buffer_unmap(buffer, &map);
 
+    // Preserve original camera timestamp for encoder rate-control
+    // and future gyro↔frame synchronization.
+    GST_BUFFER_PTS(buffer) = static_cast<GstClockTime>(pts);
+    GST_BUFFER_DURATION(buffer) = static_cast<GstClockTime>(duration);
+
     const GstFlowReturn ret = gst_app_src_push_buffer(appsrc, buffer);
     g_object_unref(appsrc);
-    if (ret != GST_FLOW_OK) {
-        return false;
-    }
-    return true;
+    return ret == GST_FLOW_OK;
 }
 
 void RtspStreamServer::stop() {

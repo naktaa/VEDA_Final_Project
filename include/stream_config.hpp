@@ -16,15 +16,20 @@ namespace stream_config {
     inline constexpr int DEFAULT_WIDTH = 640;
     inline constexpr int DEFAULT_HEIGHT = 480;
     inline constexpr int DEFAULT_FPS = 20;
-    inline constexpr int DEFAULT_BITRATE = 4000000;
-    inline constexpr int DEFAULT_IFRAME_PERIOD = 10;
+    inline constexpr int DEFAULT_BITRATE = 1500000;
+    inline constexpr int DEFAULT_IFRAME_PERIOD = 5;
     inline constexpr bool DEFAULT_FLIP_VERTICAL = true;
     inline constexpr bool DEFAULT_FLIP_HORIZONTAL = true;
+
+    // NV12 frame size: Y plane (w*h) + UV interleaved plane (w*h/2)
+    inline constexpr std::size_t nv12_frame_bytes(int w, int h) {
+        return (std::size_t)w * (std::size_t)h * 3U / 2U;
+    }
 
     inline std::string make_default_rtsp_launch() {
         std::string launch =
             "( appsrc name=" + std::string(RTSP_APPSRC_NAME) +
-            " is-live=true format=time do-timestamp=true block=false "
+            " is-live=true format=time do-timestamp=false block=false "
             "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ";
 
         if (DEFAULT_FLIP_VERTICAL && DEFAULT_FLIP_HORIZONTAL) {
@@ -36,8 +41,6 @@ namespace stream_config {
         }
 
         launch +=
-            "! videoconvert "
-            "! video/x-raw,format=I420 "
             "! v4l2h264enc extra-controls=\"controls,video_bitrate=" +
             std::to_string(DEFAULT_BITRATE) +
             ",h264_i_frame_period=" + std::to_string(DEFAULT_IFRAME_PERIOD) + "\" "
@@ -50,10 +53,9 @@ namespace stream_config {
     inline std::string make_default_capture_launch() {
         return
             "libcamerasrc "
-            "! video/x-raw,format=RGBx,width=" + std::to_string(DEFAULT_WIDTH) +
+            "! video/x-raw,format=NV12,width=" + std::to_string(DEFAULT_WIDTH) +
             ",height=" + std::to_string(DEFAULT_HEIGHT) +
             ",framerate=" + std::to_string(DEFAULT_FPS) + "/1 "
-            "! videoconvert ! video/x-raw,format=BGR "
             "! appsink name=" + std::string(CAPTURE_APPSINK_NAME) +
             " drop=true max-buffers=1 sync=false";
     }

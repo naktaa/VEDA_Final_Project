@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 struct RtspConfig {
@@ -23,7 +24,10 @@ public:
 
     bool start(const RtspConfig& cfg);
     void stop();
-    bool push_bgr_frame(const unsigned char* data, std::size_t bytes);
+
+    /// Push a raw frame (NV12). pts/duration in nanoseconds (GST_CLOCK_TIME_NONE = auto).
+    bool push_frame(const unsigned char* data, std::size_t bytes,
+                    uint64_t pts, uint64_t duration);
 
 private:
     RtspStreamServerImpl* impl_ = nullptr;

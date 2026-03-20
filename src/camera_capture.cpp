@@ -2,13 +2,11 @@
 
 #include <cstring>
 #include <cstdio>
-#include <string>
+#include <cstdint>
 #include <thread>
-#include <vector>
 
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
-#include <gst/video/video.h>
 
 #include "rtsp_stream.hpp"
 #include "stream_config.hpp"
@@ -76,24 +74,24 @@ bool CameraCapture::start(std::atomic<bool>& app_running, RtspStreamServer& rtsp
 
     impl->running = true;
     impl->worker = std::thread([impl]() {
-        std::vector<unsigned char> packed;
+        const std::size_t expected_bytes =
+            stream_config::nv12_frame_bytes(stream_config::DEFAULT_WIDTH,
+                                            stream_config::DEFAULT_HEIGHT);
 
         while (impl->running && *(impl->app_running)) {
             GstSample* sample = gst_app_sink_try_pull_sample(impl->appsink, 100000000);
             if (!sample) continue;
 
             GstBuffer* buffer = gst_sample_get_buffer(sample);
-            GstCaps* caps = gst_sample_get_caps(sample);
-            if (!buffer || !caps) {
+            if (!buffer) {
                 gst_sample_unref(sample);
                 continue;
             }
 
-            GstVideoInfo info;
-            const bool info_ok = gst_video_info_from_caps(&info, caps);
-            const int w = info_ok ? (int)info.width : stream_config::DEFAULT_WIDTH;
-            const int h = info_ok ? (int)info.height : stream_config::DEFAULT_HEIGHT;
-            const int stride = info_ok ? (int)info.stride[0] : (w * 3);
+            // Preserve original camera PTS for encoder rate-control
+            // and future gyro<->frame timestamp synchronization.
+            const uint64_t pts = GST_BUFFER_PTS(buffer);
+            const uint64_t duration = GST_BUFFER_DURATION(buffer);
 
             GstMapInfo map;
             if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
@@ -101,21 +99,12 @@ bool CameraCapture::start(std::atomic<bool>& app_running, RtspStreamServer& rtsp
                 continue;
             }
 
-            const std::size_t row_bytes = (std::size_t)w * 3U;
-            const std::size_t total_bytes = row_bytes * (std::size_t)h;
-            const unsigned char* src_ptr = map.data;
+            // NV12 is contiguous (Y plane + UV interleaved), no stride
+            // repacking needed when the buffer matches expected size.
+            const std::size_t frame_bytes =
+                (map.size <= expected_bytes) ? map.size : expected_bytes;
 
-            if ((std::size_t)stride != row_bytes) {
-                packed.resize(total_bytes);
-                for (int y = 0; y < h; ++y) {
-                    const unsigned char* row_src = map.data + (std::size_t)y * (std::size_t)stride;
-                    unsigned char* row_dst = packed.data() + (std::size_t)y * row_bytes;
-                    std::memcpy(row_dst, row_src, row_bytes);
-                }
-                src_ptr = packed.data();
-            }
-
-            impl->rtsp_server->push_bgr_frame(src_ptr, total_bytes);
+            impl->rtsp_server->push_frame(map.data, frame_bytes, pts, duration);
 
             gst_buffer_unmap(buffer, &map);
             gst_sample_unref(sample);
@@ -123,7 +112,7 @@ bool CameraCapture::start(std::atomic<bool>& app_running, RtspStreamServer& rtsp
     });
 
     impl_ = impl;
-    fprintf(stderr, "[CAP] capture thread started (appsink -> appsrc)\n");
+    fprintf(stderr, "[CAP] capture thread started (NV12 appsink -> appsrc)\n");
     return true;
 }
 

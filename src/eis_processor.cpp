@@ -170,7 +170,7 @@ void EisProcessor::process(cv::Mat& frame) {
         cv::putText(stabilized, buf, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
     }
 
-    frame = stabilized;
     prev_gray_ = curr_gray;
-    prev_frame_ = frame.clone();
+    prev_frame_ = frame.clone();   // 원본 프레임 저장 (stabilized가 아닌 원본!)
+    frame = stabilized;            // 이후에 출력용으로 덮어씀
 }

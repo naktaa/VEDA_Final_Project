@@ -1,8 +1,10 @@
 #pragma once
+
 #include <mosquitto.h>
+
 #include <atomic>
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <string>
 
@@ -13,6 +15,7 @@ struct RcGoal {
     long long ts_ms = 0;
     bool valid = false;
 };
+
 struct RcPose {
     double x = 0.0;
     double y = 0.0;
@@ -21,11 +24,13 @@ struct RcPose {
     long long ts_ms = 0;
     bool valid = false;
 };
+
 struct RcSafety {
     bool estop = false;
     bool obstacle_stop = false;
     bool planner_fail = false;
 };
+
 struct RcStatus {
     std::string mode = "IDLE";
     bool reached = false;
@@ -33,19 +38,10 @@ struct RcStatus {
     double err_yaw = 0.0;
     double battery = -1.0;
 };
+
 struct RcCommand {
     double speed_cmps = 0.0;
     double yaw_rate_rps = 0.0;
-};
-
-// ??State machine ?곹깭
-enum class DriveState {
-    IDLE,       // goal ?놁쓬
-    MEASURE,    // 2珥?硫덉땄 + yaw 痢≪젙
-    ROTATE,     // 紐⑺몴 諛⑺뼢?쇰줈 ?쒖옄由??뚯쟾
-    PAUSE,      // ?뚯쟾 ??2珥?硫덉땄
-    DRIVE,      // 怨좎젙 yaw濡?吏곸쭊
-    REACHED     // ?꾩갑
 };
 
 class RcControlNode {
@@ -57,14 +53,23 @@ public:
                   const std::string& topic_safety,
                   const std::string& topic_status);
     ~RcControlNode();
+
     bool start();
     void run();
     void stop();
+
     void setControlParams(double k_linear,
                           double k_yaw,
                           double max_speed_cmps,
                           double max_yaw_rate_rps,
                           double tolerance_cm);
+    void setMotorParams(double track_width_cm,
+                        double wheel_max_speed_cmps,
+                        double speed_deadband_cmps,
+                        int pwm_min_effective,
+                        int pwm_max);
+    bool loadParamsFromIni(const std::string& ini_path);
+
 private:
     static void onConnectStatic(struct mosquitto* mosq, void* obj, int rc);
     static void onMessageStatic(struct mosquitto* mosq, void* obj, const struct mosquitto_message* msg);
@@ -92,28 +97,28 @@ private:
     std::string topic_safety_;
     std::string topic_status_;
 
-    double k_linear_           = 0.5;
-    double k_yaw_              = 0.6;
-    double max_speed_cmps_     = 80;
-    double max_yaw_rate_rps_   = 1.5;
-    double tolerance_cm_       = 20;  // 20cm
+    double k_linear_ = 0.5;
+    double k_yaw_ = 0.8;
+    double max_speed_cmps_ = 70.0;
+    double max_yaw_rate_rps_ = 0.5;
+    double tolerance_cm_ = 25.0;
 
     struct mosquitto* mosq_ = nullptr;
     std::atomic<bool> running_{false};
     mutable std::mutex data_mtx_;
 
-    RcGoal   goal_;
-    RcPose   pose_;
+    RcGoal goal_;
+    RcPose pose_;
     RcSafety safety_;
     std::chrono::steady_clock::time_point last_pose_rx_;
 
-    bool motor_ready_            = false;
-    mutable bool rotating_       = false;  // hysteresis ?곹깭
-    mutable bool reached_        = false;  // ?꾩갑 ????goal ???뚭퉴吏 ?뺤?
-    mutable RcGoal last_goal_;             // goal 蹂寃?媛먯???
-    double track_width_cm_       = 22;
-    double wheel_max_speed_cmps_ = 70;
-    double speed_deadband_cmps_  = 3;
-    int pwm_min_effective_       = 80;
-    int pwm_max_                 = 220;
+    bool motor_ready_ = false;
+    mutable bool rotating_ = false;
+    mutable bool reached_ = false;
+    mutable RcGoal last_goal_;
+    double track_width_cm_ = 22.0;
+    double wheel_max_speed_cmps_ = 70.0;
+    double speed_deadband_cmps_ = 0.3;
+    int pwm_min_effective_ = 110;
+    int pwm_max_ = 220;
 };

@@ -14,9 +14,11 @@
 #include <csignal>
 #include <cstring>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 #include <algorithm>
 
@@ -47,6 +49,13 @@ constexpr int R_IN2 = 23; // GPIO13, physical 33
 constexpr int R_EN  = 24; // GPIO19, physical 35
 
 constexpr int PWM_HW_RANGE = 1024;
+
+std::string trimCopy(const std::string& s) {
+    const auto first = s.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const auto last = s.find_last_not_of(" \t\r\n");
+    return s.substr(first, last - first + 1);
+}
 
 int pwm255ToDuty(int pwm_255) {
     const int p = std::max(0, std::min(255, pwm_255));
@@ -176,9 +185,105 @@ void RcControlNode::setControlParams(double k_linear,
                                      double tolerance_cm) {
     k_linear_        = k_linear;
     k_yaw_           = k_yaw;
-    max_speed_cmps_   = max_speed_cmps;
+    max_speed_cmps_  = max_speed_cmps;
     max_yaw_rate_rps_ = max_yaw_rate_rps;
     tolerance_cm_     = tolerance_cm;
+}
+
+void RcControlNode::setMotorParams(double track_width_cm,
+                                   double wheel_max_speed_cmps,
+                                   double speed_deadband_cmps,
+                                   int pwm_min_effective,
+                                   int pwm_max) {
+    track_width_cm_ = track_width_cm;
+    wheel_max_speed_cmps_ = wheel_max_speed_cmps;
+    speed_deadband_cmps_ = speed_deadband_cmps;
+    pwm_min_effective_ = pwm_min_effective;
+    pwm_max_ = pwm_max;
+}
+
+bool RcControlNode::loadParamsFromIni(const std::string& ini_path) {
+    std::ifstream fin(ini_path);
+    if (!fin.is_open()) {
+        std::cerr << "[WARN] failed to open ini: " << ini_path << "\n";
+        return false;
+    }
+
+    double k_linear = k_linear_;
+    double k_yaw = k_yaw_;
+    double max_speed_cmps = max_speed_cmps_;
+    double max_yaw_rate_rps = max_yaw_rate_rps_;
+    double tolerance_cm = tolerance_cm_;
+    double track_width_cm = track_width_cm_;
+    double wheel_max_speed_cmps = wheel_max_speed_cmps_;
+    double speed_deadband_cmps = speed_deadband_cmps_;
+    int pwm_min_effective = pwm_min_effective_;
+    int pwm_max = pwm_max_;
+
+    std::string line;
+    std::string section;
+    int line_no = 0;
+
+    while (std::getline(fin, line)) {
+        ++line_no;
+        std::string trimmed = trimCopy(line);
+        if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') continue;
+
+        if (trimmed.front() == '[' && trimmed.back() == ']') {
+            section = trimCopy(trimmed.substr(1, trimmed.size() - 2));
+            continue;
+        }
+
+        const auto eq = trimmed.find('=');
+        if (eq == std::string::npos) {
+            std::cerr << "[WARN] invalid ini line " << line_no << ": " << trimmed << "\n";
+            continue;
+        }
+
+        const std::string key = trimCopy(trimmed.substr(0, eq));
+        const std::string value = trimCopy(trimmed.substr(eq + 1));
+        const std::string scoped_key = section.empty() ? key : section + "." + key;
+
+        try {
+            if (scoped_key == "control.k_linear") {
+                k_linear = std::stod(value);
+            } else if (scoped_key == "control.k_yaw") {
+                k_yaw = std::stod(value);
+            } else if (scoped_key == "control.max_speed_cmps") {
+                max_speed_cmps = std::stod(value);
+            } else if (scoped_key == "control.max_yaw_rate_rps") {
+                max_yaw_rate_rps = std::stod(value);
+            } else if (scoped_key == "control.tolerance_cm") {
+                tolerance_cm = std::stod(value);
+            } else if (scoped_key == "motor.track_width_cm") {
+                track_width_cm = std::stod(value);
+            } else if (scoped_key == "motor.wheel_max_speed_cmps") {
+                wheel_max_speed_cmps = std::stod(value);
+            } else if (scoped_key == "motor.speed_deadband_cmps") {
+                speed_deadband_cmps = std::stod(value);
+            } else if (scoped_key == "motor.pwm_min_effective") {
+                pwm_min_effective = std::stoi(value);
+            } else if (scoped_key == "motor.pwm_max") {
+                pwm_max = std::stoi(value);
+            } else {
+                std::cerr << "[WARN] unknown ini key: " << scoped_key << "\n";
+            }
+        } catch (const std::exception&) {
+            std::cerr << "[WARN] invalid ini value for " << scoped_key
+                      << " at line " << line_no << ": " << value << "\n";
+        }
+    }
+
+    setControlParams(k_linear, k_yaw, max_speed_cmps, max_yaw_rate_rps, tolerance_cm);
+    setMotorParams(track_width_cm, wheel_max_speed_cmps, speed_deadband_cmps, pwm_min_effective, pwm_max);
+
+    std::cout << "[OK] loaded ini params from " << ini_path
+              << " | control=(" << k_linear_ << ", " << k_yaw_ << ", " << max_speed_cmps_
+              << ", " << max_yaw_rate_rps_ << ", " << tolerance_cm_ << ")"
+              << " motor=(" << track_width_cm_ << ", " << wheel_max_speed_cmps_
+              << ", " << speed_deadband_cmps_ << ", " << pwm_min_effective_
+              << ", " << pwm_max_ << ")\n";
+    return true;
 }
 
 void RcControlNode::onConnectStatic(struct mosquitto* mosq, void* obj, int rc) {
@@ -559,12 +664,13 @@ int main(int argc, char** argv) {
     const std::string topic_pose  = (argc > 4) ? argv[4] : "wiserisk/p1/pose";
     const std::string topic_safety = (argc > 5) ? argv[5] : "wiserisk/rc/safety";
     const std::string topic_status = (argc > 6) ? argv[6] : "wiserisk/rc/status";
+    const std::string ini_path    = (argc > 7) ? argv[7] : "/home/pi/VEDA_Final_Project/config/rc_control.ini";
 
     std::signal(SIGINT,  onSignal);
     std::signal(SIGTERM, onSignal);
 
     RcControlNode node(host, port, topic_goal, topic_pose, topic_safety, topic_status);
-    node.setControlParams(0.5, 0.6, 0.5, 1.5, 25.0);
+    node.loadParamsFromIni(ini_path);
 
     if (!node.start()) return 1;
     node.run();

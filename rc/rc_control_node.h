@@ -101,7 +101,7 @@ private:
     double k_yaw_ = 0.8;
     double max_speed_cmps_ = 70.0;
     double max_yaw_rate_rps_ = 0.5;
-    double tolerance_cm_ = 25.0;
+    double tolerance_cm_ = 10.0;
 
     struct mosquitto* mosq_ = nullptr;
     std::atomic<bool> running_{false};

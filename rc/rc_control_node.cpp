@@ -500,7 +500,7 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
     // 전진 + 미세 조향
     const double heading_scale = std::max(0.2, std::cos(abs_err));
     cmd.speed_cmps   = clamp(k_linear_ * dist * heading_scale, 0.0, max_speed_cmps_);
-    cmd.yaw_rate_rps = clamp(k_yaw_ * err_yaw, -max_yaw_rate_rps_, max_yaw_rate_rps_);
+    cmd.yaw_rate_rps = 0.0;
     return cmd;
 }
 

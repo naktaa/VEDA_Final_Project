@@ -17,6 +17,8 @@ public:
     void setHumanBoxes(const QVector<QRect>& boxes, bool visible);
     void setVideoGeometry(const QRect& displayRect, const QSize& sourceFrameSize = QSize());
     void setBoxSourceSize(const QSize& sourceFrameSize);
+    void setBoxSourceOffset(const QPointF& sourceOffset);
+    void setBoxPerspectiveOffset(const QPointF& perspectiveOffset);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -29,6 +31,8 @@ private:
     bool m_visible = false;
     QRect m_videoRect;
     QSize m_sourceFrameSize;
+    QPointF m_sourceOffset;
+    QPointF m_perspectiveOffset;
 };
 
 #endif

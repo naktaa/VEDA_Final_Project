@@ -2,6 +2,7 @@
 #define VIDEO_CLIP_WINDOW_H
 
 #include <QWidget>
+#include <QRect>
 #include <QUrl>
 #include <QFile>
 class QLabel;
@@ -11,6 +12,8 @@ class QVideoWidget;
 
 class QMediaPlayer;
 class QAudioOutput;
+class QEvent;
+class TitleBarWidget;
 
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -54,19 +57,22 @@ private slots:
 private:
     void buildUi();
     void loadAndPlay(const QUrl& url);
+    void syncWindowLayout();
 
     QUrl chooseUrlByRole(UserRole role, const QUrl& privacyUrl, const QUrl& rawUrl) const;
 
     static QString msToTime(qint64 ms);
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
+    void changeEvent(QEvent* event) override;
 
 private:
     // ui
+    TitleBarWidget* m_titleBar = nullptr;
     QLabel* m_titleLabel = nullptr;
 
     QVideoWidget* m_video = nullptr;
 
     QPushButton* m_btnPlayPause = nullptr;
-    QPushButton* m_btnStop = nullptr;
     QSlider* m_slider = nullptr;
     QLabel* m_timeLabel = nullptr;
 
@@ -93,6 +99,7 @@ private:
     QProgressDialog* m_progress = nullptr;
 
     QFile* m_outFile = nullptr;
+    QRect m_normalGeometry;
 
 };
 

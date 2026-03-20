@@ -19,6 +19,7 @@ public:
 
     void start(const QString& host, int port, const QString& topic);
     void stop();
+    void setHumanDetectionEnabled(bool enabled);
 
 signals:
     void eventReceived(const MqttEvent& ev);
@@ -41,6 +42,7 @@ private:
     mosquitto* mosq_ = nullptr;
     QThread* workerThread_ = nullptr;
     std::atomic<bool> running_{false};
+    std::atomic<bool> humanDetectionEnabled_{false};
 };
 
 #endif // MQTTSUBSCRIBER_H

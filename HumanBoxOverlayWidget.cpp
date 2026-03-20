@@ -1,7 +1,12 @@
 #include "HumanBoxOverlayWidget.h"
 
+#include <algorithm>
 #include <QPainter>
 #include <QPen>
+
+namespace {
+constexpr double kHumanBoxOutwardScale = 1.03;
+}
 
 HumanBoxOverlayWidget::HumanBoxOverlayWidget(QWidget* parent)
     : QWidget(parent)
@@ -40,8 +45,12 @@ void HumanBoxOverlayWidget::setHumanBoxes(const QVector<QRect>& boxes, bool visi
 
 void HumanBoxOverlayWidget::setVideoGeometry(const QRect& displayRect, const QSize& sourceFrameSize)
 {
-    m_videoRect = displayRect;
-    if (sourceFrameSize.isValid()) m_sourceFrameSize = sourceFrameSize;
+    const QRect nextVideoRect = displayRect;
+    const QSize nextSourceFrameSize = sourceFrameSize.isValid() ? sourceFrameSize : m_sourceFrameSize;
+    if (m_videoRect == nextVideoRect && m_sourceFrameSize == nextSourceFrameSize) return;
+
+    m_videoRect = nextVideoRect;
+    m_sourceFrameSize = nextSourceFrameSize;
     update();
 }
 
@@ -49,6 +58,20 @@ void HumanBoxOverlayWidget::setBoxSourceSize(const QSize& sourceFrameSize)
 {
     if (!sourceFrameSize.isValid() || sourceFrameSize == m_sourceFrameSize) return;
     m_sourceFrameSize = sourceFrameSize;
+    update();
+}
+
+void HumanBoxOverlayWidget::setBoxSourceOffset(const QPointF& sourceOffset)
+{
+    if (m_sourceOffset == sourceOffset) return;
+    m_sourceOffset = sourceOffset;
+    update();
+}
+
+void HumanBoxOverlayWidget::setBoxPerspectiveOffset(const QPointF& perspectiveOffset)
+{
+    if (m_perspectiveOffset == perspectiveOffset) return;
+    m_perspectiveOffset = perspectiveOffset;
     update();
 }
 
@@ -63,12 +86,32 @@ QRectF HumanBoxOverlayWidget::mapRect(const QRect& src) const
 
     const double sx = static_cast<double>(targetRect.width()) / m_sourceFrameSize.width();
     const double sy = static_cast<double>(targetRect.height()) / m_sourceFrameSize.height();
+    const double centerNormX = std::clamp(
+        static_cast<double>(src.center().x()) / m_sourceFrameSize.width(), 0.0, 1.0);
+    const double centerNormY = std::clamp(
+        static_cast<double>(src.center().y()) / m_sourceFrameSize.height(), 0.0, 1.0);
+    const double rightBias = std::clamp((centerNormX - 0.5) * 2.0, 0.0, 1.0);
+    const double localOffsetX =
+        m_sourceOffset.x() +
+        (m_perspectiveOffset.x() * centerNormX) +
+        (m_perspectiveOffset.x() * 3.0 * rightBias);
+    const double localOffsetY = m_sourceOffset.y() + (m_perspectiveOffset.y() * centerNormY);
+
+    const double srcCenterX = m_sourceFrameSize.width() * 0.5;
+    const double srcCenterY = m_sourceFrameSize.height() * 0.5;
+
+    const double adjustedLeft =
+        srcCenterX + (((src.left() + localOffsetX) - srcCenterX) * kHumanBoxOutwardScale);
+    const double adjustedTop =
+        srcCenterY + (((src.top() + localOffsetY) - srcCenterY) * kHumanBoxOutwardScale);
+    const double adjustedWidth = src.width() * kHumanBoxOutwardScale;
+    const double adjustedHeight = src.height() * kHumanBoxOutwardScale;
 
     return QRectF(
-        targetRect.left() + src.left() * sx,
-        targetRect.top() + src.top() * sy,
-        src.width() * sx,
-        src.height() * sy
+        targetRect.left() + adjustedLeft * sx,
+        targetRect.top() + adjustedTop * sy,
+        adjustedWidth * sx,
+        adjustedHeight * sy
     ).normalized();
 }
 
@@ -79,11 +122,41 @@ void HumanBoxOverlayWidget::paintEvent(QPaintEvent* event)
     if (!m_visible || m_boxes.isEmpty()) return;
 
     QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(QColor(120, 255, 120), 3));
+    p.setRenderHint(QPainter::Antialiasing, false);
+    const QColor boxColor(120, 255, 120);
+    QPen boxPen(boxColor, 1.6);
+    boxPen.setCosmetic(true);
     p.setBrush(Qt::NoBrush);
     for (const QRect& box : m_boxes) {
         if (!box.isValid()) continue;
-        p.drawRect(mapRect(box));
+        const QRectF mapped = mapRect(box);
+
+        const QString badgeText = "person";
+        QFont badgeFont = p.font();
+        badgeFont.setPointSize(7);
+        badgeFont.setBold(false);
+        p.setFont(badgeFont);
+
+        const QFontMetrics fm(badgeFont);
+        const int padX = 6;
+        const int padY = 2;
+        const int badgeW = fm.horizontalAdvance(badgeText) + padX * 2;
+        const int badgeH = fm.height() + padY;
+        QRectF badgeRect(mapped.left(), std::max(0.0, mapped.top() - badgeH - 1.0), badgeW, badgeH);
+        if (badgeRect.top() <= 2.0) {
+            badgeRect.moveTop(mapped.top() + 1.0);
+        }
+
+        p.setPen(Qt::NoPen);
+        QColor badgeColor = boxColor;
+        badgeColor.setAlpha(170);
+        p.setBrush(badgeColor);
+        p.drawRect(badgeRect);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QColor(18, 26, 20));
+        p.drawText(badgeRect, Qt::AlignCenter, badgeText);
+
+        p.setPen(boxPen);
+        p.drawRect(mapped);
     }
 }

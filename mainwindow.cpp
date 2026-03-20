@@ -41,6 +41,8 @@
 #include <QSignalBlocker>
 #include <QStackedLayout>
 #include <QStackedWidget>
+#include <QStyle>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QFont>
 #include <QFile>
@@ -51,6 +53,7 @@
 #include <QScreen>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -69,6 +72,10 @@ constexpr qint64 kHumanBoxRenderThrottleMs = 180;
 constexpr qint64 kHumanEventListThrottleMs = 1200;
 constexpr qint64 kHumanBoxKeepAliveMs = 700;
 constexpr int kHumanBoxMaxVisible = 12;
+constexpr double kHumanBoxOffsetXRatio = 0.0;
+constexpr double kHumanBoxOffsetYRatio = 0.035;
+constexpr double kHumanBoxPerspectiveOffsetXRatio = 0.0;
+constexpr double kHumanBoxSmoothingAlpha = 0.35;
 
 QString normalizeZoneKey(const QString& value)
 {
@@ -107,6 +114,116 @@ void addZoneNodes(QHash<QString, QString>& nodeToZone, QSet<QString>& zones,
         const QString key = normalizeZoneKey(node);
         if (!key.isEmpty()) nodeToZone.insert(key, zone);
     }
+}
+
+bool sizeContains(const QSize& outer, const QSize& inner)
+{
+    return outer.isValid() &&
+           inner.isValid() &&
+           outer.width() >= inner.width() &&
+           outer.height() >= inner.height();
+}
+
+bool shouldAcceptHumanBox(const MqttEvent& ev, const QSize& sourceSize)
+{
+    if (!ev.bbox.isValid()) return false;
+
+    const int w = ev.bbox.width();
+    const int h = ev.bbox.height();
+    if (w <= 0 || h <= 0) return false;
+
+    if (ev.confidence > 0.0 && ev.confidence < 0.30) return false;
+
+    const QSize basis = sourceSize.isValid() ? sourceSize : QSize(ev.frameW, ev.frameH);
+    const int frameW = std::max(1, basis.width());
+    const int frameH = std::max(1, basis.height());
+    const double frameArea = static_cast<double>(frameW) * static_cast<double>(frameH);
+
+    const int minWidth = std::max(36, static_cast<int>(std::round(frameW * 0.018)));
+    const int minHeight = std::max(54, static_cast<int>(std::round(frameH * 0.035)));
+    if (w < minWidth || h < minHeight) return false;
+
+    const double aspect = static_cast<double>(w) / static_cast<double>(h);
+    if (aspect < 0.12 || aspect > 1.05) return false;
+
+    const double area = static_cast<double>(w) * static_cast<double>(h);
+    const double smallAreaThreshold = frameArea * 0.0018;
+    if (area < smallAreaThreshold && aspect > 0.72) return false;
+
+    return true;
+}
+
+QRect smoothHumanBox(const QRectF& previous, const QRect& current)
+{
+    if (!previous.isValid()) return current;
+
+    const QRectF cur = QRectF(current);
+    const double a = kHumanBoxSmoothingAlpha;
+    const double x = previous.x() + (cur.x() - previous.x()) * a;
+    const double y = previous.y() + (cur.y() - previous.y()) * a;
+    const double w = previous.width() + (cur.width() - previous.width()) * a;
+    const double h = previous.height() + (cur.height() - previous.height()) * a;
+    return QRectF(x, y, w, h).toAlignedRect();
+}
+
+QSize chooseDetectionSourceSize(const QSize& minBounds,
+                                const QSize& explicitSourceSize,
+                                const QSize& videoFrameSize,
+                                const QSize& currentSourceSize)
+{
+    if (!minBounds.isValid()) {
+        if (explicitSourceSize.isValid()) return explicitSourceSize;
+        if (currentSourceSize.isValid()) return currentSourceSize;
+        return videoFrameSize;
+    }
+
+    if (sizeContains(explicitSourceSize, minBounds)) return explicitSourceSize;
+    if (sizeContains(currentSourceSize, minBounds)) return currentSourceSize;
+    if (sizeContains(videoFrameSize, minBounds)) return videoFrameSize;
+
+    const QVector<QSize> presets = {
+        QSize(1280, 720),
+        QSize(1920, 1080),
+        QSize(2560, 1440),
+        QSize(2688, 1520),
+        QSize(3072, 1728),
+        QSize(3840, 2160),
+        QSize(4096, 2160),
+        QSize(1024, 768),
+        QSize(1280, 960),
+        QSize(1600, 1200),
+        QSize(2048, 1536),
+        QSize(3072, 2304),
+        QSize(3840, 2880)
+    };
+
+    const double targetAspect =
+        (videoFrameSize.isValid() && videoFrameSize.height() > 0)
+            ? static_cast<double>(videoFrameSize.width()) / static_cast<double>(videoFrameSize.height())
+            : 0.0;
+
+    QSize best;
+    double bestAspectDelta = std::numeric_limits<double>::max();
+    qint64 bestArea = std::numeric_limits<qint64>::max();
+    for (const QSize& preset : presets) {
+        if (!sizeContains(preset, minBounds)) continue;
+        const double presetAspect =
+            preset.height() > 0
+                ? static_cast<double>(preset.width()) / static_cast<double>(preset.height())
+                : 0.0;
+        const double aspectDelta =
+            targetAspect > 0.0 ? std::abs(presetAspect - targetAspect) : 0.0;
+        const qint64 area = static_cast<qint64>(preset.width()) * static_cast<qint64>(preset.height());
+        if (aspectDelta < bestAspectDelta ||
+            (std::abs(aspectDelta - bestAspectDelta) < 0.0001 && area < bestArea)) {
+            bestAspectDelta = aspectDelta;
+            bestArea = area;
+            best = preset;
+        }
+    }
+    if (best.isValid()) return best;
+
+    return QSize(std::max(1, minBounds.width()), std::max(1, minBounds.height()));
 }
 
 QVector<QPointF> buildCalibPolyline(const QVector<QPointF>& pts)
@@ -247,7 +364,12 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
         humanBtn->setChecked(false);
         connect(humanBtn, &QPushButton::toggled, this, [this](bool on){
             m_humanBoxEnabled = on;
+            if (m_mqtt) m_mqtt->setHumanDetectionEnabled(on);
             if (!on) {
+                m_humanBoxSourceSize = QSize();
+                m_humanBoxes.clear();
+                m_humanBoxSmoothed.clear();
+                m_humanBoxSeenUtc.clear();
                 if (m_humanBoxOverlay) m_humanBoxOverlay->setHumanBoxes({}, false);
             }
             saveUiSettings();
@@ -283,6 +405,7 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
 
     // MQTT
     m_mqtt = new MqttSubscriber(nullptr); // parent 二쇰㈃ moveToThread?占쎌꽌 臾몄젣?占쎌뿀吏
+    m_mqtt->setHumanDetectionEnabled(m_humanBoxEnabled);
     connect(m_mqtt, &MqttSubscriber::eventReceived,
             this, &MainWindow::onMqttEvent, Qt::QueuedConnection);
     connect(m_mqtt, &MqttSubscriber::logLine,
@@ -478,6 +601,27 @@ MainWindow::~MainWindow()
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (watched == m_systemUsageCard && event && event->type() == QEvent::MouseButtonRelease) {
+        auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            if (!m_systemUsageWindow) {
+                m_systemUsageWindow = new SystemUsageWindow(this);
+                m_systemUsageWindow->setAttribute(Qt::WA_DeleteOnClose, false);
+            }
+            m_systemUsageWindow->setUsageData(
+                m_currentCpuUsage,
+                m_currentMemoryUsage,
+                m_currentGpuUsage,
+                m_cpuUsageHistory,
+                m_memoryUsageHistory,
+                m_gpuUsageHistory);
+            m_systemUsageWindow->show();
+            m_systemUsageWindow->raise();
+            m_systemUsageWindow->activateWindow();
+            return true;
+        }
+    }
+
     if (watched == m_robotStatusCard && event && event->type() == QEvent::MouseButtonRelease) {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
         if (mouseEvent->button() == Qt::LeftButton) {
@@ -512,15 +656,34 @@ QLabel#titleText {
     font-weight: 700;
 }
 QWidget#platformNameBar {
-    background-color: #232838;
-    border: 1px solid #343b57;
-    border-radius: 5px;
+    background-color: #202636;
+    border: 1px solid #353f5d;
+    border-radius: 8px;
 }
 QLabel#platformNameLabel {
     background: transparent;
-    color: #f5f0ff;
+    color: #f5f7ff;
     font-weight: 800;
     letter-spacing: 0.8px;
+}
+QLabel[headerMeta="true"] {
+    background-color: #2a3247;
+    color: #d7e0ff;
+    border: 1px solid #3f4c70;
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: 10px;
+    font-weight: 700;
+}
+QLabel[headerMeta="true"][accent="status"] {
+    background-color: #213d34;
+    border-color: #2d7962;
+    color: #bff5db;
+}
+QLabel[headerMeta="true"][accent="danger"] {
+    background-color: #41272d;
+    border-color: #8a4c57;
+    color: #ffd4dc;
 }
 QWidget#navPanelHeader {
     background-color: #262d40;
@@ -582,17 +745,34 @@ QGroupBox::title {
     color: transparent;
 }
 QFrame#centralCard {
-    background-color: #1f2435;
-    border: 1px solid #323a56;
-    border-radius: 7px;
+    background-color: #1d2333;
+    border: 1px solid #2f3852;
+    border-radius: 10px;
+}
+QFrame#centralCard[visualPriority="primary"] {
+    background-color: #20283b;
+    border: 1px solid #4a6293;
+}
+QFrame#centralCard[visualPriority="secondary"] {
+    background-color: #1a2130;
+    border: 1px solid #2c3550;
+}
+QWidget#centralAspectHost,
+QWidget#tankAspectHost {
+    background-color: transparent;
+}
+QWidget#centralOverlayHost {
+    background-color: #05070d;
+    border: 1px solid #32476e;
+    border-radius: 12px;
 }
 QLabel#sideVideoHeader {
-    background-color: #262d42;
-    color: #f3ecff;
-    border: 1px solid #3c4566;
-    border-radius: 4px;
+    background-color: #232b3f;
+    color: #dbe6ff;
+    border: 1px solid #34405c;
+    border-radius: 6px;
     font-weight: 700;
-    padding: 4px 10px;
+    padding: 5px 10px;
 }
 QWidget#sideVideoHeaderHost {
     background-color: transparent;
@@ -601,22 +781,69 @@ QSplitter#mainSplitter::handle {
     background: #1b2030;
 }
 QPushButton {
-    background-color: #27304a;
-    color: #edf0ff;
-    border: 1px solid #42507a;
-    border-radius: 4px;
+    background-color: #2a334c;
+    color: #edf1ff;
+    border: 1px solid #435178;
+    border-radius: 6px;
     padding: 6px 10px;
     min-height: 20px;
     font-weight: 600;
 }
 QPushButton:hover {
-    background-color: #334062;
+    background-color: #34405f;
 }
-QPushButton:pressed,
-QPushButton:checked {
-    background-color: #5d4acb;
-    border-color: #8070ef;
+QPushButton:pressed {
+    background-color: #24304b;
+    border-color: #5475b3;
     color: #ffffff;
+}
+QPushButton[eventControl="secondary"] {
+    background-color: #262f45;
+    border-color: #3c496b;
+}
+QPushButton[eventControl="secondary"]:hover {
+    background-color: #313d5a;
+}
+QPushButton[eventControl="secondary"]:pressed,
+QPushButton[eventControl="secondary"]:checked {
+    background-color: #394a70;
+    border-color: #6985bf;
+}
+QPushButton[eventControl="danger"] {
+    background-color: #402c35;
+    border-color: #825060;
+}
+QPushButton[eventControl="danger"]:hover {
+    background-color: #513541;
+}
+QPushButton[eventControl="danger"]:pressed,
+QPushButton[eventControl="danger"]:checked {
+    background-color: #713f4d;
+    border-color: #bd6a7e;
+}
+QPushButton[eventControl="toggle"] {
+    background-color: #213947;
+    border-color: #3c6f89;
+}
+QPushButton[eventControl="toggle"]:hover {
+    background-color: #274756;
+}
+QPushButton[eventControl="toggle"]:checked,
+QPushButton[eventControl="toggle"]:pressed {
+    background-color: #2d7ca1;
+    border-color: #67b8df;
+}
+QPushButton[eventControl="primary"] {
+    background-color: #465ed1;
+    border-color: #7087f6;
+}
+QPushButton[eventControl="primary"]:hover {
+    background-color: #5870e3;
+}
+QPushButton[eventControl="primary"]:pressed,
+QPushButton[eventControl="primary"]:checked {
+    background-color: #6a5bdb;
+    border-color: #958aff;
 }
 QListWidget, QTreeWidget, QPlainTextEdit {
     background-color: #1b2030;
@@ -627,8 +854,8 @@ QListWidget, QTreeWidget, QPlainTextEdit {
     selection-color: #ffffff;
 }
 QListWidget#primaryNavList {
-    background-color: #232a3a;
-    border: 1px solid #39445f;
+    background-color: #222939;
+    border: 1px solid #415071;
     border-radius: 9px;
     padding: 10px 8px;
     outline: none;
@@ -650,21 +877,30 @@ QListWidget#primaryNavList::item:hover:!selected {
     color: #f0f4ff;
 }
 QFrame[navItemFrame="true"] {
-    background-color: transparent;
-    border: none;
-    border-radius: 6px;
+    background-color: #273149;
+    border: 1px solid #31405e;
+    border-radius: 10px;
 }
 QFrame[navItemFrame="true"][selected="true"] {
-    background-color: #36425d;
-    border: 1px solid #4a5c86;
+    background-color: #344667;
+    border: 1px solid #6882b8;
 }
 QFrame[navItemFrame="true"][action="true"] {
-    background-color: #2a3144;
-    border: 1px solid #313b54;
+    background-color: #252d3e;
+    border: 1px solid #33415e;
 }
 QFrame[navItemFrame="true"][action="true"][selected="true"] {
-    background-color: #3a4968;
-    border: 1px solid #6478a8;
+    background-color: #30405d;
+    border: 1px solid #5f78ab;
+}
+QFrame[navGlow="true"] {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 10px;
+}
+QFrame[navGlow="true"][selected="true"] {
+    border-color: rgba(130, 155, 255, 0.35);
+    background-color: rgba(86, 103, 216, 0.08);
 }
 QLabel[navTitle="true"] {
     color: #eef3ff;
@@ -720,7 +956,7 @@ QLabel[navBadge="true"][mode="allcctv"] {
 }
 QLabel[navIndicator="true"] {
     background-color: #6d5efc;
-    border-radius: 2px;
+    border-radius: 3px;
 }
 QLabel[navIndicator="true"][mode="map"] {
     background-color: #5667d8;
@@ -745,28 +981,28 @@ QLabel {
     color: #e8edff;
 }
 QWidget#ruviewInfoCard {
-    background-color: #252d3f;
-    border: 1px solid #3a4663;
-    border-radius: 8px;
+    background-color: #20273a;
+    border: 1px solid #364463;
+    border-radius: 10px;
 }
 QGroupBox#groupMsg {
-    background-color: #22293a;
-    border: 1px solid #3a4663;
-    border-radius: 9px;
+    background-color: #1e2434;
+    border: 1px solid #34415f;
+    border-radius: 10px;
 }
 QGroupBox#groupWard {
-    background-color: #252d3f;
-    border: 1px solid #3a4663;
-    border-radius: 8px;
+    background-color: #1d2433;
+    border: 1px solid #34415f;
+    border-radius: 10px;
 }
 QFrame#robotStatusCard {
-    background-color: #1f2637;
-    border: 1px solid #3a4663;
+    background-color: #1e2535;
+    border: 1px solid #364361;
     border-radius: 10px;
 }
 QFrame#tankControlCard {
-    background-color: #21293b;
-    border: 1px solid #3a4663;
+    background-color: #1b2231;
+    border: 1px solid #34425f;
     border-radius: 10px;
 }
 QLabel[tankControlTitle="true"] {
@@ -783,38 +1019,187 @@ QPushButton[tankControlButton="true"] {
     min-width: 84px;
     min-height: 34px;
     border-radius: 8px;
-    background-color: #29344d;
-    border: 1px solid #44557e;
+    background-color: #27344d;
+    border: 1px solid #41537a;
     color: #eef3ff;
     padding: 8px 10px;
 }
 QPushButton[tankControlButton="true"]:hover {
-    background-color: #334062;
+    background-color: #324362;
 }
-QPushButton[tankControlButton="true"]:pressed {
-    background-color: #b37a2f;
-    border-color: #d19a4a;
+QPushButton[tankControlButton="true"][tankGroup="drive"]:pressed {
+    background-color: #9d6a24;
+    border-color: #d59a48;
+}
+QPushButton[tankControlButton="true"][tankGroup="ptz"]:pressed {
+    background-color: #276e93;
+    border-color: #59aad0;
 }
 QLabel[robotTitle="true"] {
     color: #f2f6ff;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 800;
+}
+QLabel[robotOpen="true"] {
+    color: #8ea1c8;
+    font-size: 10px;
+    font-weight: 700;
+    background-color: #293249;
+    border: 1px solid #435478;
+    border-radius: 8px;
+    padding: 2px 8px;
 }
 QLabel[robotLabel="true"] {
     color: #91a0bd;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
+    text-transform: uppercase;
 }
 QLabel[robotValue="true"] {
     color: #eef3ff;
-    font-size: 12px;
-    font-weight: 700;
+    font-size: 13px;
+    font-weight: 800;
 }
 QLabel[robotConn="online"] {
     color: #50d89d;
 }
 QLabel[robotConn="offline"] {
     color: #ff8181;
+}
+QFrame[statusMetricCard="true"] {
+    background-color: #293249;
+    border: 1px solid #435478;
+    border-radius: 10px;
+}
+QLabel[statusMetricLabel="true"] {
+    color: #8ea0c5;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+}
+QLabel[statusMetricValue="true"] {
+    color: #f3f7ff;
+    font-size: 20px;
+    font-weight: 800;
+}
+QLabel[statusMetricValue="true"][level="warn"] {
+    color: #f2c66d;
+}
+QLabel[statusMetricValue="true"][level="danger"] {
+    color: #ff8d8d;
+}
+QWidget#eventHeaderRow {
+    background-color: transparent;
+}
+QLabel[eventSectionEyebrow="true"] {
+    color: #8a98b8;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+QLabel[eventSectionTitle="true"] {
+    color: #f3f6ff;
+    font-size: 16px;
+    font-weight: 800;
+}
+QLabel#eventCountBadge {
+    background-color: #344667;
+    color: #eef3ff;
+    border: 1px solid #5871a8;
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 800;
+}
+QFrame[eventItemCard="true"] {
+    background-color: #252d3f;
+    border: 1px solid #33415e;
+    border-radius: 10px;
+}
+QFrame[eventItemCard="true"][severity="danger"] {
+    border-color: #9a535d;
+    background-color: #2d2429;
+}
+QFrame[eventItemCard="true"][severity="warn"] {
+    border-color: #8f6a41;
+    background-color: #2e2922;
+}
+QFrame[eventAccent="true"] {
+    border-radius: 3px;
+    min-width: 5px;
+    max-width: 5px;
+    background-color: #6d7da5;
+}
+QLabel[eventMeta="true"] {
+    color: #90a0c2;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+}
+QLabel[eventTitle="true"] {
+    color: #f0f5ff;
+    font-size: 12px;
+    font-weight: 800;
+}
+QLabel[eventSubtitle="true"] {
+    color: #b8c4de;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel[eventBadge="true"] {
+    border-radius: 8px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 800;
+    color: #eef4ff;
+    background-color: #425273;
+}
+QLabel[eventBadge="true"][kind="danger"] {
+    background-color: #8f4b57;
+}
+QLabel[eventBadge="true"][kind="warn"] {
+    background-color: #8d7040;
+}
+QLabel[eventBadge="true"][kind="normal"] {
+    background-color: #3a557d;
+}
+QWidget#eventFilterPanel {
+    background-color: #1a2130;
+    border: 1px solid #303c57;
+    border-radius: 10px;
+}
+QLabel#eventFilterLabel {
+    color: #eef3ff;
+    font-size: 10px;
+    font-weight: 700;
+    background-color: #2a3348;
+    padding: 4px 10px;
+    border: 1px solid #3a4967;
+    border-radius: 8px;
+}
+QToolButton#logToggleButton {
+    background-color: #27324a;
+    color: #dce5ff;
+    border: 1px solid #44557d;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-weight: 700;
+}
+QToolButton#logToggleButton:hover {
+    background-color: #31405d;
+}
+QWidget#eventLogContainer {
+    background-color: transparent;
+}
+QLabel[ruCardTitle="true"] {
+    color: #eff5ff;
+    font-size: 13px;
+    font-weight: 800;
+}
+QLabel[ruCardValue="true"] {
+    color: #b2c0de;
+    font-size: 11px;
+    font-weight: 700;
 }
 QProgressBar#robotBatteryBar {
     min-height: 10px;
@@ -826,21 +1211,6 @@ QProgressBar#robotBatteryBar {
 QProgressBar#robotBatteryBar::chunk {
     border-radius: 4px;
     background-color: #4db1ff;
-}
-QLabel[ruCardTitle="true"] {
-    color: #eef3ff;
-    font-weight: 700;
-}
-QLabel[ruCardValue="true"] {
-    color: #a6b2cb;
-}
-QLabel#eventFilterLabel {
-    background-color: #2c354a;
-    color: #eef3ff;
-    font-weight: 700;
-    padding: 4px 10px;
-    border: 1px solid #3c4866;
-    border-radius: 8px;
 }
 QComboBox#eventFilterCombo {
     background-color: #2c354a;
@@ -878,15 +1248,6 @@ QLineEdit#eventFilterSearch {
 QLineEdit#eventFilterSearch:focus {
     border-color: #6476a8;
 }
-QLabel#eventCountBadge {
-    background-color: #344361;
-    color: #eef3ff;
-    border: 1px solid #53678f;
-    border-radius: 8px;
-    padding: 3px 8px;
-    font-size: 11px;
-    font-weight: 800;
-}
 QListWidget#listEvent {
     background-color: #1c2231;
     border: 1px solid #34415d;
@@ -911,6 +1272,56 @@ QListWidget#listEvent::item:hover:!selected {
     background-color: #2b3750;
     border: 1px solid #455579;
 }
+QScrollBar:vertical {
+    background: #171d2a;
+    width: 10px;
+    margin: 2px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical {
+    background: #455474;
+    min-height: 28px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #5b6f98;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical,
+QScrollBar::left-arrow:vertical,
+QScrollBar::right-arrow:vertical,
+QScrollBar::up-arrow:vertical,
+QScrollBar::down-arrow:vertical {
+    height: 0px;
+    background: transparent;
+}
+QScrollBar:horizontal {
+    background: #171d2a;
+    height: 10px;
+    margin: 2px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal {
+    background: #455474;
+    min-width: 28px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #5b6f98;
+}
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal,
+QScrollBar::left-arrow:horizontal,
+QScrollBar::right-arrow:horizontal,
+QScrollBar::up-arrow:horizontal,
+QScrollBar::down-arrow:horizontal {
+    width: 0px;
+    background: transparent;
+}
 QStatusBar {
     background-color: #121621;
     color: #9da8cf;
@@ -918,7 +1329,10 @@ QStatusBar {
 )");
 
     if (ui->labelCentralView) ui->labelCentralView->setStyleSheet("background-color:black;");
-    if (ui->labelTankView)    ui->labelTankView->setStyleSheet("background-color:black;");
+    if (ui->labelTankView) {
+        ui->labelTankView->setStyleSheet("background-color:black;");
+        ui->labelTankView->setStreamProfile(GstVideoWidget::StreamProfile::RcTankLowLatency);
+    }
 
     ui->textMsgLog->setReadOnly(true);
     ui->textMsgLog->setMaximumBlockCount(1000);
@@ -1021,6 +1435,7 @@ void MainWindow::buildResponsiveLayout()
         auto* centralCard = new QFrame(groupCentral);
         m_centralVideoCard = centralCard;
         centralCard->setObjectName("centralCard");
+        centralCard->setProperty("visualPriority", "primary");
         centralCard->setFrameShape(QFrame::StyledPanel);
         auto* centralCardLayout = new QVBoxLayout(centralCard);
         centralCardLayout->setContentsMargins(8, 8, 8, 8);
@@ -1048,6 +1463,7 @@ void MainWindow::buildResponsiveLayout()
     auto* tankCard = new QFrame(groupCentral);
     m_tankVideoCard = tankCard;
     tankCard->setObjectName("centralCard");
+    tankCard->setProperty("visualPriority", "secondary");
     tankCard->setFrameShape(QFrame::StyledPanel);
     auto* tankLayout = new QVBoxLayout(tankCard);
     tankLayout->setContentsMargins(8, 8, 8, 8);
@@ -1117,7 +1533,10 @@ void MainWindow::buildResponsiveLayout()
     auto* btnTurnLeft = new QPushButton("TURN LEFT", driveCard);
     auto* btnTurnRight = new QPushButton("TURN RIGHT", driveCard);
     const auto driveButtons = {btnForward, btnBackward, btnTurnLeft, btnTurnRight};
-    for (auto* button : driveButtons) button->setProperty("tankControlButton", true);
+    for (auto* button : driveButtons) {
+        button->setProperty("tankControlButton", true);
+        button->setProperty("tankGroup", "drive");
+    }
     driveGrid->addWidget(btnForward, 0, 1);
     driveGrid->addWidget(btnTurnLeft, 1, 0);
     driveGrid->addWidget(btnBackward, 1, 1);
@@ -1141,7 +1560,10 @@ void MainWindow::buildResponsiveLayout()
     auto* btnPanLeft = new QPushButton("PAN LEFT", ptzCard);
     auto* btnPanRight = new QPushButton("PAN RIGHT", ptzCard);
     const auto ptzButtons = {btnTiltUp, btnTiltDown, btnPanLeft, btnPanRight};
-    for (auto* button : ptzButtons) button->setProperty("tankControlButton", true);
+    for (auto* button : ptzButtons) {
+        button->setProperty("tankControlButton", true);
+        button->setProperty("tankGroup", "ptz");
+    }
     ptzGrid->addWidget(btnTiltUp, 0, 1);
     ptzGrid->addWidget(btnPanLeft, 1, 0);
     ptzGrid->addWidget(btnTiltDown, 1, 1);
@@ -1195,8 +1617,8 @@ void MainWindow::buildResponsiveLayout()
     if (m_primaryNavList) detailLayout->addWidget(m_primaryNavList, 1);
     if (groupWard) {
         groupWard->setTitle(QString());
-        groupWard->setMinimumHeight(82);
-        groupWard->setMaximumHeight(94);
+        groupWard->setMinimumHeight(138);
+        groupWard->setMaximumHeight(156);
         detailLayout->addWidget(groupWard, 0);
     }
     m_robotStatusCard = new QFrame(paneDetailed);
@@ -1204,15 +1626,24 @@ void MainWindow::buildResponsiveLayout()
     auto* robotLayout = new QVBoxLayout(m_robotStatusCard);
     robotLayout->setContentsMargins(12, 12, 12, 12);
     robotLayout->setSpacing(8);
+    auto* robotHeaderRow = new QHBoxLayout();
+    robotHeaderRow->setContentsMargins(0, 0, 0, 0);
+    robotHeaderRow->setSpacing(8);
     auto* robotTitle = new QLabel("Tank Status", m_robotStatusCard);
     robotTitle->setProperty("robotTitle", true);
-    robotLayout->addWidget(robotTitle);
+    auto* robotOpenLabel = new QLabel("OPEN >", m_robotStatusCard);
+    robotOpenLabel->setProperty("robotOpen", true);
+    robotHeaderRow->addWidget(robotTitle, 1);
+    robotHeaderRow->addWidget(robotOpenLabel, 0, Qt::AlignRight);
+    robotLayout->addLayout(robotHeaderRow);
     auto* connRow = new QHBoxLayout();
     auto* connLabel = new QLabel("Connection", m_robotStatusCard);
     connLabel->setProperty("robotLabel", true);
+    connLabel->setFixedWidth(66);
     m_robotConnLabel = new QLabel("OFFLINE", m_robotStatusCard);
     m_robotConnLabel->setProperty("robotValue", true);
     m_robotConnLabel->setProperty("robotConn", "offline");
+    m_robotConnLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     connRow->addWidget(connLabel);
     connRow->addStretch();
     connRow->addWidget(m_robotConnLabel);
@@ -1220,8 +1651,10 @@ void MainWindow::buildResponsiveLayout()
     auto* modeRow = new QHBoxLayout();
     auto* modeLabel = new QLabel("Mode", m_robotStatusCard);
     modeLabel->setProperty("robotLabel", true);
+    modeLabel->setFixedWidth(66);
     m_robotModeLabel = new QLabel("-", m_robotStatusCard);
     m_robotModeLabel->setProperty("robotValue", true);
+    m_robotModeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     modeRow->addWidget(modeLabel);
     modeRow->addStretch();
     modeRow->addWidget(m_robotModeLabel);
@@ -1229,8 +1662,10 @@ void MainWindow::buildResponsiveLayout()
     auto* missionRow = new QHBoxLayout();
     auto* missionLabel = new QLabel("Mission", m_robotStatusCard);
     missionLabel->setProperty("robotLabel", true);
+    missionLabel->setFixedWidth(66);
     m_robotMissionLabel = new QLabel("-", m_robotStatusCard);
     m_robotMissionLabel->setProperty("robotValue", true);
+    m_robotMissionLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     missionRow->addWidget(missionLabel);
     missionRow->addStretch();
     missionRow->addWidget(m_robotMissionLabel);
@@ -1238,8 +1673,10 @@ void MainWindow::buildResponsiveLayout()
     auto* poseRow = new QHBoxLayout();
     auto* poseLabel = new QLabel("Pose", m_robotStatusCard);
     poseLabel->setProperty("robotLabel", true);
+    poseLabel->setFixedWidth(66);
     m_robotPoseLabel = new QLabel("x - / y - / h -", m_robotStatusCard);
     m_robotPoseLabel->setProperty("robotValue", true);
+    m_robotPoseLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     poseRow->addWidget(poseLabel);
     poseRow->addStretch();
     poseRow->addWidget(m_robotPoseLabel);
@@ -1247,8 +1684,10 @@ void MainWindow::buildResponsiveLayout()
     auto* speedRow = new QHBoxLayout();
     auto* speedLabel = new QLabel("Speed", m_robotStatusCard);
     speedLabel->setProperty("robotLabel", true);
+    speedLabel->setFixedWidth(66);
     m_robotSpeedLabel = new QLabel("- m/s", m_robotStatusCard);
     m_robotSpeedLabel->setProperty("robotValue", true);
+    m_robotSpeedLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     speedRow->addWidget(speedLabel);
     speedRow->addStretch();
     speedRow->addWidget(m_robotSpeedLabel);
@@ -1256,8 +1695,10 @@ void MainWindow::buildResponsiveLayout()
     auto* batteryRow = new QHBoxLayout();
     auto* batteryLabel = new QLabel("Battery", m_robotStatusCard);
     batteryLabel->setProperty("robotLabel", true);
+    batteryLabel->setFixedWidth(66);
     m_robotBatteryValueLabel = new QLabel("0%", m_robotStatusCard);
     m_robotBatteryValueLabel->setProperty("robotValue", true);
+    m_robotBatteryValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     batteryRow->addWidget(batteryLabel);
     batteryRow->addStretch();
     batteryRow->addWidget(m_robotBatteryValueLabel);
@@ -1265,8 +1706,10 @@ void MainWindow::buildResponsiveLayout()
     auto* lastSeenRow = new QHBoxLayout();
     auto* lastSeenLabel = new QLabel("Last Seen", m_robotStatusCard);
     lastSeenLabel->setProperty("robotLabel", true);
+    lastSeenLabel->setFixedWidth(66);
     m_robotLastSeenLabel = new QLabel("-", m_robotStatusCard);
     m_robotLastSeenLabel->setProperty("robotValue", true);
+    m_robotLastSeenLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     lastSeenRow->addWidget(lastSeenLabel);
     lastSeenRow->addStretch();
     lastSeenRow->addWidget(m_robotLastSeenLabel);
@@ -1280,8 +1723,8 @@ void MainWindow::buildResponsiveLayout()
     m_robotStatusCard->setCursor(Qt::PointingHandCursor);
     m_robotStatusCard->setToolTip("Open robot dashboard");
     m_robotStatusCard->installEventFilter(this);
-    m_robotStatusCard->setMinimumHeight(170);
-    m_robotStatusCard->setMaximumHeight(220);
+    m_robotStatusCard->setMinimumHeight(164);
+    m_robotStatusCard->setMaximumHeight(210);
     detailLayout->addWidget(m_robotStatusCard, 0);
     applyShadow(groupCentral, QColor(25, 32, 52, 40));
     applyShadow(groupMsg, QColor(25, 32, 52, 35));
@@ -1296,20 +1739,68 @@ void MainWindow::buildResponsiveLayout()
 
     auto* msgLayout = new QVBoxLayout(groupMsg);
     msgLayout->setObjectName("verticalLayout_msg");
-    msgLayout->setContentsMargins(8, 8, 8, 8);
-    msgLayout->setSpacing(6);
-    if (ui->listEvent) msgLayout->addWidget(ui->listEvent, 1);
+    msgLayout->setContentsMargins(10, 10, 10, 10);
+    msgLayout->setSpacing(8);
+    if (ui->listEvent) {
+        ui->listEvent->setMinimumHeight(280);
+        msgLayout->addWidget(ui->listEvent, 1);
+    }
     if (ui->textMsgLog) {
-        ui->textMsgLog->setMinimumHeight(88);
-        ui->textMsgLog->setMaximumHeight(128);
+        ui->textMsgLog->setMinimumHeight(96);
+        ui->textMsgLog->setMaximumHeight(148);
         msgLayout->addWidget(ui->textMsgLog, 0);
     }
 
     if (groupWard) {
+        m_systemUsageCard = groupWard;
         auto* wardLayout = new QVBoxLayout(groupWard);
-        wardLayout->setContentsMargins(8, 8, 8, 8);
-        wardLayout->setSpacing(0);
-        if (ui->listWardCctv) wardLayout->addWidget(ui->listWardCctv, 1);
+        wardLayout->setContentsMargins(10, 10, 10, 10);
+        wardLayout->setSpacing(8);
+
+        auto* usageTitleRow = new QHBoxLayout();
+        usageTitleRow->setContentsMargins(0, 0, 0, 0);
+        usageTitleRow->setSpacing(6);
+        auto* usageTitle = new QLabel("System Usage", groupWard);
+        usageTitle->setProperty("robotTitle", true);
+        usageTitleRow->addWidget(usageTitle, 1, Qt::AlignVCenter);
+        wardLayout->addLayout(usageTitleRow);
+
+        auto* usageMetrics = new QHBoxLayout();
+        usageMetrics->setContentsMargins(0, 0, 0, 0);
+        usageMetrics->setSpacing(8);
+        const auto addUsageMetric = [groupWard, usageMetrics](const QString& label, QLabel** outLabel) {
+            auto* metricCard = new QFrame(groupWard);
+            metricCard->setProperty("statusMetricCard", true);
+            auto* metricLayout = new QVBoxLayout(metricCard);
+            metricLayout->setContentsMargins(10, 8, 10, 8);
+            metricLayout->setSpacing(2);
+            auto* metricLabel = new QLabel(label, metricCard);
+            metricLabel->setProperty("statusMetricLabel", true);
+            auto* metricValue = new QLabel("-", metricCard);
+            metricValue->setProperty("statusMetricValue", true);
+            metricLayout->addWidget(metricLabel);
+            metricLayout->addWidget(metricValue);
+            usageMetrics->addWidget(metricCard, 1);
+            if (outLabel) *outLabel = metricValue;
+        };
+        addUsageMetric("CPU", &m_systemCpuValueLabel);
+        addUsageMetric("MEM", &m_systemMemoryValueLabel);
+        addUsageMetric("GPU", &m_systemGpuValueLabel);
+        wardLayout->addLayout(usageMetrics);
+
+        if (ui->listWardCctv) {
+            ui->listWardCctv->hide();
+            wardLayout->addWidget(ui->listWardCctv, 0);
+        }
+        const auto usageChildren = groupWard->findChildren<QWidget*>();
+        for (QWidget* child : usageChildren) {
+            if (child && child != groupWard) {
+                child->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+            }
+        }
+        groupWard->setCursor(Qt::PointingHandCursor);
+        groupWard->setToolTip("Open system usage dashboard");
+        groupWard->installEventFilter(this);
     }
     if (tankCctv) tankCctv->hide();
     if (auto* patrolCctv = root->findChild<QGroupBox*>("patrolCctv")) {
@@ -1326,9 +1817,14 @@ void MainWindow::buildResponsiveLayout()
     auto* nameBar = new QWidget(root);
     nameBar->setObjectName("platformNameBar");
     nameBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    nameBar->setFixedHeight(34);
     auto* nameBarLayout = new QHBoxLayout(nameBar);
-    nameBarLayout->setContentsMargins(8, 4, 8, 4);
-    nameBarLayout->setSpacing(0);
+    nameBarLayout->setContentsMargins(10, 4, 10, 4);
+    nameBarLayout->setSpacing(8);
+    m_headerModeLabel = new QLabel("MAP", nameBar);
+    m_headerModeLabel->setProperty("headerMeta", true);
+    m_headerUserLabel = new QLabel("CTRL", nameBar);
+    m_headerUserLabel->setProperty("headerMeta", true);
     auto* platformLabel = new QLabel("Sentinel Fusion", nameBar);
     platformLabel->setObjectName("platformNameLabel");
     platformLabel->setAlignment(Qt::AlignCenter);
@@ -1336,7 +1832,16 @@ void MainWindow::buildResponsiveLayout()
     platformFont.setPointSize(12);
     platformFont.setBold(true);
     platformLabel->setFont(platformFont);
+    m_headerRcStatusLabel = new QLabel("RC WAIT", nameBar);
+    m_headerRcStatusLabel->setProperty("headerMeta", true);
+    m_headerRuviewStatusLabel = new QLabel("RUVIEW OFF", nameBar);
+    m_headerRuviewStatusLabel->setProperty("headerMeta", true);
+    m_headerRuviewStatusLabel->setProperty("accent", "status");
+    nameBarLayout->addWidget(m_headerModeLabel, 0, Qt::AlignVCenter);
+    nameBarLayout->addWidget(m_headerUserLabel, 0, Qt::AlignVCenter);
     nameBarLayout->addWidget(platformLabel, 1, Qt::AlignCenter);
+    nameBarLayout->addWidget(m_headerRcStatusLabel, 0, Qt::AlignVCenter);
+    nameBarLayout->addWidget(m_headerRuviewStatusLabel, 0, Qt::AlignVCenter);
 
     m_mainSplitter = new QSplitter(Qt::Horizontal, root);
     m_mainSplitter->setObjectName("mainSplitter");
@@ -1374,6 +1879,7 @@ void MainWindow::buildResponsiveLayout()
     applyMainSplitterDefaultSizes();
     updateCentralAspectRatio();
     updateSideVideoAspectRatios();
+    updateHeaderSummary();
 }
 
 void MainWindow::updatePrimaryModeControls()
@@ -1404,10 +1910,17 @@ void MainWindow::rebuildPrimaryNavList()
                                       const QString& badge, const QString& modeKey,
                                       bool selected, bool action) {
         if (!item) return;
-        auto* card = new QFrame(m_primaryNavList);
+        auto* outer = new QFrame(m_primaryNavList);
+        outer->setProperty("navGlow", true);
+        outer->setProperty("selected", selected);
+        auto* outerLayout = new QVBoxLayout(outer);
+        outerLayout->setContentsMargins(0, 0, 0, 0);
+        outerLayout->setSpacing(0);
+        auto* card = new QFrame(outer);
         card->setProperty("navItemFrame", true);
         card->setProperty("selected", selected);
         card->setProperty("action", action);
+        outerLayout->addWidget(card);
         auto* row = new QHBoxLayout(card);
         row->setContentsMargins(action ? 12 : 14, action ? 9 : 12, 14, action ? 9 : 12);
         row->setSpacing(12);
@@ -1458,7 +1971,7 @@ void MainWindow::rebuildPrimaryNavList()
             row->addWidget(badgeLabel, 0, Qt::AlignVCenter);
         }
 
-        m_primaryNavList->setItemWidget(item, card);
+        m_primaryNavList->setItemWidget(item, outer);
     };
 
     QFont modeFont = font();
@@ -1625,6 +2138,7 @@ void MainWindow::applyPrimaryViewMode(PrimaryViewMode mode)
     updateSideVideoAspectRatios();
     syncCentralOverlayGeometry();
     updateCentralLayerOrder();
+    updateHeaderSummary();
 
     QTimer::singleShot(0, this, [this]() {
         if (isMaximized() || isFullScreen()) return;
@@ -1652,6 +2166,34 @@ void MainWindow::applyPrimaryViewMode(PrimaryViewMode mode)
 
         if (changed) setGeometry(g);
     });
+}
+
+void MainWindow::updateHeaderSummary()
+{
+    const QString modeText =
+        (m_primaryViewMode == PrimaryViewMode::Map) ? "MAP" :
+        (m_primaryViewMode == PrimaryViewMode::Detection) ? "DETECT" :
+        (m_primaryViewMode == PrimaryViewMode::RuView) ? "RUVIEW" :
+        "TANK";
+    const QString roleText = (m_role == UserRole::Executive) ? "EXEC" : "CTRL";
+    QString userText = m_userId.isEmpty() ? roleText : m_userId.toUpper();
+    if (userText.size() > 12) userText = userText.left(12);
+    const QString robotText =
+        m_lastRobotStatusEvent.hasRobotStatus
+            ? QString("RC %1").arg(m_lastRobotStatusEvent.rcConnected ? "ONLINE" : "OFFLINE")
+            : QString("RC WAIT");
+    const QString ruviewText = m_ruviewUiEnabled ? "RUVIEW ON" : "RUVIEW OFF";
+    if (m_headerModeLabel) m_headerModeLabel->setText(modeText);
+    if (m_headerUserLabel) m_headerUserLabel->setText(QString("%1 | %2").arg(userText, roleText));
+    if (m_headerRcStatusLabel) {
+        m_headerRcStatusLabel->setText(robotText);
+        m_headerRcStatusLabel->setProperty("accent", m_lastRobotStatusEvent.rcConnected ? "status" : "danger");
+        m_headerRcStatusLabel->style()->unpolish(m_headerRcStatusLabel);
+        m_headerRcStatusLabel->style()->polish(m_headerRcStatusLabel);
+    }
+    if (m_headerRuviewStatusLabel) {
+        m_headerRuviewStatusLabel->setText(ruviewText);
+    }
 }
 
 void MainWindow::initCentralStreamMap()
@@ -1715,6 +2257,16 @@ void MainWindow::updateSystemUsageTree()
         else if (value >= 65.0) color = QColor("#f3c86b");
         item->setForeground(0, QBrush(color));
     };
+    const auto applyMetricLevel = [](QLabel* label, double value, const QString& text) {
+        if (!label) return;
+        label->setText(text);
+        QString level;
+        if (value >= 85.0) level = "danger";
+        else if (value >= 65.0) level = "warn";
+        label->setProperty("level", level);
+        label->style()->unpolish(label);
+        label->style()->polish(label);
+    };
 
 #ifdef Q_OS_WIN
     FILETIME idleTime{}, kernelTime{}, userTime{};
@@ -1737,6 +2289,7 @@ void MainWindow::updateSystemUsageTree()
                 appendUsageHistory(m_cpuUsageHistory, usage);
                 cpuText = QString("CPU  %1%").arg(usage, 0, 'f', 0);
                 applyUsageColor(m_cpuUsageItem, usage);
+                applyMetricLevel(m_systemCpuValueLabel, usage, QString("%1%").arg(usage, 0, 'f', 0));
             }
         }
 
@@ -1763,10 +2316,13 @@ void MainWindow::updateSystemUsageTree()
         m_currentMemoryUsage = static_cast<double>(mem.dwMemoryLoad);
         appendUsageHistory(m_memoryUsageHistory, m_currentMemoryUsage);
         applyUsageColor(m_memoryUsageItem, m_currentMemoryUsage);
+        applyMetricLevel(m_systemMemoryValueLabel, m_currentMemoryUsage, QString("%1%").arg(mem.dwMemoryLoad));
     }
 #else
     m_cpuUsageItem->setText(0, "CPU  -");
     m_memoryUsageItem->setText(0, "Memory  -");
+    applyMetricLevel(m_systemCpuValueLabel, 0.0, "-");
+    applyMetricLevel(m_systemMemoryValueLabel, 0.0, "-");
 #endif
 
     requestGpuUsageUpdate();
@@ -1785,6 +2341,7 @@ void MainWindow::requestGpuUsageUpdate()
 {
 #ifndef Q_OS_WIN
     if (m_gpuUsageItem) m_gpuUsageItem->setText(0, "GPU  -");
+    if (m_systemGpuValueLabel) m_systemGpuValueLabel->setText("-");
     return;
 #else
     if (!m_gpuUsageItem) return;
@@ -1807,6 +2364,15 @@ void MainWindow::requestGpuUsageUpdate()
                 if (value >= 85.0) color = QColor("#ff8d8d");
                 else if (value >= 65.0) color = QColor("#f3c86b");
                 m_gpuUsageItem->setForeground(0, QBrush(color));
+            }
+            if (m_systemGpuValueLabel) {
+                m_systemGpuValueLabel->setText(ok ? QString("%1%").arg(value, 0, 'f', 0) : "-");
+                QString level;
+                if (ok && value >= 85.0) level = "danger";
+                else if (ok && value >= 65.0) level = "warn";
+                m_systemGpuValueLabel->setProperty("level", level);
+                m_systemGpuValueLabel->style()->unpolish(m_systemGpuValueLabel);
+                m_systemGpuValueLabel->style()->polish(m_systemGpuValueLabel);
             }
             if (m_systemUsageWindow) {
                 m_systemUsageWindow->setUsageData(
@@ -2095,9 +2661,23 @@ void MainWindow::onOpenAllCctv()
     // AllCCTV???占쏀듃占?占?二쇱엯
     QMap<int, QString> rtsp;
     rtsp[1] = m_centralRtsp.value(1);
+    rtsp[2] = !m_tankPlayingUrl.trimmed().isEmpty()
+        ? m_tankPlayingUrl.trimmed()
+        : m_wardStreams.value("T1").rawRtsp.trimmed();
+    rtsp[3] = m_centralRtsp.value(1);
+    rtsp[4] = m_centralRtsp.value(1);
+    rtsp[5] = m_centralRtsp.value(1);
+    rtsp[6] = m_centralRtsp.value(1);
+    rtsp[7] = m_centralRtsp.value(1);
 
     QMap<int, QString> titles;
     titles[1] = "Center CH1";
+    titles[2] = "Tank CH1";
+    titles[3] = "Center CH1 Gray";
+    titles[4] = "Center CH1 Edge";
+    titles[5] = "Center CH1 Inverted";
+    titles[6] = "Center CH1 Zoom";
+    titles[7] = "Center CH1 Motion";
 
     m_allCctvWin->setStreams(rtsp, titles);
 
@@ -2143,9 +2723,11 @@ void MainWindow::setupRuViewInfoUi()
     card->setObjectName("ruviewInfoCard");
     card->setFrameShape(QFrame::StyledPanel);
     auto* cardLayout = new QVBoxLayout(card);
-    cardLayout->setContentsMargins(8, 6, 8, 6);
-    cardLayout->setSpacing(3);
+    cardLayout->setContentsMargins(10, 8, 10, 8);
+    cardLayout->setSpacing(4);
 
+    auto* eyebrow = new QLabel("RUVIEW SUMMARY", card);
+    eyebrow->setProperty("eventSectionEyebrow", true);
     m_ruviewStatusLabel = new QLabel("RuView Status: UI OFF", card);
     m_ruviewStateLabel = new QLabel("State: -", card);
     m_ruviewConfLabel = new QLabel("Confidence: -", card);
@@ -2155,6 +2737,7 @@ void MainWindow::setupRuViewInfoUi()
     m_ruviewConfLabel->setProperty("ruCardValue", true);
     m_ruviewNodesLabel->setProperty("ruCardValue", true);
 
+    cardLayout->addWidget(eyebrow);
     cardLayout->addWidget(m_ruviewStatusLabel);
     cardLayout->addWidget(m_ruviewStateLabel);
     cardLayout->addWidget(m_ruviewConfLabel);
@@ -2168,7 +2751,33 @@ void MainWindow::setupEventFilterUi()
     auto* msgLayout = findChild<QVBoxLayout*>("verticalLayout_msg");
     if (!msgLayout) return;
 
-    auto* searchRow = new QWidget(this);
+    auto* headerRow = new QWidget(this);
+    headerRow->setObjectName("eventHeaderRow");
+    auto* headerLayout = new QHBoxLayout(headerRow);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(8);
+    auto* headerTextCol = new QVBoxLayout();
+    headerTextCol->setContentsMargins(0, 0, 0, 0);
+    headerTextCol->setSpacing(1);
+    auto* headerEyebrow = new QLabel("LIVE FEED", headerRow);
+    headerEyebrow->setProperty("eventSectionEyebrow", true);
+    auto* headerTitle = new QLabel("Event Queue", headerRow);
+    headerTitle->setProperty("eventSectionTitle", true);
+    headerTextCol->addWidget(headerEyebrow);
+    headerTextCol->addWidget(headerTitle);
+    m_eventCountLabel = new QLabel("0", headerRow);
+    m_eventCountLabel->setObjectName("eventCountBadge");
+    headerLayout->addLayout(headerTextCol, 1);
+    headerLayout->addWidget(m_eventCountLabel, 0, Qt::AlignCenter);
+    msgLayout->insertWidget(1, headerRow);
+
+    auto* filterPanel = new QWidget(this);
+    filterPanel->setObjectName("eventFilterPanel");
+    auto* filterPanelLayout = new QVBoxLayout(filterPanel);
+    filterPanelLayout->setContentsMargins(10, 10, 10, 10);
+    filterPanelLayout->setSpacing(8);
+
+    auto* searchRow = new QWidget(filterPanel);
     auto* searchLayout = new QHBoxLayout(searchRow);
     searchLayout->setContentsMargins(0, 0, 0, 0);
     searchLayout->setSpacing(6);
@@ -2182,9 +2791,9 @@ void MainWindow::setupEventFilterUi()
     });
     searchLayout->addWidget(searchLabel);
     searchLayout->addWidget(m_eventSearchEdit, 1);
-    msgLayout->insertWidget(1, searchRow);
+    filterPanelLayout->addWidget(searchRow);
 
-    auto* row = new QWidget(this);
+    auto* row = new QWidget(filterPanel);
     auto* hl = new QHBoxLayout(row);
     hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(6);
@@ -2203,23 +2812,25 @@ void MainWindow::setupEventFilterUi()
 
     hl->addWidget(label);
     hl->addWidget(m_eventFilter, 1);
-    msgLayout->insertWidget(2, row);
+    filterPanelLayout->addWidget(row);
 
-    auto* controlsRow = new QWidget(this);
+    auto* controlsRow = new QWidget(filterPanel);
     auto* controlsLayout = new QHBoxLayout(controlsRow);
     controlsLayout->setContentsMargins(0, 0, 0, 0);
     controlsLayout->setSpacing(6);
     m_eventSortButton = new QPushButton("Newest", controlsRow);
     m_eventSortButton->setCheckable(true);
     m_eventSortButton->setChecked(true);
+    m_eventSortButton->setProperty("eventControl", "toggle");
     m_eventPauseButton = new QPushButton("Pause", controlsRow);
     m_eventPauseButton->setCheckable(true);
+    m_eventPauseButton->setProperty("eventControl", "secondary");
     m_eventClearButton = new QPushButton("Clear", controlsRow);
+    m_eventClearButton->setProperty("eventControl", "danger");
     m_autoClipPopupButton = new QPushButton("Auto Clip", controlsRow);
     m_autoClipPopupButton->setCheckable(true);
     m_autoClipPopupButton->setChecked(true);
-    m_eventCountLabel = new QLabel("0", controlsRow);
-    m_eventCountLabel->setObjectName("eventCountBadge");
+    m_autoClipPopupButton->setProperty("eventControl", "toggle");
     connect(m_eventPauseButton, &QPushButton::toggled, this, [this](bool on) {
         m_eventListPaused = on;
         if (m_eventPauseButton) m_eventPauseButton->setText(on ? "Paused" : "Pause");
@@ -2244,8 +2855,36 @@ void MainWindow::setupEventFilterUi()
     controlsLayout->addWidget(m_eventClearButton);
     controlsLayout->addWidget(m_autoClipPopupButton);
     controlsLayout->addStretch();
-    controlsLayout->addWidget(m_eventCountLabel);
-    msgLayout->insertWidget(3, controlsRow);
+    filterPanelLayout->addWidget(controlsRow);
+    msgLayout->insertWidget(2, filterPanel);
+
+    if (ui && ui->textMsgLog) {
+        auto* logToggle = new QToolButton(this);
+        logToggle->setObjectName("logToggleButton");
+        logToggle->setText("Show event log");
+        logToggle->setCheckable(true);
+        logToggle->setChecked(false);
+
+        auto* logContainer = new QWidget(this);
+        logContainer->setObjectName("eventLogContainer");
+        logContainer->setVisible(false);
+        auto* logLayout = new QVBoxLayout(logContainer);
+        logLayout->setContentsMargins(0, 0, 0, 0);
+        logLayout->setSpacing(6);
+        ui->textMsgLog->setVisible(false);
+        logLayout->addWidget(ui->textMsgLog);
+
+        connect(logToggle, &QToolButton::toggled, this, [this, logToggle, logContainer](bool on) {
+            logToggle->setText(on ? "Hide event log" : "Show event log");
+            logContainer->setVisible(on);
+            if (ui && ui->textMsgLog) {
+                ui->textMsgLog->setVisible(on);
+            }
+        });
+
+        msgLayout->addWidget(logToggle, 0, Qt::AlignRight);
+        msgLayout->addWidget(logContainer, 0);
+    }
 
     connect(m_eventFilter, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { saveUiSettings(); });
@@ -2320,6 +2959,87 @@ QString MainWindow::formatEventItemText(const QString& firstLine, const QString&
     return firstLine + "\n " + second;
 }
 
+QWidget* MainWindow::buildEventItemWidget(QListWidgetItem* item) const
+{
+    if (!item || !ui || !ui->listEvent) return nullptr;
+
+    const QString firstLine = item->data(Qt::UserRole + 12).toString();
+    const QString secondLine = item->data(Qt::UserRole + 13).toString();
+    const int duplicateCount = std::max(1, item->data(Qt::UserRole + 14).toInt());
+    const QString topic = item->data(Qt::UserRole + 3).toString();
+    const QString src = item->data(Qt::UserRole + 6).toString();
+    const QString utcShort = item->data(Qt::UserRole + 5).toString();
+    const bool hasClip = !item->data(Qt::UserRole + 1).toString().isEmpty();
+
+    QString severity = "normal";
+    const QColor foreground = item->foreground().color();
+    if (foreground.red() >= 220 && foreground.green() <= 130) severity = "danger";
+    else if (foreground.red() >= 210 && foreground.green() >= 120) severity = "warn";
+
+    auto* card = new QFrame(ui->listEvent);
+    card->setProperty("eventItemCard", true);
+    card->setProperty("severity", severity);
+
+    auto* root = new QHBoxLayout(card);
+    root->setContentsMargins(10, 8, 10, 8);
+    root->setSpacing(10);
+
+    auto* accent = new QFrame(card);
+    accent->setProperty("eventAccent", true);
+    accent->setStyleSheet(QString("background-color:%1;").arg(foreground.name()));
+    root->addWidget(accent);
+
+    auto* content = new QVBoxLayout();
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(4);
+
+    auto* topRow = new QHBoxLayout();
+    topRow->setContentsMargins(0, 0, 0, 0);
+    topRow->setSpacing(6);
+    auto* metaLabel = new QLabel(QString("%1  %2").arg(utcShort, src.toUpper()), card);
+    metaLabel->setProperty("eventMeta", true);
+    auto* badgeLabel = new QLabel(hasClip ? "CLIP" : topic.toUpper(), card);
+    badgeLabel->setProperty("eventBadge", true);
+    badgeLabel->setProperty("kind", severity);
+    topRow->addWidget(metaLabel, 0, Qt::AlignVCenter);
+    topRow->addStretch();
+    topRow->addWidget(badgeLabel, 0, Qt::AlignVCenter);
+
+    auto* titleLabel = new QLabel(firstLine, card);
+    titleLabel->setProperty("eventTitle", true);
+    titleLabel->setWordWrap(true);
+    auto* subtitleLabel = new QLabel(duplicateCount > 1
+                                         ? QString("%1  x%2").arg(secondLine).arg(duplicateCount)
+                                         : secondLine,
+                                     card);
+    subtitleLabel->setProperty("eventSubtitle", true);
+    subtitleLabel->setWordWrap(true);
+
+    content->addLayout(topRow);
+    content->addWidget(titleLabel);
+    content->addWidget(subtitleLabel);
+    root->addLayout(content, 1);
+
+    return card;
+}
+
+void MainWindow::refreshEventItemWidget(QListWidgetItem* item)
+{
+    if (!item || !ui || !ui->listEvent) return;
+    if (QWidget* existing = ui->listEvent->itemWidget(item)) {
+        existing->deleteLater();
+    }
+    if (QWidget* card = buildEventItemWidget(item)) {
+        card->ensurePolished();
+        card->adjustSize();
+        const QSize hint = card->sizeHint().expandedTo(QSize(0, 88));
+        item->setSizeHint(hint);
+        ui->listEvent->setItemWidget(item, card);
+    } else {
+        item->setSizeHint(QSize(0, 88));
+    }
+}
+
 bool MainWindow::tryMergeDuplicateEvent(const QString& dedupKey,
                                         const QString& firstLine,
                                         const QString& secondLine,
@@ -2353,11 +3073,13 @@ bool MainWindow::tryMergeDuplicateEvent(const QString& dedupKey,
         item->setData(Qt::UserRole + 14, nextCount);
         item->setText(formatEventItemText(firstLine, secondLine, nextCount));
         item->setForeground(QBrush(color));
+        refreshEventItemWidget(item);
         item->setHidden(!shouldShowEventItem(item));
 
         if (m_eventAutoSortEnabled && i > 0) {
             auto* moved = ui->listEvent->takeItem(i);
             ui->listEvent->insertItem(0, moved);
+            refreshEventItemWidget(moved);
         }
         return true;
     }
@@ -2755,6 +3477,7 @@ void MainWindow::updateStatusBarText()
     if (m_ruviewStateLabel) m_ruviewStateLabel->setText(cardState);
     if (m_ruviewConfLabel) m_ruviewConfLabel->setText(cardConf);
     if (m_ruviewNodesLabel) m_ruviewNodesLabel->setText(cardNodes);
+    updateHeaderSummary();
 
     statusBar()->showMessage(m_statusBaseText + " | " + ruviewText);
 }
@@ -2762,7 +3485,8 @@ void MainWindow::updateStatusBarText()
 // ------------- MQTT service ------------------
 void MainWindow::onMqttLogLine(const QString& s)
 {
-    Q_UNUSED(s);
+    if (s.trimmed().isEmpty()) return;
+    appendLog(s);
 }
 
 void MainWindow::onMqttEvent(const MqttEvent& ev)
@@ -2790,6 +3514,12 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         const int battery = static_cast<int>(std::clamp(ev.rcBattery, 0.0, 100.0));
         if (m_robotBatteryValueLabel) {
             m_robotBatteryValueLabel->setText(QString("%1%").arg(battery));
+            QString level;
+            if (battery <= 20) level = "danger";
+            else if (battery <= 45) level = "warn";
+            m_robotBatteryValueLabel->setProperty("level", level);
+            m_robotBatteryValueLabel->style()->unpolish(m_robotBatteryValueLabel);
+            m_robotBatteryValueLabel->style()->polish(m_robotBatteryValueLabel);
         }
         if (m_robotLastSeenLabel) {
             m_robotLastSeenLabel->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
@@ -2816,11 +3546,16 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         m_recentCctvZoneSeenUtc.insert(normalizedZone, QDateTime::currentDateTimeUtc());
     }
 
+    const bool isHumanDetectionEvent =
+        ev.src.compare("cctv", Qt::CaseInsensitive) == 0 &&
+        ev.topic.compare("ObjectDetection", Qt::CaseInsensitive) == 0 &&
+        ev.objectType.compare("Human", Qt::CaseInsensitive) == 0;
+    if (isHumanDetectionEvent && !m_humanBoxEnabled) {
+        return;
+    }
+
     if (m_humanBoxOverlay) {
-        const bool isHumanBoxEvent =
-            ev.src.compare("cctv", Qt::CaseInsensitive) == 0 &&
-            ev.topic.compare("ObjectDetection", Qt::CaseInsensitive) == 0 &&
-            ev.objectType.compare("Human", Qt::CaseInsensitive) == 0;
+        const bool isHumanBoxEvent = isHumanDetectionEvent;
 
         if (isHumanBoxEvent) {
             const QDateTime now = QDateTime::currentDateTimeUtc();
@@ -2834,17 +3569,37 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
                       .arg(ev.bbox.bottom());
 
             if (ev.state && ev.bbox.isValid()) {
-                const int srcW = std::max(m_humanBoxSourceSize.width(), ev.bbox.right() + 1);
-                const int srcH = std::max(m_humanBoxSourceSize.height(), ev.bbox.bottom() + 1);
-                const QSize nextSourceSize(srcW, srcH);
+                const QSize minBounds(ev.bbox.right() + 1, ev.bbox.bottom() + 1);
+                QSize videoFrameSize;
+                if (ui && ui->labelCentralView) {
+                    videoFrameSize = ui->labelCentralView->currentFrameSize();
+                }
+                const QSize explicitSourceSize(ev.frameW, ev.frameH);
+                const QSize nextSourceSize =
+                    chooseDetectionSourceSize(minBounds, explicitSourceSize, videoFrameSize, m_humanBoxSourceSize);
                 if (nextSourceSize != m_humanBoxSourceSize) {
                     m_humanBoxSourceSize = nextSourceSize;
                     m_humanBoxOverlay->setBoxSourceSize(m_humanBoxSourceSize);
                 }
-                m_humanBoxes.insert(key, ev.bbox);
-                m_humanBoxSeenUtc.insert(key, now);
+                m_humanBoxOverlay->setBoxSourceOffset(QPointF(
+                    m_humanBoxSourceSize.width() * kHumanBoxOffsetXRatio,
+                    m_humanBoxSourceSize.height() * kHumanBoxOffsetYRatio));
+                m_humanBoxOverlay->setBoxPerspectiveOffset(QPointF(
+                    m_humanBoxSourceSize.width() * kHumanBoxPerspectiveOffsetXRatio,
+                    0.0));
+                if (shouldAcceptHumanBox(ev, m_humanBoxSourceSize)) {
+                    const QRect nextBox = smoothHumanBox(m_humanBoxSmoothed.value(key), ev.bbox);
+                    m_humanBoxSmoothed.insert(key, QRectF(nextBox));
+                    m_humanBoxes.insert(key, nextBox);
+                    m_humanBoxSeenUtc.insert(key, now);
+                } else {
+                    m_humanBoxes.remove(key);
+                    m_humanBoxSmoothed.remove(key);
+                    m_humanBoxSeenUtc.remove(key);
+                }
             } else {
                 m_humanBoxes.remove(key);
+                m_humanBoxSmoothed.remove(key);
                 m_humanBoxSeenUtc.remove(key);
             }
 
@@ -2855,6 +3610,7 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
             for (const QString& staleKey : staleKeys) {
                 m_humanBoxSeenUtc.remove(staleKey);
                 m_humanBoxes.remove(staleKey);
+                m_humanBoxSmoothed.remove(staleKey);
             }
 
             QVector<QPair<QDateTime, QString>> recentKeys;
@@ -2879,6 +3635,18 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
                 !m_humanBoxEnabled ||
                 boxes.isEmpty();
             if (shouldRenderNow) {
+                if (ui && ui->labelCentralView) {
+                    QSize sourceSize = ui->labelCentralView->currentFrameSize();
+                    if (!sourceSize.isValid() ||
+                        sourceSize.width() < m_humanBoxSourceSize.width() ||
+                        sourceSize.height() < m_humanBoxSourceSize.height()) {
+                        sourceSize = m_humanBoxSourceSize;
+                    }
+                    m_humanBoxOverlay->setVideoGeometry(
+                        ui->labelCentralView->videoDisplayRect(),
+                        sourceSize
+                    );
+                }
                 m_humanBoxOverlay->setHumanBoxes(boxes, m_humanBoxEnabled && !boxes.isEmpty());
                 m_lastHumanBoxRenderUtc = now;
             }
@@ -2907,10 +3675,6 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
     const bool isIvaAreaEvent =
         ev.src.compare("cctv", Qt::CaseInsensitive) == 0 &&
         ev.topic.compare("IvaArea", Qt::CaseInsensitive) == 0;
-    const bool isHumanDetectionEvent =
-        ev.src.compare("cctv", Qt::CaseInsensitive) == 0 &&
-        ev.topic.compare("ObjectDetection", Qt::CaseInsensitive) == 0 &&
-        ev.objectType.compare("Human", Qt::CaseInsensitive) == 0;
     if (!ev.state && !ruview && !(isIvaAreaEvent && !ev.clipUrl.isEmpty())) return;
 
     if (ruview) {
@@ -2927,7 +3691,6 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
     }
 
     if (isHumanDetectionEvent) {
-        if (!m_humanBoxEnabled) return;
         const QDateTime now = QDateTime::currentDateTimeUtc();
         if (m_lastHumanEventListUtc.isValid() &&
             m_lastHumanEventListUtc.msecsTo(now) < kHumanEventListThrottleMs) {
@@ -2974,10 +3737,11 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         ? ev.sensorId
         : (!ev.zone.isEmpty() && ruview ? displayRuviewZoneLabel(ev.zone)
                                         : (!ev.zone.isEmpty() ? ev.zone : ev.cam));
-    const QString clipMarker = ev.clipUrl.isEmpty() ? QString() : QStringLiteral("[clip] ");
-    QString firstLine = QString("%1[ %2 | %3 | %4 ]").arg(clipMarker, utcShort, locationLabel, srcLabel);
+    const QString firstLine = locationLabel.isEmpty()
+        ? ev.topic
+        : QString("%1  %2").arg(ev.topic, locationLabel);
     QStringList second;
-    second << ev.topic;
+    second << srcLabel;
     if (!ev.sensorId.isEmpty() && !ruview) second << ev.sensorId;
     if (!ev.rule.isEmpty())   second << ev.rule;
     if (!ev.action.isEmpty()) second << ev.action;
@@ -3027,8 +3791,10 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         lw->setData(Qt::UserRole + 13, secondLine);
         lw->setData(Qt::UserRole + 14, 1);
         lw->setForeground(QBrush(itemColor));
+        lw->setText(formatEventItemText(firstLine, secondLine, 1));
         if (m_eventAutoSortEnabled) ui->listEvent->insertItem(0, lw);
         else ui->listEvent->addItem(lw);
+        refreshEventItemWidget(lw);
         lw->setHidden(!shouldShowEventItem(lw));
         updateEventCountBadge();
         if (m_eventAutoSortEnabled) ui->listEvent->scrollToTop();

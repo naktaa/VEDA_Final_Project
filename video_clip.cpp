@@ -1,4 +1,6 @@
 #include "video_clip.h"
+#include "TitleBarWidget.h"
+#include "FramelessHelper.h"
 
 #include <QLabel>
 #include <QPushButton>
@@ -19,12 +21,34 @@
 
 #include <QFile>
 #include <QDateTime>
+#include <algorithm>
+#include <QEvent>
+#include <QIcon>
+#include <QSize>
+#include <QTimer>
+
+namespace {
+constexpr int kMediaButtonSize = 36;
+constexpr int kMediaIconSize = 20;
+
+void applyPlaybackButtonState(QPushButton* button, bool isPlaying)
+{
+    if (!button) return;
+
+    const QIcon icon(isPlaying ? QStringLiteral(":/image/stop.png")
+                               : QStringLiteral(":/image/play.png"));
+    button->setIcon(icon);
+    button->setText(icon.isNull() ? (isPlaying ? QStringLiteral("Stop")
+                                               : QStringLiteral("Play"))
+                                  : QString());
+}
+}
 
 VideoClipWindow::VideoClipWindow(QWidget* parent)
     : QWidget(parent)
 {
     // 독립 창처럼 띄우기
-    setWindowFlags(Qt::Window);
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     resize(960, 540);
 
     buildUi();
@@ -53,13 +77,25 @@ VideoClipWindow::~VideoClipWindow()
 
 void VideoClipWindow::buildUi()
 {
+    m_titleBar = new TitleBarWidget(this);
+    m_titleBar->setTitleText("Clip Player");
     m_titleLabel = new QLabel("Clip Player", this);
     m_titleLabel->setStyleSheet("font-weight: 600;");
 
     m_video = new QVideoWidget(this);
 
-    m_btnPlayPause = new QPushButton("Play", this);
-    m_btnStop = new QPushButton("Stop", this);
+    m_btnPlayPause = new QPushButton(this);
+    for (QPushButton* button : {m_btnPlayPause}) {
+        button->setFlat(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setIconSize(QSize(kMediaIconSize, kMediaIconSize));
+        button->setFixedSize(kMediaButtonSize, kMediaButtonSize);
+        button->setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 0px; border-radius: 8px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.10); }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.16); }");
+    }
+    applyPlaybackButtonState(m_btnPlayPause, false);
 
     m_slider = new QSlider(Qt::Horizontal, this);
     m_slider->setRange(0, 0);
@@ -70,7 +106,6 @@ void VideoClipWindow::buildUi()
     m_btnClose = new QPushButton("Close", this);
 
     connect(m_btnPlayPause, &QPushButton::clicked, this, &VideoClipWindow::onPlayPause);
-    connect(m_btnStop, &QPushButton::clicked, this, &VideoClipWindow::onStop);
     connect(m_btnDownload, &QPushButton::clicked, this, &VideoClipWindow::onDownload);
     connect(m_btnClose, &QPushButton::clicked, this, &VideoClipWindow::onClose);
 
@@ -84,7 +119,6 @@ void VideoClipWindow::buildUi()
 
     auto* controls = new QHBoxLayout();
     controls->addWidget(m_btnPlayPause);
-    controls->addWidget(m_btnStop);
     controls->addWidget(m_slider, 1);
     controls->addWidget(m_timeLabel);
     controls->addSpacing(8);
@@ -93,10 +127,56 @@ void VideoClipWindow::buildUi()
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(10, 10, 10, 10);
+    root->addWidget(m_titleBar);
     root->addLayout(top);
     root->addWidget(m_video, 1);
     root->addLayout(controls);
     setLayout(root);
+    setStyleSheet("background-color:#171924;");
+
+    connect(m_titleBar, &TitleBarWidget::minimizeRequested, this, &QWidget::showMinimized);
+    connect(m_titleBar, &TitleBarWidget::maximizeRequested, this, [this]() {
+        if (!isMaximized()) m_normalGeometry = geometry();
+        showMaximized();
+        if (m_titleBar) m_titleBar->setMaximized(true);
+        syncWindowLayout();
+    });
+    connect(m_titleBar, &TitleBarWidget::restoreRequested, this, [this]() {
+        showNormal();
+        if (m_normalGeometry.isValid()) setGeometry(m_normalGeometry);
+        if (m_titleBar) m_titleBar->setMaximized(false);
+        syncWindowLayout();
+    });
+    connect(m_titleBar, &TitleBarWidget::closeRequested, this, [this]() {
+        if (m_player) m_player->stop();
+        close();
+    });
+}
+
+void VideoClipWindow::syncWindowLayout()
+{
+    if (layout()) {
+        layout()->invalidate();
+        layout()->activate();
+    }
+    if (m_video) {
+        m_video->updateGeometry();
+        m_video->update();
+    }
+    updateGeometry();
+    update();
+    QTimer::singleShot(0, this, [this]() {
+        if (layout()) {
+            layout()->invalidate();
+            layout()->activate();
+        }
+        if (m_video) {
+            m_video->updateGeometry();
+            m_video->update();
+        }
+        updateGeometry();
+        update();
+    });
 }
 
 QUrl VideoClipWindow::chooseUrlByRole(UserRole role, const QUrl& privacyUrl, const QUrl& rawUrl) const
@@ -130,6 +210,7 @@ void VideoClipWindow::openClip(const QString& title,
     }
 
     m_titleLabel->setText(m_title);
+    if (m_titleBar) m_titleBar->setTitleText(m_title);
     setWindowTitle(m_title);
 
     loadAndPlay(m_currentUrl);
@@ -155,7 +236,7 @@ void VideoClipWindow::loadAndPlay(const QUrl& url)
     m_player->setSource(url);
     m_player->play();
 
-    m_btnPlayPause->setText("Pause");
+    applyPlaybackButtonState(m_btnPlayPause, true);
 }
 
 void VideoClipWindow::onPlayPause()
@@ -164,10 +245,10 @@ void VideoClipWindow::onPlayPause()
 
     if (m_player->playbackState() == QMediaPlayer::PlayingState) {
         m_player->pause();
-        m_btnPlayPause->setText("Play");
+        applyPlaybackButtonState(m_btnPlayPause, false);
     } else {
         m_player->play();
-        m_btnPlayPause->setText("Pause");
+        applyPlaybackButtonState(m_btnPlayPause, true);
     }
 }
 
@@ -175,7 +256,7 @@ void VideoClipWindow::onStop()
 {
     if (!m_player) return;
     m_player->stop();
-    m_btnPlayPause->setText("Play");
+    applyPlaybackButtonState(m_btnPlayPause, false);
 }
 
 void VideoClipWindow::onClose()
@@ -358,4 +439,24 @@ void VideoClipWindow::onDownloadProgress(qint64 received, qint64 total)
 
     int percent = static_cast<int>((received * 100) / total);
     m_progress->setValue(percent);
+}
+
+bool VideoClipWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+{
+    if (FramelessHelper::handleNativeEvent(this, m_titleBar, eventType, message, result)) {
+        return true;
+    }
+    return QWidget::nativeEvent(eventType, message, result);
+}
+
+void VideoClipWindow::changeEvent(QEvent* event)
+{
+    if (event && event->type() == QEvent::WindowStateChange) {
+        if (!isMaximized() && isVisible()) {
+            m_normalGeometry = geometry();
+        }
+        if (m_titleBar) m_titleBar->setMaximized(isMaximized());
+        syncWindowLayout();
+    }
+    QWidget::changeEvent(event);
 }

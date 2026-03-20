@@ -16,11 +16,34 @@ class GstVideoWidget : public QWidget
 {
     Q_OBJECT
 public:
+    enum class StreamProfile {
+        Standard,
+        RcTankLowLatency
+    };
+
+    enum class DisplayMode {
+        Normal,
+        Grayscale,
+        HighContrast,
+        EdgeEnhanced,
+        Inverted,
+        ZoomCrop,
+        MotionHighlight
+    };
+
     explicit GstVideoWidget(QWidget *parent = nullptr);
     ~GstVideoWidget();
 
     void startStream(const QString &url);
     void stopStream();
+    void setGrayscaleEnabled(bool enabled);
+    bool isGrayscaleEnabled() const;
+    void setDisplayMode(DisplayMode mode);
+    DisplayMode displayMode() const;
+    void setStreamProfile(StreamProfile profile);
+    StreamProfile streamProfile() const;
+    void setPreferredOutputWidth(int width);
+    int preferredOutputWidth() const;
 
     // 디지털 줌
     void setDigitalZoom(double zoom, double cx = 0.5, double cy = 0.5);
@@ -48,6 +71,7 @@ private:
 
     // 프레임 저장
     QImage m_frame;
+    QImage m_prevFrame;
     mutable QMutex m_frameMtx;
     QTimer *m_pullTimer = nullptr;
 
@@ -59,6 +83,9 @@ private:
     double m_zoom = 1.0;
     double m_cx = 0.5;
     double m_cy = 0.5;
+    StreamProfile m_streamProfile = StreamProfile::Standard;
+    DisplayMode m_displayMode = DisplayMode::Normal;
+    int m_preferredOutputWidth = 1280;
 };
 
 #endif // GSTVIDEOWIDGET_H

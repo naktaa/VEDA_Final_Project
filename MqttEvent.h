@@ -20,6 +20,8 @@ struct MqttEvent {
     QString objectType;
     QString sensorId;
     QRect   bbox;
+    int     frameW = 0;
+    int     frameH = 0;
     bool    state = false;
     QString rawState;
     bool    enabled = false;

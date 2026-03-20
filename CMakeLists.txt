@@ -125,6 +125,9 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         MqttPublisher.cpp
 
         image/ui_background.jpg
+        image/next10.png image/play.png
+        image/back10.png
+        image/stop.png
     )
 else()
     add_executable(main_window ${PROJECT_SOURCES})

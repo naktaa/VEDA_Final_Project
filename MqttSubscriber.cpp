@@ -1,13 +1,38 @@
 #include "MqttSubscriber.h"
 
+#include <cmath>
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QUuid>
 
 namespace {
+int parseFirstPositiveInt(const QJsonObject& object, std::initializer_list<const char*> keys)
+{
+    for (const char* key : keys) {
+        const QJsonValue value = object.value(QLatin1String(key));
+        if (value.isUndefined() || value.isNull()) continue;
+
+        bool ok = false;
+        int parsed = 0;
+        if (value.isDouble()) {
+            parsed = static_cast<int>(std::round(value.toDouble()));
+            ok = parsed > 0;
+        } else {
+            parsed = value.toString().trimmed().toInt(&ok);
+            ok = ok && parsed > 0;
+        }
+
+        if (ok) return parsed;
+    }
+
+    return 0;
+}
+
 double parseTimestampToSeconds(const QJsonValue& value)
 {
     if (value.isDouble()) return value.toDouble();
@@ -36,6 +61,71 @@ QRect parsePoseBbox(const QJsonValue& value)
         static_cast<int>(bbox.at(2).toDouble()),
         static_cast<int>(bbox.at(3).toDouble())
     );
+}
+
+QRect chooseBestBboxRect(const QRect& cornersRect, const QRect& sizeRect, const QSize& frameSize)
+{
+    const auto fitsFrame = [&frameSize](const QRect& rect) {
+        if (!rect.isValid()) return false;
+        if (!frameSize.isValid()) return true;
+        return rect.left() >= 0 &&
+               rect.top() >= 0 &&
+               rect.right() < frameSize.width() &&
+               rect.bottom() < frameSize.height();
+    };
+
+    const bool cornersFit = fitsFrame(cornersRect);
+    const bool sizeFit = fitsFrame(sizeRect);
+
+    if (cornersFit && !sizeFit) return cornersRect;
+    if (sizeFit && !cornersFit) return sizeRect;
+    if (cornersFit && sizeFit) return cornersRect;
+    if (cornersRect.isValid()) return cornersRect;
+    return sizeRect;
+}
+
+QRect parseGenericBbox(const QJsonValue& value, const QSize& frameSize = {})
+{
+    if (value.isArray()) {
+        const QJsonArray bbox = value.toArray();
+        if (bbox.size() != 4) return {};
+
+        const int a = static_cast<int>(bbox.at(0).toDouble());
+        const int b = static_cast<int>(bbox.at(1).toDouble());
+        const int c = static_cast<int>(bbox.at(2).toDouble());
+        const int d = static_cast<int>(bbox.at(3).toDouble());
+
+        const QRect cornersRect = QRect(QPoint(a, b), QPoint(c, d)).normalized();
+        const QRect sizeRect = QRect(a, b, c, d).normalized();
+
+        if (c > a && d > b) {
+            return chooseBestBboxRect(cornersRect, sizeRect, frameSize);
+        }
+
+        return sizeRect;
+    }
+
+    if (value.isObject()) {
+        const QJsonObject o = value.toObject();
+        if (o.contains("left") && o.contains("top") && o.contains("right") && o.contains("bottom")) {
+            return QRect(QPoint(o.value("left").toInt(), o.value("top").toInt()),
+                         QPoint(o.value("right").toInt(), o.value("bottom").toInt())).normalized();
+        }
+        if (o.contains("x") && o.contains("y") && o.contains("w") && o.contains("h")) {
+            return QRect(o.value("x").toInt(),
+                         o.value("y").toInt(),
+                         o.value("w").toInt(),
+                         o.value("h").toInt()).normalized();
+        }
+        if (o.contains("x") && o.contains("y") && o.contains("width") && o.contains("height")) {
+            return QRect(o.value("x").toInt(),
+                         o.value("y").toInt(),
+                         o.value("width").toInt(),
+                         o.value("height").toInt()).normalized();
+        }
+    }
+
+    return {};
 }
 
 void parsePoseKeypointMap(const QJsonObject& kpObject, PosePerson& person)
@@ -162,14 +252,21 @@ void MqttSubscriber::stop() {
     if (mosq_) {
         mosquitto_destroy(mosq_);
         mosq_ = nullptr;
-        mosquitto_lib_cleanup();
     }
+}
+
+void MqttSubscriber::setHumanDetectionEnabled(bool enabled)
+{
+    humanDetectionEnabled_.store(enabled, std::memory_order_relaxed);
 }
 
 void MqttSubscriber::worker() {
     mosquitto_lib_init();
 
-    mosq_ = mosquitto_new("qt-mqtt-subscriber", true, this);
+    const QString clientId = QString("qt-mqtt-subscriber-%1-%2")
+                                 .arg(QCoreApplication::applicationPid())
+                                 .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    mosq_ = mosquitto_new(clientId.toStdString().c_str(), true, this);
     if (!mosq_) {
         emit logLine("mosquitto_new failed");
         return;
@@ -195,7 +292,16 @@ void MqttSubscriber::worker() {
         rc = mosquitto_loop(mosq_, 100, 1);
         if (rc != MOSQ_ERR_SUCCESS) {
             emit logLine(QString("loop error rc=%1 -> reconnect").arg(rc));
-            mosquitto_reconnect(mosq_);
+            const int reconnectRc = mosquitto_reconnect(mosq_);
+            if (reconnectRc == MOSQ_ERR_SUCCESS) {
+                const int subscribeRc = mosquitto_subscribe(mosq_, nullptr, topic_.toStdString().c_str(), 0);
+                emit logLine(QString("reconnect ok rc=%1, resubscribe rc=%2 topic=%3")
+                                 .arg(reconnectRc)
+                                 .arg(subscribeRc)
+                                 .arg(topic_));
+            } else {
+                emit logLine(QString("reconnect failed rc=%1").arg(reconnectRc));
+            }
         }
     }
 }
@@ -342,8 +448,18 @@ void MqttSubscriber::handleMessage(const QString& mqttTopic, const QByteArray& p
     ev.objectId = o.value("objectId").toString();
     if (ev.objectId.isEmpty()) ev.objectId = o.value("object_id").toString();
     ev.objectType = o.value("objectType").toString();
+    if (ev.objectType.isEmpty()) ev.objectType = o.value("object_type").toString();
+    if (ev.objectType.isEmpty()) ev.objectType = o.value("label").toString();
+    if (ev.objectType.isEmpty()) ev.objectType = o.value("class").toString();
+    if (ev.topic.compare("ObjectDetection", Qt::CaseInsensitive) == 0 &&
+        ev.objectType.compare("Human", Qt::CaseInsensitive) == 0 &&
+        !humanDetectionEnabled_.load(std::memory_order_relaxed)) {
+        return;
+    }
     ev.sensorId = o.value("sensor_id").toString();
     if (ev.sensorId.isEmpty()) ev.sensorId = o.value("sensorId").toString();
+    ev.frameW = parseFirstPositiveInt(o, {"frame_w", "frameWidth", "source_w", "sourceWidth", "image_w", "imageWidth", "video_w", "videoWidth"});
+    ev.frameH = parseFirstPositiveInt(o, {"frame_h", "frameHeight", "source_h", "sourceHeight", "image_h", "imageHeight", "video_h", "videoHeight"});
     if (o.contains("bbox_left") && o.contains("bbox_top") &&
         o.contains("bbox_right") && o.contains("bbox_bottom")) {
         const int left = static_cast<int>(o.value("bbox_left").toDouble());
@@ -352,7 +468,21 @@ void MqttSubscriber::handleMessage(const QString& mqttTopic, const QByteArray& p
         const int bottom = static_cast<int>(o.value("bbox_bottom").toDouble());
         ev.bbox = QRect(QPoint(left, top), QPoint(right, bottom)).normalized();
     }
+    if (!ev.bbox.isValid()) {
+        ev.bbox = parseGenericBbox(o.value("bbox"), QSize(ev.frameW, ev.frameH));
+    }
+    if ((ev.frameW <= 0 || ev.frameH <= 0) && o.value("frame").isObject()) {
+        const QJsonObject frameObj = o.value("frame").toObject();
+        if (ev.frameW <= 0) {
+            ev.frameW = parseFirstPositiveInt(frameObj, {"w", "width", "frame_w", "source_w", "image_w"});
+        }
+        if (ev.frameH <= 0) {
+            ev.frameH = parseFirstPositiveInt(frameObj, {"h", "height", "frame_h", "source_h", "image_h"});
+        }
+    }
     ev.confidence = o.value("confidence").toDouble(0.0);
+    if (ev.confidence <= 0.0) ev.confidence = o.value("score").toDouble(0.0);
+    if (ev.confidence <= 0.0) ev.confidence = o.value("prob").toDouble(0.0);
 
     const QJsonValue stateV = o.value("state");
     if (stateV.isObject()) {
@@ -378,6 +508,10 @@ void MqttSubscriber::handleMessage(const QString& mqttTopic, const QByteArray& p
     if (!o.contains("state")) {
         if (o.contains("person_detected")) {
             ev.state = o.value("person_detected").toBool(false);
+        } else if (o.contains("detected")) {
+            ev.state = o.value("detected").toBool(false);
+        } else if (o.contains("present")) {
+            ev.state = o.value("present").toBool(false);
         }
     }
 

@@ -314,6 +314,30 @@ void AllCctvWindow::bindUiObjects()
         title->setStyleSheet("color:#edf8ff; font-weight:700; background:#1b2435; padding:6px 10px; border-top-left-radius:7px; border-top-right-radius:7px; border-bottom:1px solid #2a3954;");
 
         video->setStyleSheet("background:black;");
+        video->setPreferredOutputWidth(640);
+        video->setDisplayMode(i == 3 ? GstVideoWidget::DisplayMode::Grayscale
+                                     : (i == 4 ? GstVideoWidget::DisplayMode::EdgeEnhanced
+                                               : (i == 5 ? GstVideoWidget::DisplayMode::Inverted
+                                                         : (i == 6 ? GstVideoWidget::DisplayMode::ZoomCrop
+                                                                   : (i == 7 ? GstVideoWidget::DisplayMode::MotionHighlight
+                                                                             : GstVideoWidget::DisplayMode::Normal)))));
+        auto* placeholder = new QLabel(video);
+        placeholder->setObjectName("lowCostPlaceholder");
+        placeholder->setAlignment(Qt::AlignCenter);
+        placeholder->setWordWrap(true);
+        placeholder->setAttribute(Qt::WA_TransparentForMouseEvents);
+        placeholder->setGeometry(20, 20, qMax(120, video->width() - 40), qMax(72, video->height() - 40));
+        placeholder->setStyleSheet(
+            "QLabel {"
+            " color: rgba(225,236,255,0.92);"
+            " background: rgba(9,14,23,0.72);"
+            " border: 1px dashed rgba(115,146,193,0.5);"
+            " border-radius: 10px;"
+            " padding: 10px 12px;"
+            " font-size: 12px;"
+            " font-weight: 600;"
+            "}");
+        placeholder->hide();
         // video->installEventFilter(this);
         frame->installEventFilter(this);
         title->installEventFilter(this);
@@ -464,6 +488,14 @@ void AllCctvWindow::setStreams(const QMap<int, QString>& rtspByTile,
     for (int i = 1; i <= 16; ++i) {
         if (m_titleLabels[i - 1])
             m_titleLabels[i - 1]->setText(m_titles.value(i, QString("CCTV %1").arg(i)));
+        if (m_videoWidgets[i - 1])
+            m_videoWidgets[i - 1]->setDisplayMode(
+                i == 3 ? GstVideoWidget::DisplayMode::Grayscale
+                       : (i == 4 ? GstVideoWidget::DisplayMode::EdgeEnhanced
+                                 : (i == 5 ? GstVideoWidget::DisplayMode::Inverted
+                                           : (i == 6 ? GstVideoWidget::DisplayMode::ZoomCrop
+                                                     : (i == 7 ? GstVideoWidget::DisplayMode::MotionHighlight
+                                                               : GstVideoWidget::DisplayMode::Normal)))));
     }
 
     // show ?�에??stop�??�고, showEvent?�서 start
@@ -483,10 +515,22 @@ void AllCctvWindow::restartStreamsByVisibility()
     for (int i = playCount + 1; i <= 16; ++i) {
         auto* w = m_videoWidgets[i - 1];
         if (!w) continue;
+        auto* placeholder = w->findChild<QLabel*>("lowCostPlaceholder", Qt::FindDirectChildrenOnly);
 
         if (!m_playingUrl[i - 1].isEmpty()) {
             w->stopStream();
             m_playingUrl[i - 1].clear();
+        }
+        if (placeholder) {
+            placeholder->setGeometry(20, 20, qMax(120, w->width() - 40), qMax(72, w->height() - 40));
+            if (i >= 5 && i <= 7) {
+                placeholder->setText(QString("%1\nPreview paused for low CPU mode")
+                                         .arg(m_titles.value(i, QString("CCTV %1").arg(i))));
+                placeholder->show();
+                placeholder->raise();
+            } else {
+                placeholder->hide();
+            }
         }
     }
 
@@ -494,6 +538,8 @@ void AllCctvWindow::restartStreamsByVisibility()
     for (int i = 1; i <= playCount; ++i) {
         auto* w = m_videoWidgets[i - 1];
         if (!w) continue;
+        auto* placeholder = w->findChild<QLabel*>("lowCostPlaceholder", Qt::FindDirectChildrenOnly);
+        if (placeholder) placeholder->hide();
 
         const QString url = m_rtsp.value(i).trimmed();
 
@@ -502,6 +548,13 @@ void AllCctvWindow::restartStreamsByVisibility()
             if (!m_playingUrl[i - 1].isEmpty()) {
                 w->stopStream();
                 m_playingUrl[i - 1].clear();
+            }
+            if (placeholder) {
+                placeholder->setGeometry(20, 20, qMax(120, w->width() - 40), qMax(72, w->height() - 40));
+                placeholder->setText(QString("%1\nNo stream assigned")
+                                         .arg(m_titles.value(i, QString("CCTV %1").arg(i))));
+                placeholder->show();
+                placeholder->raise();
             }
             continue;
         }
@@ -525,13 +578,27 @@ void AllCctvWindow::closeAllStreams()
 {
     // detach 경고 방�??? std::as_const
     for (auto *w : std::as_const(m_videoWidgets)) {
-        if (w) w->stopStream();
+        if (w) {
+            w->stopStream();
+            if (auto* placeholder = w->findChild<QLabel*>("lowCostPlaceholder", Qt::FindDirectChildrenOnly)) {
+                placeholder->hide();
+            }
+        }
     }
 }
 
 // ---------------- events ----------------
 bool AllCctvWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::Resize) {
+        auto* video = qobject_cast<GstVideoWidget*>(watched);
+        if (video) {
+            if (auto* placeholder = video->findChild<QLabel*>("lowCostPlaceholder", Qt::FindDirectChildrenOnly)) {
+                placeholder->setGeometry(20, 20, qMax(120, video->width() - 40), qMax(72, video->height() - 40));
+            }
+        }
+    }
+
     if (event->type() == QEvent::MouseButtonDblClick) {
 
         // ??watched가 child�??�어?�??tile ?�레?�까지 ?�라가??tileIndex 찾기

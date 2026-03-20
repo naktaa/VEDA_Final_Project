@@ -9,7 +9,7 @@ TitleBarWidget::TitleBarWidget(QWidget* parent)
 {
     setObjectName("TitleBarWidget");
     setAttribute(Qt::WA_StyledBackground, true);
-    setFixedHeight(38);
+    setFixedHeight(36);
 
     m_title = new QLabel(this);
     m_title->setObjectName("titleText");
@@ -17,29 +17,29 @@ TitleBarWidget::TitleBarWidget(QWidget* parent)
 
     m_btnMin = new QPushButton("-", this);
     m_btnMin->setObjectName("btnMin");
-    m_btnMin->setFixedSize(42, 28);
+    m_btnMin->setFixedSize(34, 22);
     m_btnMin->setFocusPolicy(Qt::NoFocus);
 
     m_btnMax = new QPushButton("[]", this);
     m_btnMax->setObjectName("btnMax");
-    m_btnMax->setFixedSize(42, 28);
+    m_btnMax->setFixedSize(34, 22);
     m_btnMax->setFocusPolicy(Qt::NoFocus);
 
     m_btnClose = new QPushButton("X", this);
     m_btnClose->setObjectName("btnClose");
-    m_btnClose->setFixedSize(42, 28);
+    m_btnClose->setFixedSize(34, 22);
     m_btnClose->setFocusPolicy(Qt::NoFocus);
 
     QFont btnFont = font();
-    btnFont.setPointSize(11);
+    btnFont.setPointSize(9);
     btnFont.setBold(true);
     m_btnMin->setFont(btnFont);
     m_btnMax->setFont(btnFont);
     m_btnClose->setFont(btnFont);
 
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(12, 0, 8, 0);
-    layout->setSpacing(8);
+    layout->setContentsMargins(10, 0, 6, 0);
+    layout->setSpacing(6);
     layout->addWidget(m_title, 1);
     layout->addWidget(m_btnMin);
     layout->addWidget(m_btnMax);
@@ -49,7 +49,7 @@ TitleBarWidget::TitleBarWidget(QWidget* parent)
     setStyleSheet(
         "#TitleBarWidget { background-color: #111522; border-bottom: 1px solid #242c43; }"
         "#titleText { background-color: transparent; color: #eef2ff; font-weight: 700; font-size: 14px; }"
-        "QPushButton { background: transparent; color: #b9c4e4; border: none; border-radius: 8px; font-size: 12px; }"
+        "QPushButton { background: transparent; color: #b9c4e4; border: none; border-radius: 6px; font-size: 10px; padding: 0px; }"
         "QPushButton:hover { background: #232c43; color: #ffffff; }"
         "QPushButton#btnClose:hover { background: #d14f6e; color: #ffffff; }"
     );

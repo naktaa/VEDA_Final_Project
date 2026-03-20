@@ -12,6 +12,7 @@
 #include <QColor>
 #include <QSet>
 #include <QPointF>
+#include <QRectF>
 #include <QTransform>
 #include <QSize>
 
@@ -190,6 +191,9 @@ private:
     bool tryOpenMqttDangerClip(QListWidgetItem* item);
     void updateSystemUsageTree();
     void requestGpuUsageUpdate();
+    void updateHeaderSummary();
+    void refreshEventItemWidget(QListWidgetItem* item);
+    QWidget* buildEventItemWidget(QListWidgetItem* item) const;
 
 private:
     Ui::MainWindow* ui = nullptr;
@@ -246,8 +250,9 @@ private:
     bool m_ruviewOnline = false;
     bool m_ruviewUiEnabled = false;
     bool m_humanBoxEnabled = false;
-    QSize m_humanBoxSourceSize = QSize(1024, 768);
+    QSize m_humanBoxSourceSize;
     QHash<QString, QRect> m_humanBoxes;
+    QHash<QString, QRectF> m_humanBoxSmoothed;
     QHash<QString, QDateTime> m_humanBoxSeenUtc;
     QDateTime m_lastHumanBoxRenderUtc;
     QDateTime m_lastHumanEventListUtc;
@@ -260,6 +265,10 @@ private:
     QLabel* m_ruviewStateLabel = nullptr;
     QLabel* m_ruviewConfLabel = nullptr;
     QLabel* m_ruviewNodesLabel = nullptr;
+    QLabel* m_headerModeLabel = nullptr;
+    QLabel* m_headerUserLabel = nullptr;
+    QLabel* m_headerRcStatusLabel = nullptr;
+    QLabel* m_headerRuviewStatusLabel = nullptr;
     QComboBox* m_eventFilter = nullptr;
     QLineEdit* m_eventSearchEdit = nullptr;
     QLabel* m_eventCountLabel = nullptr;
@@ -274,7 +283,11 @@ private:
     QHash<QString, QDateTime> m_recentCctvZoneSeenUtc;
     QHash<QString, QDateTime> m_recentRuviewAlertUtc;
     QSet<QString> m_ruviewAlertZones;
+    QWidget* m_systemUsageCard = nullptr;
     QFrame* m_robotStatusCard = nullptr;
+    QLabel* m_systemCpuValueLabel = nullptr;
+    QLabel* m_systemMemoryValueLabel = nullptr;
+    QLabel* m_systemGpuValueLabel = nullptr;
     QLabel* m_robotConnLabel = nullptr;
     QLabel* m_robotModeLabel = nullptr;
     QLabel* m_robotMissionLabel = nullptr;

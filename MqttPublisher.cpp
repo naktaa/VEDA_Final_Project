@@ -41,7 +41,6 @@ void MqttPublisher::stop()
         mosquitto_disconnect(mosq_);
         mosquitto_destroy(mosq_);
         mosq_ = nullptr;
-        mosquitto_lib_cleanup();
     }
 }
 

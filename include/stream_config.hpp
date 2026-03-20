@@ -34,30 +34,34 @@ namespace stream_config {
 
         if (DEFAULT_FLIP_VERTICAL && DEFAULT_FLIP_HORIZONTAL) {
             launch += "! videoflip method=rotate-180 ";
-        } else if (DEFAULT_FLIP_VERTICAL) {
+        }
+        else if (DEFAULT_FLIP_VERTICAL) {
             launch += "! videoflip method=vertical-flip ";
-        } else if (DEFAULT_FLIP_HORIZONTAL) {
+        }
+        else if (DEFAULT_FLIP_HORIZONTAL) {
             launch += "! videoflip method=horizontal-flip ";
         }
 
         launch +=
+            "! video/x-raw,format=NV12 "
             "! v4l2h264enc extra-controls=\"controls,video_bitrate=" +
             std::to_string(DEFAULT_BITRATE) +
             ",h264_i_frame_period=" + std::to_string(DEFAULT_IFRAME_PERIOD) + "\" "
-            "! video/x-h264,level=(string)4,profile=(string)main "
-            "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
-            "! rtph264pay name=pay0 pt=96 config-interval=1 )";
+                                                                              "! video/x-h264,level=(string)4,profile=(string)baseline "
+                                                                              "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
+                                                                              "! rtph264pay name=pay0 pt=96 config-interval=1 )";
         return launch;
     }
 
     inline std::string make_default_capture_launch() {
-        return
-            "libcamerasrc "
-            "! video/x-raw,format=NV12,width=" + std::to_string(DEFAULT_WIDTH) +
-            ",height=" + std::to_string(DEFAULT_HEIGHT) +
-            ",framerate=" + std::to_string(DEFAULT_FPS) + "/1 "
-            "! appsink name=" + std::string(CAPTURE_APPSINK_NAME) +
-            " drop=true max-buffers=1 sync=false";
+        return "libcamerasrc "
+               "! video/x-raw,format=NV12,width=" +
+               std::to_string(DEFAULT_WIDTH) +
+               ",height=" + std::to_string(DEFAULT_HEIGHT) +
+               ",framerate=" + std::to_string(DEFAULT_FPS) + "/1 "
+                                                             "! appsink name=" +
+               std::string(CAPTURE_APPSINK_NAME) +
+               " drop=true max-buffers=1 sync=false";
     }
 
 } // namespace stream_config

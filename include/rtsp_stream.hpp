@@ -25,7 +25,7 @@ public:
     bool start(const RtspConfig& cfg);
     void stop();
 
-    /// Push a raw frame (NV12). pts/duration in nanoseconds (GST_CLOCK_TIME_NONE = auto).
+    /// Push a raw NV12 frame with stream-relative timestamps in nanoseconds.
     bool push_frame(const unsigned char* data, std::size_t bytes,
                     uint64_t pts, uint64_t duration);
 

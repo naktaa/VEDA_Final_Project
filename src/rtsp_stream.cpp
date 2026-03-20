@@ -152,6 +152,7 @@ bool RtspStreamServer::push_frame(const unsigned char* data, std::size_t bytes,
     // Preserve original camera timestamp for encoder rate-control
     // and future gyro↔frame synchronization.
     GST_BUFFER_PTS(buffer) = static_cast<GstClockTime>(pts);
+    GST_BUFFER_DTS(buffer) = static_cast<GstClockTime>(pts);
     GST_BUFFER_DURATION(buffer) = static_cast<GstClockTime>(duration);
 
     const GstFlowReturn ret = gst_app_src_push_buffer(appsrc, buffer);

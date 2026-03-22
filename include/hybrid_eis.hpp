@@ -11,6 +11,9 @@ struct HybridEisDebugInfo {
     HybridState state = HybridState::STABILIZE;
     bool lk_valid = false;
     double lk_confidence = 0.0;
+    int lk_features = 0;
+    int lk_valid_points = 0;
+    int lk_inliers = 0;
     bool gyro_valid = false;
     double yaw_rate_dps = 0.0;
     double crop_required_percent = 0.0;

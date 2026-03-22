@@ -329,6 +329,9 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     if (debug) {
         debug->lk_valid = lk.valid;
         debug->lk_confidence = lk.confidence;
+        debug->lk_features = lk.features;
+        debug->lk_valid_points = lk.valid_points;
+        debug->lk_inliers = lk.inliers;
         debug->gyro_valid = gyro_valid;
         debug->crop_required_percent = compute_required_crop_percent(H, current.cols, current.rows);
         debug->clamp_scale = clamp_scale;

@@ -15,6 +15,8 @@ struct GyroRangeInfo {
     double max_ts = 0.0;
     double t0 = 0.0;
     double t1 = 0.0;
+    bool covers_start = false;
+    bool covers_end = false;
 };
 
 struct CameraIntrinsics {

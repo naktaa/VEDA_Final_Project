@@ -277,14 +277,17 @@ bool ImuReader::read_fifo_samples(std::vector<cv::Vec3d>& raw_samples) {
         return false;
     }
 
-    const int capped_bytes = std::min(fifo_count, 360);
-    std::vector<uint8_t> bytes(static_cast<size_t>(capped_bytes));
-    if (!i2c_read_bytes(fd_, REG_FIFO_R_W, bytes.data(), capped_bytes)) {
-        return false;
+    std::vector<uint8_t> bytes(static_cast<size_t>(fifo_count));
+    constexpr int kReadChunkBytes = 240;
+    for (int offset = 0; offset < fifo_count; offset += kReadChunkBytes) {
+        const int chunk_bytes = std::min(kReadChunkBytes, fifo_count - offset);
+        if (!i2c_read_bytes(fd_, REG_FIFO_R_W, bytes.data() + offset, chunk_bytes)) {
+            return false;
+        }
     }
 
-    raw_samples.reserve(static_cast<size_t>(capped_bytes / 6));
-    for (int i = 0; i + 5 < capped_bytes; i += 6) {
+    raw_samples.reserve(static_cast<size_t>(fifo_count / 6));
+    for (int i = 0; i + 5 < fifo_count; i += 6) {
         raw_samples.emplace_back(
             static_cast<double>(to_i16(bytes[static_cast<size_t>(i + 0)], bytes[static_cast<size_t>(i + 1)])),
             static_cast<double>(to_i16(bytes[static_cast<size_t>(i + 2)], bytes[static_cast<size_t>(i + 3)])),

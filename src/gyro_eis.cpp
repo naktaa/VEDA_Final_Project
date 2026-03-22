@@ -46,6 +46,9 @@ bool GyroBuffer::get_range(double t0_ms, double t1_ms, std::vector<ImuSample>& o
         return false;
     }
 
+    const double oldest_ts = buffer_.front().sample_time_ms;
+    const double newest_ts = buffer_.back().sample_time_ms;
+
     int start_index = -1;
     for (size_t i = 0; i < buffer_.size(); ++i) {
         if (buffer_[i].sample_time_ms >= t0_ms) {
@@ -73,6 +76,8 @@ bool GyroBuffer::get_range(double t0_ms, double t1_ms, std::vector<ImuSample>& o
         info->t0 = t0_ms;
         info->t1 = t1_ms;
         info->used = static_cast<int>(out.size());
+        info->covers_start = oldest_ts <= t0_ms;
+        info->covers_end = newest_ts >= t1_ms;
         if (!out.empty()) {
             info->min_ts = out.front().sample_time_ms;
             info->max_ts = out.back().sample_time_ms;

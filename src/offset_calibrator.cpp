@@ -38,7 +38,11 @@ bool integrate_axis_delta(const GyroBuffer& buffer,
                           double& out_delta) {
     out_delta = 0.0;
     std::vector<ImuSample> samples;
-    if (!buffer.get_range(t0_ms, t1_ms, samples, nullptr) || samples.empty()) {
+    GyroRangeInfo info;
+    if (!buffer.get_range(t0_ms, t1_ms, samples, &info) ||
+        samples.empty() ||
+        !info.covers_start ||
+        !info.covers_end) {
         return false;
     }
 
@@ -135,6 +139,13 @@ double sweep_offset_ms(const GyroBuffer& buffer,
 bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
     const int bias_samples = std::max(600, (config.imu.target_hz * config.calib.bias_duration_ms) / 1000);
     const int bias_sleep_us = std::max(1000, 1000000 / std::max(1, config.imu.target_hz));
+    const double retention_ms = std::max(5000.0,
+                                         static_cast<double>(config.calib.sweep_duration_ms) +
+                                             config.calib.coarse_range_ms * 2.0 +
+                                             1000.0);
+    const size_t calibration_buffer_samples =
+        static_cast<size_t>(std::ceil(retention_ms * static_cast<double>(std::max(1, config.imu.target_hz)) / 1000.0)) +
+        128U;
 
     cv::Vec3d measured_bias;
     if (!ImuReader::collect_stationary_bias(config.imu, bias_samples, bias_sleep_us, measured_bias, error)) {
@@ -153,10 +164,15 @@ bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
                  "[CALIB] start moving the camera in yaw for about %.1f seconds.\n",
                  static_cast<double>(config.calib.sweep_duration_ms) / 1000.0);
 
-    ImuReader imu_reader;
+    ImuReader imu_reader(std::max<size_t>(2500, calibration_buffer_samples));
     if (!imu_reader.start(config.imu, config.calib, false, error)) {
         return false;
     }
+
+    std::fprintf(stderr,
+                 "[CALIB] imu buffer: %.1f sec (%zu samples)\n",
+                 retention_ms / 1000.0,
+                 std::max<size_t>(2500, calibration_buffer_samples));
 
     LibcameraCapture capture;
     if (!capture.init(config.camera, error)) {

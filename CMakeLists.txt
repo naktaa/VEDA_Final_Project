@@ -1,43 +1,93 @@
 cmake_minimum_required(VERSION 3.10)
-project(tank_mqtt_drive)
-
-set(CMAKE_BUILD_TYPE Release)
-add_compile_options(-O3 -DNDEBUG)
+project(tank_hybrid_eis)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_BUILD_TYPE Release)
+add_compile_options(-O3 -DNDEBUG)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc video videoio)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc video)
+find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 
-add_executable(mqtt_tank_drive
-  src/mqtt_tank_drive.cpp
+pkg_check_modules(GST REQUIRED
+  gstreamer-1.0
+  gstreamer-app-1.0
+  gstreamer-video-1.0
+  gstreamer-rtsp-server-1.0
+)
+pkg_check_modules(LIBCAMERA REQUIRED libcamera)
+pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
+
+set(COMMON_SOURCES
+  src/app_config.cpp
+  src/gyro_eis.cpp
+  src/hybrid_eis.cpp
+  src/image_utils.cpp
+  src/imu_reader.cpp
+  src/libcamera_capture.cpp
+  src/lk_tracker.cpp
   src/mqtt_drive.cpp
-  src/camera_capture.cpp
-  src/rtsp_stream.cpp
+  src/offset_calibrator.cpp
+  src/rtsp_server.cpp
   src/tank_drive.cpp
-  src/eis_processor.cpp
+  src/timebase.cpp
 )
 
-target_include_directories(mqtt_tank_drive PRIVATE
+set(COMMON_INCLUDE_DIRS
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${MOSQUITTO_INCLUDE_DIRS}
-  ${GST_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${GST_INCLUDE_DIRS}
+  ${LIBCAMERA_INCLUDE_DIRS}
+  ${MOSQUITTO_INCLUDE_DIRS}
 )
 
-target_compile_options(mqtt_tank_drive PRIVATE
-  ${MOSQUITTO_CFLAGS_OTHER}
+set(COMMON_COMPILE_OPTIONS
   ${GST_CFLAGS_OTHER}
+  ${LIBCAMERA_CFLAGS_OTHER}
+  ${MOSQUITTO_CFLAGS_OTHER}
 )
 
-target_link_libraries(mqtt_tank_drive
-  ${MOSQUITTO_LIBRARIES}
-  ${GST_LIBRARIES}
+set(COMMON_LINK_LIBS
   ${OpenCV_LIBS}
+  ${GST_LIBRARIES}
+  ${LIBCAMERA_LIBRARIES}
+  ${MOSQUITTO_LIBRARIES}
+  Threads::Threads
   wiringPi
 )
 
-# 설정 파일이 빌드 디렉토리에 없으면 복사하여 로컬 튜닝 환경 구축
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config_lk_local.ini")
-  configure_file(config_lk_local.ini config_lk_local.ini COPYONLY)
+add_executable(main
+  src/main.cpp
+  ${COMMON_SOURCES}
+)
+
+target_include_directories(main PRIVATE ${COMMON_INCLUDE_DIRS})
+target_compile_options(main PRIVATE ${COMMON_COMPILE_OPTIONS})
+target_link_libraries(main PRIVATE ${COMMON_LINK_LIBS})
+
+add_executable(calib
+  src/calib_offset.cpp
+  src/app_config.cpp
+  src/gyro_eis.cpp
+  src/image_utils.cpp
+  src/imu_reader.cpp
+  src/libcamera_capture.cpp
+  src/lk_tracker.cpp
+  src/offset_calibrator.cpp
+  src/timebase.cpp
+)
+
+target_include_directories(calib PRIVATE ${COMMON_INCLUDE_DIRS})
+target_compile_options(calib PRIVATE ${COMMON_COMPILE_OPTIONS})
+target_link_libraries(calib PRIVATE
+  ${OpenCV_LIBS}
+  ${GST_LIBRARIES}
+  ${LIBCAMERA_LIBRARIES}
+  Threads::Threads
+  wiringPi
+)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config_template.ini")
+  configure_file(config_template.ini config_template.ini COPYONLY)
 endif()

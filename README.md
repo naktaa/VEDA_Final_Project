@@ -1,11 +1,30 @@
-# Tank MQTT Drive + RTSP
+# Tank Hybrid EIS Runtime
 
-Minimal project for:
-- MQTT-based tank driving control (`drive` group)
-- RTSP video streaming (`rtsp://<PI_IP>:8555/cam`)
-- Capture bridge: `appsink(libcamerasrc) -> appsrc(RTSP factory)` (legacy style)
+현재 브랜치는 `test/Tank/hybrid_eis` 기준의 통합 런타임입니다.
 
-## Build
+구성:
+- MQTT 탱크 주행 제어
+- `libcamera` 직접 캡처
+- IMU 기반 gyro 보조 + LK 기반 translation 중심의 hybrid EIS
+- RTSP 송출
+- 로컬 `ini` 기반 튜닝
+
+상세 설계와 알고리즘 설명은 [docs/HYBRID_EIS_FRAMEWORK.md](/mnt/e/VEDA/VEDA_Final_Project/docs/HYBRID_EIS_FRAMEWORK.md)에 정리되어 있습니다.
+
+## 의존성
+- `cmake`
+- `pkg-config`
+- `wiringPi`
+- `libmosquitto-dev`
+- `libgstreamer1.0-dev`
+- `libgstreamer-plugins-base1.0-dev`
+- `libgstrtspserver-1.0-dev`
+- `libcamera-dev`
+- `OpenCV`
+
+## 빌드
+예전처럼 직접 빌드해서 `build` 안의 실행파일을 실행하면 됩니다.
+
 ```bash
 mkdir -p build
 cd build
@@ -13,65 +32,52 @@ cmake ..
 make -j
 ```
 
-Required packages:
-- `wiringPi`
-- `libmosquitto-dev`
-- `libgstreamer1.0-dev`
-- `libgstrtspserver-1.0-dev`
-- GStreamer plugins including `libcamerasrc` and `v4l2h264enc` (hardware encoder)
+생성되는 실행파일:
+- `build/main`
+- `build/calib`
 
-## Run
+## 실행 흐름
+처음에는 calibration으로 로컬 설정 파일을 준비합니다.
+
 ```bash
-./mqtt_tank_drive
+cd build
+sudo ./calib
 ```
 
-Default MQTT:
-- Host: `192.168.100.10`
-- Port: `1883`
-- Topic: `wiserisk/rc/control`
+`config_local.ini`가 없으면 템플릿 기준으로 생성하고 종료합니다.  
+그 뒤 `config_local.ini`를 확인하고 다시 `sudo ./calib`를 실행하면 calibration 결과가 같은 파일의 `[calib]` 섹션에 저장됩니다.
 
-Default RTSP output:
-- URL: `rtsp://<PI_IP>:8555/cam`
-- Format: `640x480 @ 20fps`, rotate-180 flip, H.264 hardware encoding (`v4l2h264enc`)
-- Low-latency: leaky queues enabled, I-frame period set to 20
+최종 런타임은 아래처럼 실행합니다.
 
-## Optional RTSP Args
 ```bash
---no-rtsp
---rtsp-port 8555
---rtsp-path /cam
---rtsp-launch "( appsrc name=stabsrc is-live=true format=time do-timestamp=true block=false ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! videoflip method=rotate-180 ! videoconvert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=20\" ! video/x-h264,level=(string)4,profile=(string)baseline ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! rtph264pay name=pay0 pt=96 config-interval=1 )"
+cd build
+sudo ./main
 ```
 
-## Client low-latency tips
-- VLC: lower Network caching (e.g. `100ms` or lower).
-- Prefer UDP transport when possible to reduce end-to-end delay.
+## 주요 RTSP 경로
+- stabilized: `rtsp://<PI_IP>:8555/cam`
+- raw: `rtsp://<PI_IP>:8555/raw`
 
-## Supported MQTT Payload
-```json
-{
-  "type": "tank_control",
-  "target": "tank",
-  "group": "drive",
-  "command": "forward",
-  "active": true,
-  "source": "qt_main_window",
-  "ts_ms": 1773890000000
-}
-```
+기본 포트/경로는 `config_local.ini`의 `[rtsp]` 섹션에서 바꿀 수 있습니다.
 
-Accepted filters:
-- `type == "tank_control"`
-- `target == "tank"`
-- `group == "drive"`
+## 설정 파일
+Git에 올라가는 파일:
+- `config_template.ini`
 
-Supported commands:
-- `forward`
-- `backward`
-- `turn_left`
-- `turn_right`
+Git에 올라가지 않는 로컬 파일:
+- `config_local.ini`
 
-Behavior:
-- `active=true`: start motion
-- matching `command` + `active=false`: stop motion
-- `group=ptz` is ignored
+주요 섹션:
+- `[camera]`
+- `[imu]`
+- `[eis]`
+- `[rtsp]`
+- `[mqtt]`
+- `[calib]`
+
+런타임 CLI 옵션은 의도적으로 없앴습니다. 파라미터 조정은 `config_local.ini` 기준으로 합니다.
+
+## 권장 순서
+1. `build/calib`로 bias와 `imu_offset_ms`를 먼저 저장합니다.
+2. `config_local.ini`에서 `exposure_us`, `crop_budget_percent`, gyro/LK gain을 조정합니다.
+3. `build/main`으로 실제 주행 화면을 확인합니다.

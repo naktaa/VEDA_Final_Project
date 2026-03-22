@@ -3,6 +3,7 @@
 #include <atomic>
 
 class RtspStreamServer;
+class FrameJpegCache;
 
 class CameraCapture {
 public:
@@ -13,7 +14,9 @@ public:
     CameraCapture(CameraCapture&&) = delete;
     CameraCapture& operator=(CameraCapture&&) = delete;
 
-    bool start(std::atomic<bool>& app_running, RtspStreamServer& rtsp_server);
+    bool start(std::atomic<bool>& app_running,
+               RtspStreamServer* rtsp_server,
+               FrameJpegCache* frame_cache);
     void stop();
 
 private:

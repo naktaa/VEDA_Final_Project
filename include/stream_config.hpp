@@ -8,6 +8,10 @@ namespace stream_config {
     inline constexpr int DEFAULT_MQTT_PORT = 1883;
     inline constexpr int DEFAULT_MQTT_KEEPALIVE_SEC = 30;
     inline constexpr const char* DEFAULT_MQTT_TOPIC = "wiserisk/rc/control";
+    inline constexpr int DEFAULT_HTTP_PORT = 8000;
+    inline constexpr const char* DEFAULT_SERIAL_DEVICE = "/dev/serial0";
+    inline constexpr int DEFAULT_SERIAL_BAUD = 115200;
+    inline constexpr int DEFAULT_IMU_PRIORITY_TIMEOUT_MS = 300;
 
     inline constexpr const char* DEFAULT_RTSP_PORT = "8555";
     inline constexpr const char* DEFAULT_RTSP_PATH = "/cam";

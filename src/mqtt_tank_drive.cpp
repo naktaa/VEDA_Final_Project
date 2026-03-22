@@ -3,12 +3,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "camera_capture.hpp"
+#include "frame_jpeg_cache.hpp"
+#include "http_vr_server.hpp"
 #include "mqtt_drive.hpp"
+#include "ptz_control.hpp"
 #include "rtsp_stream.hpp"
 #include "stream_config.hpp"
 #include "tank_drive.hpp"
+
+#ifndef TANK_SOURCE_DIR
+#define TANK_SOURCE_DIR "."
+#endif
 
 namespace {
 
@@ -38,9 +46,21 @@ void print_usage(const char* prog) {
     fprintf(stderr, "  --rtsp-path <path>      RTSP mount path (default: %s)\n",
             stream_config::DEFAULT_RTSP_PATH);
     fprintf(stderr, "  --rtsp-launch <launch>  GStreamer RTSP factory launch string\n");
+    fprintf(stderr, "  --no-http-vr            disable HTTP/MJPEG/VR web server\n");
+    fprintf(stderr, "  --http-port <port>      HTTP port for /web and /stream.mjpg (default: %d)\n",
+            stream_config::DEFAULT_HTTP_PORT);
+    fprintf(stderr, "  --serial-dev <path>     UART device for PTZ servo (default: %s)\n",
+            stream_config::DEFAULT_SERIAL_DEVICE);
+    fprintf(stderr, "  --serial-baud <n>       UART baud for PTZ servo (default: %d)\n",
+            stream_config::DEFAULT_SERIAL_BAUD);
 }
 
-ParseResult parse_args(int argc, char* argv[], MqttConfig& mqtt_cfg, RtspConfig& rtsp_cfg) {
+ParseResult parse_args(int argc,
+                       char* argv[],
+                       MqttConfig& mqtt_cfg,
+                       RtspConfig& rtsp_cfg,
+                       HttpVrConfig& http_cfg,
+                       PtzConfig& ptz_cfg) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             mqtt_cfg.host = argv[++i];
@@ -59,6 +79,14 @@ ParseResult parse_args(int argc, char* argv[], MqttConfig& mqtt_cfg, RtspConfig&
             }
         } else if (std::strcmp(argv[i], "--rtsp-launch") == 0 && i + 1 < argc) {
             rtsp_cfg.launch = argv[++i];
+        } else if (std::strcmp(argv[i], "--no-http-vr") == 0) {
+            http_cfg.enable = false;
+        } else if (std::strcmp(argv[i], "--http-port") == 0 && i + 1 < argc) {
+            http_cfg.port = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--serial-dev") == 0 && i + 1 < argc) {
+            ptz_cfg.serial_device = argv[++i];
+        } else if (std::strcmp(argv[i], "--serial-baud") == 0 && i + 1 < argc) {
+            ptz_cfg.serial_baud = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return ParseResult::kHelp;
@@ -86,7 +114,17 @@ int main(int argc, char* argv[]) {
         stream_config::DEFAULT_RTSP_PATH,
         stream_config::make_default_rtsp_launch()};
 
-    const ParseResult parse_result = parse_args(argc, argv, mqtt_cfg, rtsp_cfg);
+    HttpVrConfig http_cfg{
+        true,
+        stream_config::DEFAULT_HTTP_PORT,
+        std::string(TANK_SOURCE_DIR) + "/web/tilt_vr"};
+
+    PtzConfig ptz_cfg{
+        stream_config::DEFAULT_SERIAL_DEVICE,
+        stream_config::DEFAULT_SERIAL_BAUD,
+        stream_config::DEFAULT_IMU_PRIORITY_TIMEOUT_MS};
+
+    const ParseResult parse_result = parse_args(argc, argv, mqtt_cfg, rtsp_cfg, http_cfg, ptz_cfg);
     if (parse_result == ParseResult::kHelp) return 0;
     if (parse_result == ParseResult::kError) return 1;
 
@@ -96,27 +134,54 @@ int main(int argc, char* argv[]) {
     if (!tank_drive::init()) return 1;
     tank_drive::set_idle_autostop(false);
 
+    PtzController ptz_controller;
+    ptz_controller.start(ptz_cfg);
+
+    FrameJpegCache frame_cache;
     CameraCapture camera_capture;
     RtspStreamServer rtsp_server;
+    HttpVrServer http_server;
+
     if (rtsp_cfg.enable) {
         if (!rtsp_server.start(rtsp_cfg)) {
-            tank_drive::shutdown();
-            return 1;
-        }
-        if (!camera_capture.start(g_running, rtsp_server)) {
-            rtsp_server.stop();
+            ptz_controller.stop();
             tank_drive::shutdown();
             return 1;
         }
     }
 
-    const bool mqtt_ok = run_mqtt_drive_loop(mqtt_cfg, g_running);
+    if (rtsp_cfg.enable || http_cfg.enable) {
+        if (!camera_capture.start(g_running,
+                                  rtsp_cfg.enable ? &rtsp_server : nullptr,
+                                  http_cfg.enable ? &frame_cache : nullptr)) {
+            rtsp_server.stop();
+            ptz_controller.stop();
+            tank_drive::shutdown();
+            return 1;
+        }
+    }
+
+    if (http_cfg.enable) {
+        if (!http_server.start(http_cfg, g_running, frame_cache, ptz_controller)) {
+            camera_capture.stop();
+            rtsp_server.stop();
+            ptz_controller.stop();
+            tank_drive::shutdown();
+            return 1;
+        }
+    }
+
+    const bool mqtt_ok = run_mqtt_drive_loop(mqtt_cfg, g_running, &ptz_controller);
 
     g_running = false;
-    if (rtsp_cfg.enable) {
+    if (http_cfg.enable) {
+        http_server.stop();
+    }
+    if (rtsp_cfg.enable || http_cfg.enable) {
         camera_capture.stop();
     }
     rtsp_server.stop();
+    ptz_controller.stop();
     tank_drive::shutdown();
     return mqtt_ok ? 0 : 1;
 }

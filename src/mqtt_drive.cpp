@@ -4,6 +4,7 @@
 
 #include <mosquitto.h>
 
+#include "ptz_control.hpp"
 #include "tank_drive.hpp"
 
 namespace {
@@ -11,6 +12,7 @@ namespace {
 struct MqttRuntime {
     std::string topic;
     std::string active_drive_cmd;
+    PtzController* ptz_controller = nullptr;
 };
 
 bool extract_json_string(const std::string& json, const char* key, std::string& out) {
@@ -74,6 +76,13 @@ bool decode_drive_command(const std::string& cmd, int& left_cmd, int& right_cmd)
     return false;
 }
 
+bool is_ptz_command(const std::string& cmd) {
+    return cmd == "pan_left" ||
+           cmd == "pan_right" ||
+           cmd == "tilt_up" ||
+           cmd == "tilt_down";
+}
+
 void on_connect(struct mosquitto* mosq, void* obj, int rc) {
     if (rc != 0) {
         fprintf(stderr, "[MQTT] connect failed rc=%d\n", rc);
@@ -104,6 +113,14 @@ void on_message(struct mosquitto*, void* obj, const struct mosquitto_message* ms
     if (!extract_json_string(payload, "command", command)) return;
     if (!extract_json_bool(payload, "active", active)) return;
     if (type != "tank_control" || target != "tank") return;
+
+    if (group == "ptz") {
+        if (!rt->ptz_controller || !is_ptz_command(command)) return;
+        rt->ptz_controller->handle_mqtt_command(command, active);
+        fprintf(stderr, "[MQTT] ptz %s: %s\n", active ? "active" : "idle", command.c_str());
+        return;
+    }
+
     if (group != "drive") return;
 
     int left_cmd = 0;
@@ -126,9 +143,12 @@ void on_message(struct mosquitto*, void* obj, const struct mosquitto_message* ms
 
 } // namespace
 
-bool run_mqtt_drive_loop(const MqttConfig& cfg, std::atomic<bool>& running) {
+bool run_mqtt_drive_loop(const MqttConfig& cfg,
+                         std::atomic<bool>& running,
+                         PtzController* ptz_controller) {
     MqttRuntime runtime;
     runtime.topic = cfg.topic;
+    runtime.ptz_controller = ptz_controller;
 
     mosquitto_lib_init();
     mosquitto* mosq = mosquitto_new("tank_mqtt_drive", true, &runtime);

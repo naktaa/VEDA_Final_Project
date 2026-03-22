@@ -24,7 +24,10 @@ public:
     RtspServer() = default;
     ~RtspServer();
 
-    bool start(const CameraConfig& camera_config, const RtspConfig& rtsp_config, std::string* error = nullptr);
+    bool start(const CameraConfig& camera_config,
+               const RtspConfig& rtsp_config,
+               bool enable_raw_stream = false,
+               std::string* error = nullptr);
     void stop();
 
     bool push_stabilized(const CapturedFrame& frame, const cv::Mat& image);

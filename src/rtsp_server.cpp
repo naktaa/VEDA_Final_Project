@@ -39,7 +39,10 @@ RtspServer::~RtspServer() {
     stop();
 }
 
-bool RtspServer::start(const CameraConfig& camera_config, const RtspConfig& rtsp_config, std::string* error) {
+bool RtspServer::start(const CameraConfig& camera_config,
+                       const RtspConfig& rtsp_config,
+                       bool enable_raw_stream,
+                       std::string* error) {
     stop();
 
     if (!gst_is_initialized()) {
@@ -73,20 +76,22 @@ bool RtspServer::start(const CameraConfig& camera_config, const RtspConfig& rtsp
     g_signal_connect(stab_factory, "media-configure", GCallback(on_media_configure), stab_context);
     gst_rtsp_mount_points_add_factory(mounts, rtsp_config_.path.c_str(), stab_factory);
 
-    MediaConfigureContext* raw_context = new MediaConfigureContext{
-        &raw_slot_,
-        camera_config_.width,
-        camera_config_.height,
-        camera_config_.fps,
-        "rawsrc",
-    };
-    GstRTSPMediaFactory* raw_factory = gst_rtsp_media_factory_new();
-    const std::string raw_launch = make_launch(raw_context->appsrc_name, rtsp_config_);
-    gst_rtsp_media_factory_set_launch(raw_factory, raw_launch.c_str());
-    gst_rtsp_media_factory_set_shared(raw_factory, TRUE);
-    gst_rtsp_media_factory_set_suspend_mode(raw_factory, GST_RTSP_SUSPEND_MODE_NONE);
-    g_signal_connect(raw_factory, "media-configure", GCallback(on_media_configure), raw_context);
-    gst_rtsp_mount_points_add_factory(mounts, rtsp_config_.raw_path.c_str(), raw_factory);
+    if (enable_raw_stream) {
+        MediaConfigureContext* raw_context = new MediaConfigureContext{
+            &raw_slot_,
+            camera_config_.width,
+            camera_config_.height,
+            camera_config_.fps,
+            "rawsrc",
+        };
+        GstRTSPMediaFactory* raw_factory = gst_rtsp_media_factory_new();
+        const std::string raw_launch = make_launch(raw_context->appsrc_name, rtsp_config_);
+        gst_rtsp_media_factory_set_launch(raw_factory, raw_launch.c_str());
+        gst_rtsp_media_factory_set_shared(raw_factory, TRUE);
+        gst_rtsp_media_factory_set_suspend_mode(raw_factory, GST_RTSP_SUSPEND_MODE_NONE);
+        g_signal_connect(raw_factory, "media-configure", GCallback(on_media_configure), raw_context);
+        gst_rtsp_mount_points_add_factory(mounts, rtsp_config_.raw_path.c_str(), raw_factory);
+    }
 
     g_object_unref(mounts);
 

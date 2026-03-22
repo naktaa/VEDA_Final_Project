@@ -8,8 +8,6 @@
 #include <opencv2/imgproc.hpp>
 
 #include "app_config.hpp"
-#include "hybrid_eis.hpp"
-#include "imu_reader.hpp"
 #include "libcamera_capture.hpp"
 #include "mqtt_drive.hpp"
 #include "rtsp_server.hpp"
@@ -34,17 +32,17 @@ int main() {
     bool created = false;
     std::string error;
     if (!ensure_local_config_exists(kTemplateConfigPath, kLocalConfigPath, &created, &error)) {
-        std::fprintf(stderr, "[MAIN] config setup failed: %s\n", error.c_str());
+        std::fprintf(stderr, "[RAW] config setup failed: %s\n", error.c_str());
         return 1;
     }
     if (created) {
-        std::fprintf(stderr, "[MAIN] created %s from template. Review it and run again.\n", kLocalConfigPath);
+        std::fprintf(stderr, "[RAW] created %s from template. Review it and run again.\n", kLocalConfigPath);
         return 1;
     }
 
     AppConfig config;
     if (!load_app_config(kLocalConfigPath, config, &error)) {
-        std::fprintf(stderr, "[MAIN] config load failed: %s\n", error.c_str());
+        std::fprintf(stderr, "[RAW] config load failed: %s\n", error.c_str());
         return 1;
     }
 
@@ -58,29 +56,18 @@ int main() {
 
     RtspServer rtsp_server;
     if (!rtsp_server.start(config.camera, config.rtsp, false, &error)) {
-        std::fprintf(stderr, "[MAIN] RTSP start failed: %s\n", error.c_str());
-        tank_drive::shutdown();
-        return 1;
-    }
-
-    ImuReader imu_reader;
-    if (!imu_reader.start(config.imu, config.calib, true, &error)) {
-        std::fprintf(stderr, "[MAIN] IMU start failed: %s\n", error.c_str());
-        rtsp_server.stop();
+        std::fprintf(stderr, "[RAW] RTSP start failed: %s\n", error.c_str());
         tank_drive::shutdown();
         return 1;
     }
 
     LibcameraCapture capture;
     if (!capture.init(config.camera, &error)) {
-        std::fprintf(stderr, "[MAIN] camera start failed: %s\n", error.c_str());
-        imu_reader.stop();
+        std::fprintf(stderr, "[RAW] camera start failed: %s\n", error.c_str());
         rtsp_server.stop();
         tank_drive::shutdown();
         return 1;
     }
-
-    HybridEisProcessor processor(config, &imu_reader.buffer());
 
     std::thread tick_thread([&]() {
         while (running.load()) {
@@ -95,7 +82,7 @@ int main() {
             std::string frame_error;
             if (!capture.get_frame(frame, &frame_error)) {
                 if (running.load()) {
-                    std::fprintf(stderr, "[MAIN] frame pull failed: %s\n", frame_error.c_str());
+                    std::fprintf(stderr, "[RAW] frame pull failed: %s\n", frame_error.c_str());
                 }
                 running = false;
                 break;
@@ -105,21 +92,14 @@ int main() {
                 cv::flip(frame.image, frame.image, -1);
             }
 
-            cv::Mat stabilized;
-            HybridEisDebugInfo debug;
-            processor.process(frame, stabilized, &debug);
-            if (stabilized.empty()) {
-                stabilized = frame.image.clone();
-            }
-
-            if (!rtsp_server.push_stabilized(frame, stabilized)) {
-                // Same as above.
+            if (!rtsp_server.push_stabilized(frame, frame.image)) {
+                // No client attached is normal; avoid log spam.
             }
         }
     });
 
     std::fprintf(stderr,
-                 "[MAIN] runtime ready: RTSP %s%s, MQTT %s:%d topic=%s\n",
+                 "[RAW] runtime ready: RTSP %s%s, MQTT %s:%d topic=%s\n",
                  config.rtsp.port.c_str(),
                  config.rtsp.path.c_str(),
                  config.mqtt.host.c_str(),
@@ -128,7 +108,7 @@ int main() {
 
     const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt, running);
     if (!mqtt_ok) {
-        std::fprintf(stderr, "[MAIN] MQTT loop ended with error\n");
+        std::fprintf(stderr, "[RAW] MQTT loop ended with error\n");
     }
     running = false;
 
@@ -141,7 +121,6 @@ int main() {
         tick_thread.join();
     }
 
-    imu_reader.stop();
     rtsp_server.stop();
     tank_drive::shutdown();
     return mqtt_ok ? 0 : 1;

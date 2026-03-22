@@ -66,6 +66,21 @@ target_include_directories(main PRIVATE ${COMMON_INCLUDE_DIRS})
 target_compile_options(main PRIVATE ${COMMON_COMPILE_OPTIONS})
 target_link_libraries(main PRIVATE ${COMMON_LINK_LIBS})
 
+add_executable(main_raw
+  src/main_raw.cpp
+  src/app_config.cpp
+  src/image_utils.cpp
+  src/libcamera_capture.cpp
+  src/mqtt_drive.cpp
+  src/rtsp_server.cpp
+  src/tank_drive.cpp
+  src/timebase.cpp
+)
+
+target_include_directories(main_raw PRIVATE ${COMMON_INCLUDE_DIRS})
+target_compile_options(main_raw PRIVATE ${COMMON_COMPILE_OPTIONS})
+target_link_libraries(main_raw PRIVATE ${COMMON_LINK_LIBS})
+
 add_executable(calib
   src/calib_offset.cpp
   src/app_config.cpp

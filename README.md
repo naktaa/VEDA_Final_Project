@@ -34,6 +34,7 @@ make -j
 
 생성되는 실행파일:
 - `build/main`
+- `build/main_raw`
 - `build/calib`
 
 ## 실행 흐름
@@ -54,9 +55,15 @@ cd build
 sudo ./main
 ```
 
+보정 없는 원본 영상을 같은 RTSP 경로(`/cam`)로 확인하려면 아래 실행파일을 사용합니다.
+
+```bash
+cd build
+sudo ./main_raw
+```
+
 ## 주요 RTSP 경로
-- stabilized: `rtsp://<PI_IP>:8555/cam`
-- raw: `rtsp://<PI_IP>:8555/raw`
+- active stream: `rtsp://<PI_IP>:8555/cam`
 
 기본 포트/경로는 `config_local.ini`의 `[rtsp]` 섹션에서 바꿀 수 있습니다.
 
@@ -80,4 +87,5 @@ Git에 올라가지 않는 로컬 파일:
 ## 권장 순서
 1. `build/calib`로 bias와 `imu_offset_ms`를 먼저 저장합니다.
 2. `config_local.ini`에서 `exposure_us`, `crop_budget_percent`, gyro/LK gain을 조정합니다.
-3. `build/main`으로 실제 주행 화면을 확인합니다.
+3. `build/main`으로 EIS 화면을 확인합니다.
+4. 필요할 때만 `build/main_raw`로 원본 화면을 확인합니다.

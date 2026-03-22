@@ -22,12 +22,14 @@ struct MediaConfigureContext {
 std::string make_launch(const char* appsrc_name, const RtspConfig& config) {
     return "( appsrc name=" + std::string(appsrc_name) +
            " is-live=true format=time block=false do-timestamp=false "
+           "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
            "! videoconvert "
            "! video/x-raw,format=I420 "
            "! v4l2h264enc extra-controls=\"controls,video_bitrate=" + std::to_string(config.bitrate) +
            ",h264_i_frame_period=" + std::to_string(config.iframe_period) +
            "\" "
            "! video/x-h264,level=(string)4,profile=(string)baseline "
+           "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
            "! rtph264pay name=pay0 pt=96 config-interval=1 )";
 }
 

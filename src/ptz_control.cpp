@@ -35,6 +35,9 @@ constexpr float kMaxImuDtSec = 0.1f;
 constexpr float kYawMaxDeltaPerSampleDeg = 25.0f;
 constexpr float kPitchMaxDeltaPerSampleDeg = 20.0f;
 constexpr float kRollMaxDeltaPerSampleDeg = 20.0f;
+constexpr float kRejectPitchDeltaDeg = 85.0f;
+constexpr float kRejectRollDeltaDeg = 85.0f;
+constexpr float kRejectYawDeltaDeg = 120.0f;
 
 float clampf(float value, float lo, float hi) {
     return std::max(lo, std::min(value, hi));
@@ -471,6 +474,17 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     if (impl_->mode != PtzMode::kVr) {
         return;
     }
+    if (impl_->pitch_roll_initialized && impl_->yaw_initialized) {
+        const float pitch_jump = std::fabs(wrap_angle_180(pitch - impl_->last_raw_pitch));
+        const float roll_jump = std::fabs(wrap_angle_180(roll - impl_->last_raw_roll));
+        const float yaw_jump = std::fabs(wrap_angle_180(yaw - impl_->last_raw_yaw));
+        if (pitch_jump > kRejectPitchDeltaDeg ||
+            roll_jump > kRejectRollDeltaDeg ||
+            yaw_jump > kRejectYawDeltaDeg) {
+            return;
+        }
+    }
+
     impl_->last_pitch = pitch;
     impl_->last_roll = roll;
     impl_->last_yaw = yaw;
@@ -517,8 +531,8 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     impl_->filtered_roll = (1.0f - kImuAlpha) * impl_->filtered_roll + kImuAlpha * guarded_pitch;
     const float pitch_pan = map_axis_from_imu(impl_->filtered_roll,
                                               impl_->config.pan_center_deg,
-                                              impl_->config.pan_left_deg,
-                                              impl_->config.pan_right_deg);
+                                              impl_->config.pan_right_deg,
+                                              impl_->config.pan_left_deg);
     const float yaw_pan = map_axis_from_imu(impl_->filtered_yaw * kYawPanGain,
                                             impl_->config.pan_center_deg,
                                             impl_->config.pan_left_deg,

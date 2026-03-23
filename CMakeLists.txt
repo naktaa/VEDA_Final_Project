@@ -49,6 +49,8 @@ add_executable(mqtt_tank_drive
   src/frame_jpeg_cache.cpp
   src/http_vr_server.cpp
   src/mqtt_drive.cpp
+  src/rc_status_publisher.cpp
+  src/rc_status_types.cpp
   src/camera_capture.cpp
   src/ptz_control.cpp
   src/rtsp_stream.cpp

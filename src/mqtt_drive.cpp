@@ -150,11 +150,9 @@ bool run_mqtt_drive_loop(const MqttConfig& cfg,
     runtime.topic = cfg.topic;
     runtime.ptz_controller = ptz_controller;
 
-    mosquitto_lib_init();
     mosquitto* mosq = mosquitto_new("tank_mqtt_drive", true, &runtime);
     if (!mosq) {
         fprintf(stderr, "[MQTT] mosquitto_new failed\n");
-        mosquitto_lib_cleanup();
         return false;
     }
 
@@ -166,7 +164,6 @@ bool run_mqtt_drive_loop(const MqttConfig& cfg,
     if (rc != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "[MQTT] connect error: %s\n", mosquitto_strerror(rc));
         mosquitto_destroy(mosq);
-        mosquitto_lib_cleanup();
         return false;
     }
 
@@ -191,7 +188,6 @@ bool run_mqtt_drive_loop(const MqttConfig& cfg,
     tank_drive::stop_from(tank_drive::DriveSource::kMqtt);
     mosquitto_disconnect(mosq);
     mosquitto_destroy(mosq);
-    mosquitto_lib_cleanup();
     return ok;
 }
 

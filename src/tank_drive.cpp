@@ -141,6 +141,7 @@ namespace {
         }
 
         if (best_index == g_source_states.size()) {
+            g_active_source = DriveSource::kManualKey;
             g_left_cmd = 0;
             g_right_cmd = 0;
         } else {
@@ -309,6 +310,18 @@ int adjust_speed(int delta) {
         logStateIfChanged();
     }
     return g_pwm;
+}
+
+DriveStatusSnapshot get_status_snapshot() {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    DriveStatusSnapshot snapshot;
+    snapshot.motor_ready = g_motor_ready;
+    snapshot.pwm = g_pwm;
+    snapshot.left_cmd = g_left_cmd;
+    snapshot.right_cmd = g_right_cmd;
+    snapshot.moving = (g_left_cmd != 0 || g_right_cmd != 0);
+    snapshot.active_source = g_active_source;
+    return snapshot;
 }
 
 void set_idle_autostop(bool enabled, int timeout_ms) {

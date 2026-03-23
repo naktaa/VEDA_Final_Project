@@ -8,7 +8,73 @@
 namespace {
 
 libcamera::PixelFormat select_pixel_format() {
-    return libcamera::formats::XBGR8888;
+    // Prefer an unambiguous 3-channel format. libcamera may still negotiate a
+    // different format after validate(), so get_frame() converts based on the
+    // actual stream configuration.
+    return libcamera::formats::BGR888;
+}
+
+cv::Mat resize_if_needed(cv::Mat image, int target_width, int target_height) {
+    if (image.empty()) {
+        return {};
+    }
+    if (image.cols != target_width || image.rows != target_height) {
+        cv::resize(image,
+                   image,
+                   cv::Size(target_width, target_height),
+                   0.0,
+                   0.0,
+                   cv::INTER_LINEAR);
+    }
+    if (!image.isContinuous()) {
+        image = image.clone();
+    }
+    return image;
+}
+
+cv::Mat convert_xrgb_to_bgr(const cv::Mat& input) {
+    cv::Mat converted(input.rows, input.cols, CV_8UC3);
+    const int from_to[] = {3, 0, 2, 1, 1, 2};
+    cv::mixChannels(&input, 1, &converted, 1, from_to, 3);
+    return converted;
+}
+
+cv::Mat convert_xbgr_to_bgr(const cv::Mat& input) {
+    cv::Mat converted(input.rows, input.cols, CV_8UC3);
+    const int from_to[] = {1, 0, 2, 1, 3, 2};
+    cv::mixChannels(&input, 1, &converted, 1, from_to, 3);
+    return converted;
+}
+
+cv::Mat convert_libcamera_to_bgr(const cv::Mat& input,
+                                 const libcamera::PixelFormat& pixel_format,
+                                 bool xrgb_fallback,
+                                 int target_width,
+                                 int target_height) {
+    if (input.empty()) {
+        return {};
+    }
+
+    cv::Mat output;
+    if (pixel_format == libcamera::formats::BGR888) {
+        output = input.clone();
+    } else if (pixel_format == libcamera::formats::RGB888) {
+        cv::cvtColor(input, output, cv::COLOR_RGB2BGR);
+    } else if (pixel_format == libcamera::formats::XRGB8888) {
+        output = convert_xrgb_to_bgr(input);
+    } else if (pixel_format == libcamera::formats::XBGR8888) {
+        output = convert_xbgr_to_bgr(input);
+    } else if (input.type() == CV_8UC4) {
+        if (xrgb_fallback) {
+            output = convert_xrgb_to_bgr(input);
+        } else {
+            cv::cvtColor(input, output, cv::COLOR_BGRA2BGR);
+        }
+    } else {
+        output = ensure_bgr(input, false, target_width, target_height);
+    }
+
+    return resize_if_needed(output, target_width, target_height);
 }
 
 } // namespace
@@ -179,12 +245,21 @@ bool LibcameraCapture::get_frame(CapturedFrame& out, std::string* error) {
     auto* data = static_cast<uint8_t*>(mapped_it->second.data[0]);
     const size_t stride = stream_config.stride;
 
+    const int cv_type =
+        (stream_config.pixelFormat == libcamera::formats::BGR888 ||
+         stream_config.pixelFormat == libcamera::formats::RGB888)
+            ? CV_8UC3
+            : CV_8UC4;
     cv::Mat raw(static_cast<int>(stream_config.size.height),
                 static_cast<int>(stream_config.size.width),
-                CV_8UC4,
+                cv_type,
                 data,
                 stride);
-    out.image = ensure_bgr(raw.clone(), config_.libcamera_xrgb, config_.width, config_.height);
+    out.image = convert_libcamera_to_bgr(raw,
+                                         stream_config.pixelFormat,
+                                         config_.libcamera_xrgb,
+                                         config_.width,
+                                         config_.height);
 
     const libcamera::ControlList& meta = request->metadata();
     int exposure_us = config_.exposure_us;

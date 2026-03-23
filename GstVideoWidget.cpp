@@ -1,21 +1,51 @@
 #include "GstVideoWidget.h"
 
 #include <QDebug>
+#include <QHash>
+#include <QMutexLocker>
 #include <QPainter>
 #include <QTimer>
-#include <QMutexLocker>
 
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
 
 static bool g_gst_inited = false;
 
+namespace {
+
+QHash<const GstVideoWidget*, bool> g_bgrOverrideByWidget;
+
+bool shouldUseBgrOverride(const QString& url) {
+    const QString normalized = url.trimmed().toLower();
+    return normalized.contains(":8555/cam") ||
+           normalized.contains(":8555/raw") ||
+           normalized.endsWith("/cam") ||
+           normalized.endsWith("/raw");
+}
+
+QImage copyRgbLikeFrame(const GstMapInfo& map,
+                        int width,
+                        int height,
+                        int bytesPerLine,
+                        bool forceBgrOverride) {
+    if (forceBgrOverride) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        QImage img((const uchar*)map.data, width, height, bytesPerLine, QImage::Format_BGR888);
+        return img.copy();
+#else
+        QImage img((const uchar*)map.data, width, height, bytesPerLine, QImage::Format_RGB888);
+        return img.rgbSwapped().copy();
+#endif
+    }
+
+    QImage img((const uchar*)map.data, width, height, bytesPerLine, QImage::Format_RGB888);
+    return img.copy();
+}
+
+} // namespace
+
 GstVideoWidget::GstVideoWidget(QWidget* parent)
     : QWidget(parent) {
-    // ???�제 native overlay ?�요 ?�음 (?�버?�이 ?�해 ?�거)
-    // setAttribute(Qt::WA_NativeWindow);
-    // setAttribute(Qt::WA_PaintOnScreen);
-
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setAutoFillBackground(true);
     setStyleSheet("background-color:black;");
@@ -24,7 +54,6 @@ GstVideoWidget::GstVideoWidget(QWidget* parent)
 
     m_pullTimer = new QTimer(this);
     m_pullTimer->setTimerType(Qt::PreciseTimer);
-    // ??? ?�상??기�? 30fps ?�도�?충분 (추측)
     m_pullTimer->setInterval(15);
     connect(m_pullTimer, &QTimer::timeout, this, &GstVideoWidget::onPullFrame);
 }
@@ -41,7 +70,10 @@ void GstVideoWidget::ensureGstInit() {
 }
 
 void GstVideoWidget::stopStream() {
-    if (m_pullTimer) m_pullTimer->stop();
+    if (m_pullTimer) {
+        m_pullTimer->stop();
+    }
+    g_bgrOverrideByWidget.remove(this);
 
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
@@ -78,17 +110,13 @@ void GstVideoWidget::stopStream() {
 void GstVideoWidget::startStream(const QString& url) {
     stopStream();
 
-    // ???�상????�� 고정 (기본 640x360)
-    // ?�요?�면 854x480 or 1280x720�?변�?가??
-    // ??appsink�??�레?�을 Qt�?가?�온??(?�버?�이 100% 가??
+    const bool forceBgrOverride = shouldUseBgrOverride(url);
+    g_bgrOverrideByWidget.insert(this, forceBgrOverride);
+
     const bool isRtsp = url.trimmed().startsWith("rtsp://", Qt::CaseInsensitive);
 
     QString pipeStr;
     if (isRtsp) {
-        // RTSP 수신 파이프라인은 아래 둘 중 하나만 켜서 씁니다.
-        // 평소에는 TCP를 기본으로 두고, UDP 테스트가 필요할 때 아래 블록을 서로 바꿔 주석 처리하면 됩니다.
-
-        // TCP: 지연은 더 크지만 손실 복구가 비교적 안정적입니다.
         pipeStr = QString(
                       "rtspsrc location=\"%1\" protocols=tcp latency=60 "
                       "drop-on-latency=true udp-reconnect=true timeout=5000000 ! "
@@ -104,7 +132,7 @@ void GstVideoWidget::startStream(const QString& url) {
                       "emit-signals=false enable-last-sample=false wait-on-eos=false")
                       .arg(url);
 
-        // UDP: 지연은 짧지만 패킷 손실 시 깍두기와 끊김이 더 잘 보입니다.
+        // UDP test pipeline:
         // pipeStr = QString(
         //               "rtspsrc location=\"%1\" protocols=udp latency=20 "
         //               "drop-on-latency=true udp-reconnect=true timeout=5000000 ! "
@@ -119,8 +147,7 @@ void GstVideoWidget::startStream(const QString& url) {
         //               "appsink name=vsink sync=false max-buffers=1 drop=true "
         //               "emit-signals=false enable-last-sample=false wait-on-eos=false")
         //               .arg(url);
-    }
-    else {
+    } else {
         QString source = QString("uridecodebin uri=\"%1\"").arg(url);
         pipeStr = QString(
                       "%1 ! "
@@ -134,13 +161,16 @@ void GstVideoWidget::startStream(const QString& url) {
     }
 
     qDebug() << "[GstVideoWidget] startStream:" << url;
+    qDebug() << "[GstVideoWidget] color mode:" << (forceBgrOverride ? "bgr-override" : "normal-rgb");
     qDebug() << "[GstVideoWidget] pipeline:" << pipeStr;
 
     GError* err = nullptr;
     m_pipeline = gst_parse_launch(pipeStr.toUtf8().constData(), &err);
     if (!m_pipeline) {
         qDebug() << "[GstVideoWidget] pipeline create failed:" << (err ? err->message : "unknown");
-        if (err) g_error_free(err);
+        if (err) {
+            g_error_free(err);
+        }
         return;
     }
 
@@ -154,7 +184,6 @@ void GstVideoWidget::startStream(const QString& url) {
         return;
     }
 
-    // appsink ?�정 (?�전?�게 ??�???
     GstAppSink* as = GST_APP_SINK(m_appsink);
     gst_app_sink_set_drop(as, TRUE);
     gst_app_sink_set_max_buffers(as, 1);
@@ -167,10 +196,7 @@ void GstVideoWidget::startStream(const QString& url) {
 
     gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
 
-    // ??�??�작?� �??�제 ?�태
     resetZoom();
-
-    // ??pull timer ?�작
     m_pullTimer->start();
 }
 
@@ -185,8 +211,12 @@ void GstVideoWidget::onPullFrame() {
                 qDebug() << "[GstVideoWidget] ERROR:"
                          << (err ? err->message : "unknown")
                          << (dbg ? dbg : "");
-                if (err) g_error_free(err);
-                if (dbg) g_free(dbg);
+                if (err) {
+                    g_error_free(err);
+                }
+                if (dbg) {
+                    g_free(dbg);
+                }
                 break;
             }
             case GST_MESSAGE_WARNING: {
@@ -196,8 +226,12 @@ void GstVideoWidget::onPullFrame() {
                 qDebug() << "[GstVideoWidget] WARNING:"
                          << (err ? err->message : "unknown")
                          << (dbg ? dbg : "");
-                if (err) g_error_free(err);
-                if (dbg) g_free(dbg);
+                if (err) {
+                    g_error_free(err);
+                }
+                if (dbg) {
+                    g_free(dbg);
+                }
                 break;
             }
             default:
@@ -207,16 +241,26 @@ void GstVideoWidget::onPullFrame() {
         }
     }
 
-    if (!m_appsink) return;
+    if (!m_appsink) {
+        return;
+    }
+
+    const bool forceBgrOverride = g_bgrOverrideByWidget.value(this, false);
 
     GstSample* sample = nullptr;
     for (;;) {
         GstSample* next = gst_app_sink_try_pull_sample(GST_APP_SINK(m_appsink), 0);
-        if (!next) break;
-        if (sample) gst_sample_unref(sample);
+        if (!next) {
+            break;
+        }
+        if (sample) {
+            gst_sample_unref(sample);
+        }
         sample = next;
     }
-    if (!sample) return;
+    if (!sample) {
+        return;
+    }
 
     GstBuffer* buffer = gst_sample_get_buffer(sample);
     GstCaps* caps = gst_sample_get_caps(sample);
@@ -226,7 +270,8 @@ void GstVideoWidget::onPullFrame() {
     }
 
     GstStructure* s = gst_caps_get_structure(caps, 0);
-    int w = 0, h = 0;
+    int w = 0;
+    int h = 0;
     gst_structure_get_int(s, "width", &w);
     gst_structure_get_int(s, "height", &h);
 
@@ -246,23 +291,18 @@ void GstVideoWidget::onPullFrame() {
     m_videoW = w;
     m_videoH = h;
 
-
     GstMapInfo map;
     if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
         gst_sample_unref(sample);
         return;
     }
 
-    // BGRx로 받아서 alpha 영향을 제거하고 QImage::Format_RGB32로 바로 표시합니다.
-    // ?�️ map.data??gst 버퍼 메모리라??sample unref ??무효가 ?????�음 ??deep copy
     GstVideoInfo info;
     const bool infoOk = gst_video_info_from_caps(&info, caps);
     const int bytesPerLine =
         (infoOk && info.stride[0] > 0) ? static_cast<int>(info.stride[0]) : (w * 3);
 
-    QImage img((const uchar*)map.data, w, h, bytesPerLine, QImage::Format_RGB888);
-
-    QImage copy = img.copy(); // ???�정???�선 (?�능보다 ?�실)
+    QImage copy = copyRgbLikeFrame(map, w, h, bytesPerLine, forceBgrOverride);
 
     gst_buffer_unmap(buffer, &map);
     gst_sample_unref(sample);
@@ -285,9 +325,10 @@ void GstVideoWidget::paintEvent(QPaintEvent* e) {
         QMutexLocker lk(&m_frameMtx);
         frameCopy = m_frame;
     }
-    if (frameCopy.isNull()) return;
+    if (frameCopy.isNull()) {
+        return;
+    }
 
-    // ???�젯 ?�기??맞게 letterbox�??�시
     QSize target = frameCopy.size();
     target.scale(size(), Qt::KeepAspectRatio);
 
@@ -303,14 +344,18 @@ bool GstVideoWidget::widgetToImagePoint(const QPointF& widgetPos, QPointF& image
         QMutexLocker lk(&m_frameMtx);
         frameCopy = m_frame;
     }
-    if (frameCopy.isNull()) return false;
+    if (frameCopy.isNull()) {
+        return false;
+    }
 
     QSize target = frameCopy.size();
     target.scale(size(), Qt::KeepAspectRatio);
     QRectF drawRect(QPointF(0, 0), target);
     drawRect.moveCenter(rect().center());
 
-    if (!drawRect.contains(widgetPos)) return false;
+    if (!drawRect.contains(widgetPos)) {
+        return false;
+    }
 
     const double nx = (widgetPos.x() - drawRect.left()) / drawRect.width();
     const double ny = (widgetPos.y() - drawRect.top()) / drawRect.height();
@@ -325,7 +370,9 @@ QRect GstVideoWidget::videoDisplayRect() const {
         QMutexLocker lk(&m_frameMtx);
         frameCopy = m_frame;
     }
-    if (frameCopy.isNull()) return rect();
+    if (frameCopy.isNull()) {
+        return rect();
+    }
 
     QSize target = frameCopy.size();
     target.scale(size(), Qt::KeepAspectRatio);
@@ -340,14 +387,25 @@ QSize GstVideoWidget::currentFrameSize() const {
     return m_frame.size();
 }
 
-// ---- zoom (기존 로직 ?��?) ----
 void GstVideoWidget::setDigitalZoom(double zoom, double cx, double cy) {
-    if (zoom < 1.0) zoom = 1.0;
-    if (zoom > 6.0) zoom = 6.0;
-    if (cx < 0.0) cx = 0.0;
-    if (cx > 1.0) cx = 1.0;
-    if (cy < 0.0) cy = 0.0;
-    if (cy > 1.0) cy = 1.0;
+    if (zoom < 1.0) {
+        zoom = 1.0;
+    }
+    if (zoom > 6.0) {
+        zoom = 6.0;
+    }
+    if (cx < 0.0) {
+        cx = 0.0;
+    }
+    if (cx > 1.0) {
+        cx = 1.0;
+    }
+    if (cy < 0.0) {
+        cy = 0.0;
+    }
+    if (cy > 1.0) {
+        cy = 1.0;
+    }
 
     m_zoom = zoom;
     m_cx = cx;
@@ -361,15 +419,15 @@ void GstVideoWidget::resetZoom() {
 }
 
 void GstVideoWidget::updateVideoSizeFromCaps() {
-    // appsink�?받으므�?굳이 ?�요 ?��?�? 기존 ?�터?�이???��???
 }
 
 void GstVideoWidget::updateCrop(double zoom, double cx, double cy) {
-    if (!m_crop) return;
+    if (!m_crop) {
+        return;
+    }
 
-    // appsink 캡스 기�? OUT_W/OUT_H�??�어?��?�?crop 기�???�??�상??
-    // ?�기?�는 ?�재 ?�레???�기�??�용 (?�으�?OUT_W/OUT_H 가??
-    int W = 640, H = 480;
+    int W = 640;
+    int H = 480;
     {
         QMutexLocker lk(&m_frameMtx);
         if (!m_frame.isNull()) {
@@ -380,32 +438,48 @@ void GstVideoWidget::updateCrop(double zoom, double cx, double cy) {
 
     if (zoom <= 1.0) {
         g_object_set(G_OBJECT(m_crop),
-                     "left", 0, "right", 0, "top", 0, "bottom", 0, nullptr);
+                     "left", 0,
+                     "right", 0,
+                     "top", 0,
+                     "bottom", 0,
+                     nullptr);
         return;
     }
 
-    int outW = (int)(W / zoom);
-    int outH = (int)(H / zoom);
+    int outW = static_cast<int>(W / zoom);
+    int outH = static_cast<int>(H / zoom);
 
-    if (outW < 16) outW = 16;
-    if (outH < 16) outH = 16;
+    if (outW < 16) {
+        outW = 16;
+    }
+    if (outH < 16) {
+        outH = 16;
+    }
 
-    int cropW = W - outW;
-    int cropH = H - outH;
+    const int cropW = W - outW;
+    const int cropH = H - outH;
 
-    int desiredLeft = (int)(W * cx - outW / 2);
-    int desiredTop = (int)(H * cy - outH / 2);
+    int desiredLeft = static_cast<int>(W * cx - outW / 2);
+    int desiredTop = static_cast<int>(H * cy - outH / 2);
 
-    if (desiredLeft < 0) desiredLeft = 0;
-    if (desiredLeft > cropW) desiredLeft = cropW;
+    if (desiredLeft < 0) {
+        desiredLeft = 0;
+    }
+    if (desiredLeft > cropW) {
+        desiredLeft = cropW;
+    }
 
-    if (desiredTop < 0) desiredTop = 0;
-    if (desiredTop > cropH) desiredTop = cropH;
+    if (desiredTop < 0) {
+        desiredTop = 0;
+    }
+    if (desiredTop > cropH) {
+        desiredTop = cropH;
+    }
 
-    int left = desiredLeft;
-    int right = cropW - left;
-    int top = desiredTop;
-    int bottom = cropH - top;
+    const int left = desiredLeft;
+    const int right = cropW - left;
+    const int top = desiredTop;
+    const int bottom = cropH - top;
 
     g_object_set(G_OBJECT(m_crop),
                  "left", left,

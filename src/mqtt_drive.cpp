@@ -128,14 +128,14 @@ void on_message(struct mosquitto*, void* obj, const struct mosquitto_message* ms
     if (!decode_drive_command(command, left_cmd, right_cmd)) return;
 
     if (active) {
-        tank_drive::command_drive(left_cmd, right_cmd);
+        tank_drive::command_drive_from(tank_drive::DriveSource::kMqtt, left_cmd, right_cmd);
         rt->active_drive_cmd = command;
         fprintf(stderr, "[MQTT] drive start: %s\n", command.c_str());
         return;
     }
 
     if (rt->active_drive_cmd == command) {
-        tank_drive::stop();
+        tank_drive::stop_from(tank_drive::DriveSource::kMqtt);
         rt->active_drive_cmd.clear();
         fprintf(stderr, "[MQTT] drive stop: %s\n", command.c_str());
     }
@@ -188,7 +188,7 @@ bool run_mqtt_drive_loop(const MqttConfig& cfg,
         }
     }
 
-    tank_drive::stop();
+    tank_drive::stop_from(tank_drive::DriveSource::kMqtt);
     mosquitto_disconnect(mosq);
     mosquitto_destroy(mosq);
     mosquitto_lib_cleanup();

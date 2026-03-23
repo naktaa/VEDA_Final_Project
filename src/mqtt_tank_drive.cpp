@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #include "camera_capture.hpp"
 #include "frame_jpeg_cache.hpp"
@@ -13,6 +14,7 @@
 #include "rtsp_stream.hpp"
 #include "stream_config.hpp"
 #include "tank_drive.hpp"
+#include "vr_remote_input.hpp"
 
 #ifndef TANK_SOURCE_DIR
 #define TANK_SOURCE_DIR "."
@@ -57,6 +59,10 @@ void print_usage(const char* prog) {
             stream_config::DEFAULT_PAN_CHANNEL);
     fprintf(stderr, "  --tilt-channel <n>      PCA9685 channel for tilt SG90 (default: %d)\n",
             stream_config::DEFAULT_TILT_CHANNEL);
+    fprintf(stderr, "  --vr-input-dev <path>   enable controller input from evdev path\n");
+    fprintf(stderr, "  --vr-idle-stop-ms <n>   controller auto-stop timeout in ms (default: 180)\n");
+    fprintf(stderr, "  --vr-speed-step <n>     controller speed adjustment step (default: 10)\n");
+    fprintf(stderr, "  --vr-log-only           print controller commands without motor control\n");
 }
 
 ParseResult parse_args(int argc,
@@ -64,7 +70,9 @@ ParseResult parse_args(int argc,
                        MqttConfig& mqtt_cfg,
                        RtspConfig& rtsp_cfg,
                        HttpVrConfig& http_cfg,
-                       PtzConfig& ptz_cfg) {
+                       PtzConfig& ptz_cfg,
+                       bool& vr_input_enabled,
+                       VrRemoteInputConfig& vr_input_cfg) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             mqtt_cfg.host = argv[++i];
@@ -95,6 +103,18 @@ ParseResult parse_args(int argc,
             ptz_cfg.pan_channel = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--tilt-channel") == 0 && i + 1 < argc) {
             ptz_cfg.tilt_channel = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--vr-input-dev") == 0 && i + 1 < argc) {
+            vr_input_enabled = true;
+            vr_input_cfg.input_device = argv[++i];
+        } else if (std::strcmp(argv[i], "--vr-idle-stop-ms") == 0 && i + 1 < argc) {
+            vr_input_enabled = true;
+            vr_input_cfg.idle_stop_ms = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--vr-speed-step") == 0 && i + 1 < argc) {
+            vr_input_enabled = true;
+            vr_input_cfg.speed_step = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--vr-log-only") == 0) {
+            vr_input_enabled = true;
+            vr_input_cfg.log_only = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return ParseResult::kHelp;
@@ -103,6 +123,15 @@ ParseResult parse_args(int argc,
             print_usage(argv[0]);
             return ParseResult::kError;
         }
+    }
+
+    if (vr_input_cfg.idle_stop_ms < 0) {
+        fprintf(stderr, "[VR] idle timeout must be >= 0\n");
+        return ParseResult::kError;
+    }
+    if (vr_input_cfg.speed_step < 1) {
+        fprintf(stderr, "[VR] speed step must be >= 1\n");
+        return ParseResult::kError;
     }
     return ParseResult::kOk;
 }
@@ -141,7 +170,11 @@ int main(int argc, char* argv[]) {
         stream_config::DEFAULT_TILT_DOWN_DEG,
         stream_config::DEFAULT_IMU_PRIORITY_TIMEOUT_MS};
 
-    const ParseResult parse_result = parse_args(argc, argv, mqtt_cfg, rtsp_cfg, http_cfg, ptz_cfg);
+    bool vr_input_enabled = false;
+    VrRemoteInputConfig vr_input_cfg;
+
+    const ParseResult parse_result = parse_args(argc, argv, mqtt_cfg, rtsp_cfg, http_cfg, ptz_cfg,
+                                                vr_input_enabled, vr_input_cfg);
     if (parse_result == ParseResult::kHelp) return 0;
     if (parse_result == ParseResult::kError) return 1;
 
@@ -158,6 +191,8 @@ int main(int argc, char* argv[]) {
     CameraCapture camera_capture;
     RtspStreamServer rtsp_server;
     HttpVrServer http_server;
+    std::thread vr_input_thread;
+    bool vr_input_thread_started = false;
 
     if (rtsp_cfg.enable) {
         if (!rtsp_server.start(rtsp_cfg)) {
@@ -188,9 +223,23 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (vr_input_enabled) {
+        vr_input_thread = std::thread([&]() {
+            const bool ok = run_vr_remote_input_loop(vr_input_cfg, g_running);
+            if (!ok && g_running.load()) {
+                fprintf(stderr, "[VR] controller loop exited; MQTT/HTTP control remains active\n");
+                fflush(stderr);
+            }
+        });
+        vr_input_thread_started = true;
+    }
+
     const bool mqtt_ok = run_mqtt_drive_loop(mqtt_cfg, g_running, &ptz_controller);
 
     g_running = false;
+    if (vr_input_thread_started && vr_input_thread.joinable()) {
+        vr_input_thread.join();
+    }
     if (http_cfg.enable) {
         http_server.stop();
     }

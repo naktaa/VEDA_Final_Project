@@ -3,12 +3,16 @@
 #include <chrono>
 #include <cstdio>
 #include <algorithm>
+#include <array>
+#include <mutex>
 
 #include <wiringPi.h>
 
 namespace tank_drive {
 
 namespace {
+    using Clock = std::chrono::steady_clock;
+
     constexpr int STOP = 0;
     constexpr int FORWARD = 1;
     constexpr int BACKWARD = 2;
@@ -34,8 +38,35 @@ namespace {
     std::chrono::steady_clock::time_point g_last_motion;
     int g_motion_hold_timeout_ms = 200;
     bool g_idle_autostop_enabled = true;
+    DriveSource g_active_source = DriveSource::kManualKey;
+    std::mutex g_state_mutex;
+
+    struct SourceDriveState {
+        int left_cmd = 0;
+        int right_cmd = 0;
+        bool active = false;
+        Clock::time_point last_update{};
+    };
+
+    std::array<SourceDriveState, 3> g_source_states{};
 
     int clampPwm(int v) { return std::max(0, std::min(255, v)); }
+
+    int normalizeCmd(int v) {
+        return (v > 0) ? 1 : (v < 0 ? -1 : 0);
+    }
+
+    std::size_t sourceIndex(DriveSource source) {
+        switch (source) {
+        case DriveSource::kManualKey:
+            return 0;
+        case DriveSource::kMqtt:
+            return 1;
+        case DriveSource::kVrRemote:
+            return 2;
+        }
+        return 0;
+    }
 
     int toHwPwmDuty(int pwm_255) {
         constexpr int HW_RANGE = 1024;
@@ -94,9 +125,38 @@ namespace {
         fprintf(stderr, "H : help\n");
         fprintf(stderr, "=========================\n\n");
     }
+
+    void applySelectedDriveLocked() {
+        std::size_t best_index = g_source_states.size();
+        if (g_source_states[sourceIndex(g_active_source)].active) {
+            best_index = sourceIndex(g_active_source);
+        } else {
+            for (std::size_t i = 0; i < g_source_states.size(); ++i) {
+                if (!g_source_states[i].active) continue;
+                if (best_index == g_source_states.size() ||
+                    g_source_states[best_index].last_update < g_source_states[i].last_update) {
+                    best_index = i;
+                }
+            }
+        }
+
+        if (best_index == g_source_states.size()) {
+            g_left_cmd = 0;
+            g_right_cmd = 0;
+        } else {
+            g_active_source = static_cast<DriveSource>(best_index);
+            g_left_cmd = g_source_states[best_index].left_cmd;
+            g_right_cmd = g_source_states[best_index].right_cmd;
+        }
+
+        g_last_motion = Clock::now();
+        applyDrive(g_left_cmd, g_right_cmd, g_pwm);
+        logStateIfChanged();
+    }
 } // namespace
 
 bool init() {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
     if (wiringPiSetup() == -1) {
         fprintf(stderr, "[TANK] wiringPiSetup failed; motor control disabled.\n");
         g_motor_ready = false;
@@ -120,116 +180,158 @@ bool init() {
     pwmSetRange(1024);
 
     g_motor_ready = true;
-    g_last_motion = std::chrono::steady_clock::now();
+    g_active_source = DriveSource::kManualKey;
+    g_source_states = {};
+    g_last_motion = Clock::now();
     stopAll();
     fprintf(stderr, "[TANK] motor control ready (PWM=%d)\n", g_pwm);
     return true;
 }
 
 void shutdown() {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_source_states = {};
     stopAll();
     g_motor_ready = false;
 }
 
 bool handle_key(char ch) {
-    if (!g_motor_ready) return false;
+    int left_cmd = 0;
+    int right_cmd = 0;
 
-    bool consumed = true;
     switch (ch) {
     case 'w':
     case 'W':
-        g_left_cmd = 1;
-        g_right_cmd = 1;
+        left_cmd = 1;
+        right_cmd = 1;
         break;
     case 's':
     case 'S':
-        g_left_cmd = -1;
-        g_right_cmd = -1;
+        left_cmd = -1;
+        right_cmd = -1;
         break;
     case 'a':
     case 'A':
-        g_left_cmd = -1;
-        g_right_cmd = 1;
+        left_cmd = -1;
+        right_cmd = 1;
         break;
     case 'd':
     case 'D':
-        g_left_cmd = 1;
-        g_right_cmd = -1;
+        left_cmd = 1;
+        right_cmd = -1;
         break;
     case 'q':
     case 'Q':
-        g_left_cmd = 0;
-        g_right_cmd = 1;
+        left_cmd = 0;
+        right_cmd = 1;
         break;
     case 'e':
     case 'E':
-        g_left_cmd = 1;
-        g_right_cmd = 0;
+        left_cmd = 1;
+        right_cmd = 0;
         break;
     case 'x':
     case 'X':
     case ' ':
-        g_left_cmd = 0;
-        g_right_cmd = 0;
-        break;
+        stop_from(DriveSource::kManualKey);
+        return true;
     case '+':
     case '=':
-        g_pwm = clampPwm(g_pwm + 10);
-        fprintf(stderr, "[TANK] PWM=%d\n", g_pwm);
-        break;
+        adjust_speed(10);
+        return true;
     case '-':
     case '_':
-        g_pwm = clampPwm(g_pwm - 10);
-        fprintf(stderr, "[TANK] PWM=%d\n", g_pwm);
-        break;
+        adjust_speed(-10);
+        return true;
     case 'h':
     case 'H':
         printHelp();
-        break;
+        return true;
     default:
-        consumed = false;
-        break;
+        return false;
     }
 
-    if (consumed) {
-        g_last_motion = std::chrono::steady_clock::now();
-        applyDrive(g_left_cmd, g_right_cmd, g_pwm);
-        logStateIfChanged();
-    }
-    return consumed;
+    command_drive_from(DriveSource::kManualKey, left_cmd, right_cmd);
+    return true;
 }
 
 void command_drive(int left_cmd, int right_cmd) {
+    command_drive_from(DriveSource::kManualKey, left_cmd, right_cmd);
+}
+
+void command_drive_from(DriveSource source, int left_cmd, int right_cmd) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
     if (!g_motor_ready) return;
-    g_left_cmd = (left_cmd > 0) ? 1 : (left_cmd < 0 ? -1 : 0);
-    g_right_cmd = (right_cmd > 0) ? 1 : (right_cmd < 0 ? -1 : 0);
-    g_last_motion = std::chrono::steady_clock::now();
-    applyDrive(g_left_cmd, g_right_cmd, g_pwm);
-    logStateIfChanged();
+
+    SourceDriveState& state = g_source_states[sourceIndex(source)];
+    state.left_cmd = normalizeCmd(left_cmd);
+    state.right_cmd = normalizeCmd(right_cmd);
+    state.active = (state.left_cmd != 0 || state.right_cmd != 0);
+    state.last_update = Clock::now();
+    if (state.active) {
+        g_active_source = source;
+    }
+    applySelectedDriveLocked();
 }
 
 void stop() {
-    command_drive(0, 0);
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    for (SourceDriveState& state : g_source_states) {
+        state.left_cmd = 0;
+        state.right_cmd = 0;
+        state.active = false;
+        state.last_update = Clock::now();
+    }
+    if (!g_motor_ready) return;
+    applySelectedDriveLocked();
+}
+
+void stop_from(DriveSource source) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SourceDriveState& state = g_source_states[sourceIndex(source)];
+    state.left_cmd = 0;
+    state.right_cmd = 0;
+    state.active = false;
+    state.last_update = Clock::now();
+    if (!g_motor_ready) return;
+    applySelectedDriveLocked();
+}
+
+int adjust_speed(int delta) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_pwm = clampPwm(g_pwm + delta);
+    g_last_motion = Clock::now();
+    fprintf(stderr, "[TANK] PWM=%d\n", g_pwm);
+    fflush(stderr);
+
+    if (g_motor_ready) {
+        applyDrive(g_left_cmd, g_right_cmd, g_pwm);
+        logStateIfChanged();
+    }
+    return g_pwm;
 }
 
 void set_idle_autostop(bool enabled, int timeout_ms) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
     g_idle_autostop_enabled = enabled;
     g_motion_hold_timeout_ms = std::max(0, timeout_ms);
 }
 
 void tick() {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
     if (!g_motor_ready) return;
     if (!g_idle_autostop_enabled) return;
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = Clock::now();
     const auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_last_motion).count();
     if ((g_left_cmd != 0 || g_right_cmd != 0) && idle_ms > g_motion_hold_timeout_ms) {
-        g_left_cmd = 0;
-        g_right_cmd = 0;
-        applyDrive(g_left_cmd, g_right_cmd, g_pwm);
+        SourceDriveState& state = g_source_states[sourceIndex(g_active_source)];
+        state.left_cmd = 0;
+        state.right_cmd = 0;
+        state.active = false;
+        state.last_update = now;
+        applySelectedDriveLocked();
         fprintf(stderr, "[TANK] auto-stop (idle)\n");
         fflush(stderr);
-        g_last_print_l = g_left_cmd;
-        g_last_print_r = g_right_cmd;
     }
 }
 

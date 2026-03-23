@@ -53,6 +53,7 @@ add_executable(mqtt_tank_drive
   src/ptz_control.cpp
   src/rtsp_stream.cpp
   src/tank_drive.cpp
+  src/vr_remote_input.cpp
 )
 
 target_include_directories(mqtt_tank_drive PRIVATE

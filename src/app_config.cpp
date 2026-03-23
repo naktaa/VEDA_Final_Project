@@ -128,6 +128,7 @@ std::string make_default_config_text() {
     append_kv(oss, "hfov_deg", cfg.camera.hfov_deg);
     append_kv(oss, "vfov_deg", cfg.camera.vfov_deg);
     append_kv(oss, "libcamera_xrgb", cfg.camera.libcamera_xrgb ? 1 : 0);
+    append_kv(oss, "capture_backend", cfg.camera.capture_backend);
     oss << "\n";
 
     oss << "# [imu] IMU 버스, 샘플링 속도, FIFO/인터럽트, 축 매핑\n";
@@ -259,6 +260,7 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_double(map, "camera.hfov_deg", config.camera.hfov_deg);
         load_double(map, "camera.vfov_deg", config.camera.vfov_deg);
         load_bool(map, "camera.libcamera_xrgb", config.camera.libcamera_xrgb);
+        load_string(map, "camera.capture_backend", config.camera.capture_backend);
 
         load_int(map, "imu.bus", config.imu.bus);
         load_int(map, "imu.addr", config.imu.addr);
@@ -361,6 +363,7 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "hfov_deg", copy.camera.hfov_deg);
         append_kv(oss, "vfov_deg", copy.camera.vfov_deg);
         append_kv(oss, "libcamera_xrgb", copy.camera.libcamera_xrgb ? 1 : 0);
+        append_kv(oss, "capture_backend", copy.camera.capture_backend);
         oss << "\n";
 
         append_section(oss, "imu");

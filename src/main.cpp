@@ -1,4 +1,6 @@
 #include <atomic>
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -10,6 +12,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "app_config.hpp"
+#include "gst_camera_capture.hpp"
 #include "hybrid_eis.hpp"
 #include "imu_reader.hpp"
 #include "libcamera_capture.hpp"
@@ -30,6 +33,14 @@ void handle_signal(int) {
 
 constexpr const char* kTemplateConfigPath = "config_template.ini";
 constexpr const char* kLocalConfigPath = "config_local.ini";
+
+bool use_gstreamer_capture(const CameraConfig& config) {
+    std::string backend = config.capture_backend;
+    std::transform(backend.begin(), backend.end(), backend.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return backend == "gst" || backend == "gstreamer";
+}
 
 } // namespace
 
@@ -102,14 +113,35 @@ int main() {
         return 1;
     }
 
-    LibcameraCapture capture;
-    if (!capture.init(config.camera, &error)) {
+    const bool gst_capture_enabled = use_gstreamer_capture(config.camera);
+    LibcameraCapture libcamera_capture;
+    GstCameraCapture gst_capture;
+    auto init_capture = [&](std::string* init_error) {
+        return gst_capture_enabled
+            ? gst_capture.init(config.camera, init_error)
+            : libcamera_capture.init(config.camera, init_error);
+    };
+    auto get_frame = [&](CapturedFrame& frame, std::string* frame_error) {
+        return gst_capture_enabled
+            ? gst_capture.get_frame(frame, frame_error)
+            : libcamera_capture.get_frame(frame, frame_error);
+    };
+    auto shutdown_capture = [&]() {
+        if (gst_capture_enabled) {
+            gst_capture.shutdown();
+        } else {
+            libcamera_capture.shutdown();
+        }
+    };
+
+    if (!init_capture(&error)) {
         std::fprintf(stderr, "[MAIN] camera start failed: %s\n", error.c_str());
         imu_reader.stop();
         rtsp_server.stop();
         tank_drive::shutdown();
         return 1;
     }
+    std::fprintf(stderr, "[MAIN] capture backend: %s\n", gst_capture_enabled ? "gstreamer" : "libcamera");
 
     HybridEisProcessor processor(config, &imu_reader.buffer());
 
@@ -125,7 +157,7 @@ int main() {
         while (running.load()) {
             CapturedFrame frame;
             std::string frame_error;
-            if (!capture.get_frame(frame, &frame_error)) {
+            if (!get_frame(frame, &frame_error)) {
                 if (running.load()) {
                     std::fprintf(stderr, "[MAIN] frame pull failed: %s\n", frame_error.c_str());
                 }
@@ -209,7 +241,7 @@ int main() {
     }
     running = false;
 
-    capture.shutdown();
+    shutdown_capture();
 
     if (frame_thread.joinable()) {
         frame_thread.join();

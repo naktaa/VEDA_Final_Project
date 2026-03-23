@@ -14,6 +14,7 @@ struct CameraConfig {
     double hfov_deg = 62.2;
     double vfov_deg = 48.8;
     bool libcamera_xrgb = false;
+    std::string capture_backend = "libcamera";
 };
 
 struct ImuConfig {

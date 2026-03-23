@@ -22,6 +22,7 @@ pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 set(COMMON_SOURCES
   src/app_config.cpp
   src/gyro_eis.cpp
+  src/gst_camera_capture.cpp
   src/hybrid_eis.cpp
   src/image_utils.cpp
   src/imu_reader.cpp
@@ -69,6 +70,7 @@ target_link_libraries(main PRIVATE ${COMMON_LINK_LIBS})
 add_executable(main_raw
   src/main_raw.cpp
   src/app_config.cpp
+  src/gst_camera_capture.cpp
   src/image_utils.cpp
   src/libcamera_capture.cpp
   src/mqtt_drive.cpp

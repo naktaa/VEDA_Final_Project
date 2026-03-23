@@ -218,7 +218,12 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
         res.set_header("Location", "/web/");
     });
 
-    impl->server->Get(R"(/web/?$)", [impl](const httplib::Request&, httplib::Response& res) {
+    impl->server->Get("/web", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 302;
+        res.set_header("Location", "/web/");
+    });
+
+    impl->server->Get(R"(/web/$)", [impl](const httplib::Request&, httplib::Response& res) {
         std::string body;
         if (!load_file_text(std::filesystem::path(impl->config.web_root) / "index.html", body)) {
             res.status = 404;

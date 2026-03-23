@@ -535,8 +535,8 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
                                               impl_->config.pan_left_deg);
     const float yaw_pan = map_axis_from_imu(impl_->filtered_yaw * kYawPanGain,
                                             impl_->config.pan_center_deg,
-                                            impl_->config.pan_left_deg,
-                                            impl_->config.pan_right_deg);
+                                            impl_->config.pan_right_deg,
+                                            impl_->config.pan_left_deg);
     const float blended_pan = (0.35f * pitch_pan) + (0.65f * yaw_pan);
     impl_->imu_target_pan = clamp_around_center(blended_pan,
                                                 impl_->config.pan_center_deg,

@@ -1,5 +1,6 @@
 #include "libcamera_capture.hpp"
 
+#include <cstdio>
 #include <sys/mman.h>
 
 #include "image_utils.hpp"
@@ -12,6 +13,29 @@ libcamera::PixelFormat select_pixel_format() {
     // different format after validate(), so get_frame() converts based on the
     // actual stream configuration.
     return libcamera::formats::BGR888;
+}
+
+const char* pixel_format_name(const libcamera::PixelFormat& pixel_format) {
+    if (pixel_format == libcamera::formats::BGR888) {
+        return "BGR888";
+    }
+    if (pixel_format == libcamera::formats::RGB888) {
+        return "RGB888";
+    }
+    if (pixel_format == libcamera::formats::XRGB8888) {
+        return "XRGB8888";
+    }
+    if (pixel_format == libcamera::formats::XBGR8888) {
+        return "XBGR8888";
+    }
+    return "UNKNOWN";
+}
+
+bool is_supported_pixel_format(const libcamera::PixelFormat& pixel_format) {
+    return pixel_format == libcamera::formats::BGR888 ||
+           pixel_format == libcamera::formats::RGB888 ||
+           pixel_format == libcamera::formats::XRGB8888 ||
+           pixel_format == libcamera::formats::XBGR8888;
 }
 
 cv::Mat resize_if_needed(cv::Mat image, int target_width, int target_height) {
@@ -122,6 +146,22 @@ bool LibcameraCapture::init(const CameraConfig& config, std::string* error) {
         if (error) *error = "Camera configure failed";
         return false;
     }
+
+    const libcamera::StreamConfiguration& active_stream_config = camera_config_->at(0);
+    if (!is_supported_pixel_format(active_stream_config.pixelFormat)) {
+        if (error) {
+            *error = "unsupported libcamera pixel format after configure: " +
+                     std::string(pixel_format_name(active_stream_config.pixelFormat));
+        }
+        return false;
+    }
+    std::fprintf(stderr,
+                 "[CAP] libcamera format=%s %ux%u stride=%u requested=%s\n",
+                 pixel_format_name(active_stream_config.pixelFormat),
+                 active_stream_config.size.width,
+                 active_stream_config.size.height,
+                 active_stream_config.stride,
+                 pixel_format_name(select_pixel_format()));
 
     stream_ = stream_config.stream();
     allocator_ = std::make_unique<libcamera::FrameBufferAllocator>(camera_);
@@ -242,6 +282,13 @@ bool LibcameraCapture::get_frame(CapturedFrame& out, std::string* error) {
     }
 
     const libcamera::StreamConfiguration& stream_config = camera_config_->at(0);
+    if (!is_supported_pixel_format(stream_config.pixelFormat)) {
+        if (error) {
+            *error = "unsupported libcamera pixel format at runtime: " +
+                     std::string(pixel_format_name(stream_config.pixelFormat));
+        }
+        return false;
+    }
     auto* data = static_cast<uint8_t*>(mapped_it->second.data[0]);
     const size_t stride = stream_config.stride;
 

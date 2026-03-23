@@ -26,6 +26,8 @@ constexpr int kUpdateHz = 50;
 constexpr int kUpdateMs = 1000 / kUpdateHz;
 constexpr float kMaxStepPerTickDeg = 3.0f;
 constexpr float kYawPanGain = 1.35f;
+constexpr float kPanSensitivityScale = 0.8f;
+constexpr float kTiltSensitivityScale = 0.8f;
 constexpr float kVrPanLimitDeg = 60.0f;
 constexpr float kVrTiltLimitDeg = 50.0f;
 constexpr float kYawFilterTauSec = 0.2f;
@@ -529,11 +531,11 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     // Current phone mount uses roll -> tilt, pitch -> pan.
     impl_->filtered_pitch = (1.0f - kImuAlpha) * impl_->filtered_pitch + kImuAlpha * guarded_roll;
     impl_->filtered_roll = (1.0f - kImuAlpha) * impl_->filtered_roll + kImuAlpha * guarded_pitch;
-    const float pitch_pan = map_axis_from_imu(impl_->filtered_roll,
+    const float pitch_pan = map_axis_from_imu(impl_->filtered_roll * kPanSensitivityScale,
                                               impl_->config.pan_center_deg,
                                               impl_->config.pan_right_deg,
                                               impl_->config.pan_left_deg);
-    const float yaw_pan = map_axis_from_imu(impl_->filtered_yaw * kYawPanGain,
+    const float yaw_pan = map_axis_from_imu(impl_->filtered_yaw * kYawPanGain * kPanSensitivityScale,
                                             impl_->config.pan_center_deg,
                                             impl_->config.pan_right_deg,
                                             impl_->config.pan_left_deg);
@@ -542,7 +544,7 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
                                                 impl_->config.pan_center_deg,
                                                 kVrPanLimitDeg);
 
-    const float tilt_target = map_axis_from_imu(impl_->filtered_pitch,
+    const float tilt_target = map_axis_from_imu(impl_->filtered_pitch * kTiltSensitivityScale,
                                                 impl_->config.tilt_center_deg,
                                                 impl_->config.tilt_up_deg,
                                                 impl_->config.tilt_down_deg);

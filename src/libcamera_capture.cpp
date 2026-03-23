@@ -199,6 +199,7 @@ bool LibcameraCapture::init(const CameraConfig& config, std::string* error) {
     controls.set(libcamera::controls::FrameDurationLimits,
                  libcamera::Span<const int64_t, 2>(frame_limits));
     controls.set(libcamera::controls::AeEnable, false);
+    controls.set(libcamera::controls::AwbEnable, true);
     controls.set(libcamera::controls::ExposureTime, config_.exposure_us);
 
     if (camera_->start(&controls) != 0) {

@@ -98,7 +98,7 @@ void GstVideoWidget::startStream(const QString& url) {
                       "avdec_h264 ! "
                       "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "videoconvert ! "
-                      "video/x-raw,format=BGRx ! "
+                      "video/x-raw,format=RGB ! "
                       "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
                       "appsink name=vsink sync=false max-buffers=1 drop=true "
                       "emit-signals=false enable-last-sample=false wait-on-eos=false")
@@ -114,7 +114,7 @@ void GstVideoWidget::startStream(const QString& url) {
         //               "avdec_h264 ! "
         //               "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
         //               "videoconvert ! "
-        //               "video/x-raw,format=BGRx ! "
+        //               "video/x-raw,format=RGB ! "
         //               "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
         //               "appsink name=vsink sync=false max-buffers=1 drop=true "
         //               "emit-signals=false enable-last-sample=false wait-on-eos=false")
@@ -127,7 +127,7 @@ void GstVideoWidget::startStream(const QString& url) {
                       "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "videoconvert ! "
                       "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
-                      "video/x-raw,format=BGRx ! "
+                      "video/x-raw,format=RGB ! "
                       "appsink name=vsink sync=false max-buffers=1 drop=true "
                       "emit-signals=false enable-last-sample=false wait-on-eos=false")
                       .arg(source);
@@ -230,6 +230,14 @@ void GstVideoWidget::onPullFrame() {
     gst_structure_get_int(s, "width", &w);
     gst_structure_get_int(s, "height", &h);
 
+    if (m_videoW == 0 && m_videoH == 0) {
+        gchar* capsStr = gst_caps_to_string(caps);
+        qDebug() << "[GstVideoWidget] sample caps =" << (capsStr ? capsStr : "null");
+        if (capsStr) {
+            g_free(capsStr);
+        }
+    }
+
     if (w <= 0 || h <= 0) {
         gst_sample_unref(sample);
         return;
@@ -250,9 +258,9 @@ void GstVideoWidget::onPullFrame() {
     GstVideoInfo info;
     const bool infoOk = gst_video_info_from_caps(&info, caps);
     const int bytesPerLine =
-        (infoOk && info.stride[0] > 0) ? static_cast<int>(info.stride[0]) : (w * 4);
+        (infoOk && info.stride[0] > 0) ? static_cast<int>(info.stride[0]) : (w * 3);
 
-    QImage img((const uchar*)map.data, w, h, bytesPerLine, QImage::Format_RGB32);
+    QImage img((const uchar*)map.data, w, h, bytesPerLine, QImage::Format_RGB888);
 
     QImage copy = img.copy(); // ???�정???�선 (?�능보다 ?�실)
 

@@ -28,6 +28,13 @@ constexpr float kMaxStepPerTickDeg = 3.0f;
 constexpr float kYawPanGain = 1.35f;
 constexpr float kVrPanLimitDeg = 60.0f;
 constexpr float kVrTiltLimitDeg = 50.0f;
+constexpr float kYawFilterTauSec = 0.2f;
+constexpr float kDefaultImuDtSec = 0.02f;
+constexpr float kMinImuDtSec = 0.005f;
+constexpr float kMaxImuDtSec = 0.1f;
+constexpr float kYawMaxDeltaPerSampleDeg = 25.0f;
+constexpr float kPitchMaxDeltaPerSampleDeg = 20.0f;
+constexpr float kRollMaxDeltaPerSampleDeg = 20.0f;
 
 float clampf(float value, float lo, float hi) {
     return std::max(lo, std::min(value, hi));
@@ -54,6 +61,20 @@ float map_axis_from_imu(float value, float center, float negative_limit, float p
 
 float clamp_around_center(float value, float center, float max_delta) {
     return clampf(value, center - max_delta, center + max_delta);
+}
+
+float wrap_angle_180(float angle_deg) {
+    while (angle_deg > 180.0f) {
+        angle_deg -= 360.0f;
+    }
+    while (angle_deg < -180.0f) {
+        angle_deg += 360.0f;
+    }
+    return angle_deg;
+}
+
+float guard_delta(float current, float previous, float max_delta) {
+    return previous + clampf(current - previous, -max_delta, max_delta);
 }
 
 const char* mode_to_cstr(PtzMode mode) {
@@ -212,6 +233,13 @@ struct PtzController::Impl {
     mutable std::mutex mutex;
     float filtered_pitch = 0.0f;
     float filtered_roll = 0.0f;
+    float filtered_yaw = 0.0f;
+    float yaw_unwrapped = 0.0f;
+    float last_raw_yaw = 0.0f;
+    bool yaw_initialized = false;
+    float last_raw_pitch = 0.0f;
+    float last_raw_roll = 0.0f;
+    bool pitch_roll_initialized = false;
     float last_pitch = 0.0f;
     float last_roll = 0.0f;
     float last_yaw = 0.0f;
@@ -380,10 +408,26 @@ bool PtzController::set_mode(PtzMode mode) {
         impl_->last_imu_arrival = {};
         impl_->filtered_pitch = 0.0f;
         impl_->filtered_roll = 0.0f;
+        impl_->filtered_yaw = 0.0f;
+        impl_->yaw_unwrapped = 0.0f;
+        impl_->last_raw_yaw = 0.0f;
+        impl_->yaw_initialized = false;
+        impl_->last_raw_pitch = 0.0f;
+        impl_->last_raw_roll = 0.0f;
+        impl_->pitch_roll_initialized = false;
         impl_->imu_target_pan = impl_->current_pan;
         impl_->imu_target_tilt = impl_->current_tilt;
     } else {
         impl_->last_imu_arrival = std::chrono::steady_clock::now();
+        impl_->filtered_pitch = 0.0f;
+        impl_->filtered_roll = 0.0f;
+        impl_->filtered_yaw = 0.0f;
+        impl_->yaw_unwrapped = 0.0f;
+        impl_->last_raw_yaw = 0.0f;
+        impl_->yaw_initialized = false;
+        impl_->last_raw_pitch = 0.0f;
+        impl_->last_raw_roll = 0.0f;
+        impl_->pitch_roll_initialized = false;
     }
     std::fprintf(stderr, "[PTZ] mode -> %s\n", mode_to_cstr(mode));
     return true;
@@ -432,14 +476,50 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     impl_->last_yaw = yaw;
     impl_->last_client_timestamp_ms = client_timestamp_ms;
 
+    const auto now = std::chrono::steady_clock::now();
+    float imu_dt_sec = kDefaultImuDtSec;
+    if (impl_->last_imu_arrival.time_since_epoch().count() != 0) {
+        imu_dt_sec =
+            std::chrono::duration_cast<std::chrono::duration<float>>(now - impl_->last_imu_arrival).count();
+        imu_dt_sec = clampf(imu_dt_sec, kMinImuDtSec, kMaxImuDtSec);
+    }
+    const float yaw_alpha = imu_dt_sec / (kYawFilterTauSec + imu_dt_sec);
+
+    if (!impl_->yaw_initialized) {
+        impl_->last_raw_yaw = yaw;
+        impl_->yaw_unwrapped = yaw;
+        impl_->filtered_yaw = yaw;
+        impl_->yaw_initialized = true;
+    } else {
+        const float raw_delta = wrap_angle_180(yaw - impl_->last_raw_yaw);
+        const float guarded_delta =
+            clampf(raw_delta, -kYawMaxDeltaPerSampleDeg, kYawMaxDeltaPerSampleDeg);
+        impl_->yaw_unwrapped += guarded_delta;
+        impl_->last_raw_yaw = yaw;
+        impl_->filtered_yaw += yaw_alpha * (impl_->yaw_unwrapped - impl_->filtered_yaw);
+    }
+
+    float guarded_pitch = pitch;
+    float guarded_roll = roll;
+    if (!impl_->pitch_roll_initialized) {
+        impl_->last_raw_pitch = pitch;
+        impl_->last_raw_roll = roll;
+        impl_->pitch_roll_initialized = true;
+    } else {
+        guarded_pitch = guard_delta(pitch, impl_->last_raw_pitch, kPitchMaxDeltaPerSampleDeg);
+        guarded_roll = guard_delta(roll, impl_->last_raw_roll, kRollMaxDeltaPerSampleDeg);
+        impl_->last_raw_pitch = guarded_pitch;
+        impl_->last_raw_roll = guarded_roll;
+    }
+
     // Current phone mount uses roll -> tilt, pitch -> pan.
-    impl_->filtered_pitch = (1.0f - kImuAlpha) * impl_->filtered_pitch + kImuAlpha * roll;
-    impl_->filtered_roll = (1.0f - kImuAlpha) * impl_->filtered_roll + kImuAlpha * pitch;
+    impl_->filtered_pitch = (1.0f - kImuAlpha) * impl_->filtered_pitch + kImuAlpha * guarded_roll;
+    impl_->filtered_roll = (1.0f - kImuAlpha) * impl_->filtered_roll + kImuAlpha * guarded_pitch;
     const float pitch_pan = map_axis_from_imu(impl_->filtered_roll,
                                               impl_->config.pan_center_deg,
                                               impl_->config.pan_left_deg,
                                               impl_->config.pan_right_deg);
-    const float yaw_pan = map_axis_from_imu(yaw * kYawPanGain,
+    const float yaw_pan = map_axis_from_imu(impl_->filtered_yaw * kYawPanGain,
                                             impl_->config.pan_center_deg,
                                             impl_->config.pan_left_deg,
                                             impl_->config.pan_right_deg);
@@ -455,7 +535,7 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     impl_->imu_target_tilt = clamp_around_center(tilt_target,
                                                  impl_->config.tilt_center_deg,
                                                  kVrTiltLimitDeg);
-    impl_->last_imu_arrival = std::chrono::steady_clock::now();
+    impl_->last_imu_arrival = now;
 }
 
 PtzStatus PtzController::latest_status() const {

@@ -1,7 +1,7 @@
 /*
-컴파일 : g++ -std=c++17 test.cpp -o test $(pkg-config --cflags --libs opencv4)
+컴파일 : g++ -std=c++17 3d_test.cpp -o 3d_test $(pkg-config --cflags --libs opencv4)
 
-실행 : ./test "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" config/H_img2world.yaml config/camera.yaml 0.17 0.17
+실행 : ./3d_test "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" config/H_img2world.yaml config/camera.yaml 0.17 0.17
 
 */
 

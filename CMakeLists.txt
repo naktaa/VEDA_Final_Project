@@ -10,8 +10,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(MOSQ REQUIRED libmosquitto)
 
 add_executable(p1_tracker p1_tracker.cpp)
-add_executable(calib_aruco_homography calib_aruco_homography.cpp)
-add_executable(calib_camera calib_camera.cpp)
+add_executable(calib_aruco_homography calib_file/calib_aruco_homography.cpp)
+add_executable(calib_camera calib_file/calib_camera.cpp)
 add_executable(homography_mqtt_pub homography_mqtt_pub.cpp)
 add_executable(rc_goal_subscriber rc_goal_subscriber.cpp)
 

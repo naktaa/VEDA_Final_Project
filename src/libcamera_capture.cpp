@@ -9,10 +9,9 @@
 namespace {
 
 libcamera::PixelFormat select_pixel_format() {
-    // Prefer an unambiguous 3-channel format. libcamera may still negotiate a
-    // different format after validate(), so get_frame() converts based on the
-    // actual stream configuration.
-    return libcamera::formats::BGR888;
+    // Prefer RGB888 and convert explicitly in OpenCV. This avoids depending on
+    // platform/driver interpretation of direct BGR888 buffers.
+    return libcamera::formats::RGB888;
 }
 
 const char* pixel_format_name(const libcamera::PixelFormat& pixel_format) {

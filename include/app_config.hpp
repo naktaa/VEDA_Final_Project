@@ -7,8 +7,8 @@
 struct CameraConfig {
     int width = 640;
     int height = 480;
-    int fps = 20;
-    int frame_duration_us = 50000;
+    int fps = 15;
+    int frame_duration_us = 66667;
     int exposure_us = 8000;
     bool flip = true;
     double hfov_deg = 62.2;
@@ -76,8 +76,8 @@ struct RtspConfig {
     std::string port = "8555";
     std::string path = "/cam";
     std::string raw_path = "/raw";
-    int bitrate = 1500000;
-    int iframe_period = 30;
+    int bitrate = 1200000;
+    int iframe_period = 10;
 };
 
 struct CalibrationConfig {

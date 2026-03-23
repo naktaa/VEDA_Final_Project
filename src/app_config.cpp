@@ -87,6 +87,10 @@ void load_bool(const ConfigMap& map, const std::string& key, bool& output) {
     output = parse_bool(it->second, output);
 }
 
+int frame_duration_from_fps(int fps) {
+    return fps > 0 ? static_cast<int>((1000000 + (fps / 2)) / fps) : 0;
+}
+
 std::string now_string() {
     const std::time_t now = std::time(nullptr);
     std::tm tm {};
@@ -261,6 +265,10 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_double(map, "camera.vfov_deg", config.camera.vfov_deg);
         load_bool(map, "camera.libcamera_xrgb", config.camera.libcamera_xrgb);
         load_string(map, "camera.capture_backend", config.camera.capture_backend);
+        const int normalized_frame_duration = frame_duration_from_fps(config.camera.fps);
+        if (normalized_frame_duration > 0) {
+            config.camera.frame_duration_us = normalized_frame_duration;
+        }
 
         load_int(map, "imu.bus", config.imu.bus);
         load_int(map, "imu.addr", config.imu.addr);

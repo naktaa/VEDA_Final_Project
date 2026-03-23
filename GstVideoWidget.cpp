@@ -118,12 +118,12 @@ void GstVideoWidget::startStream(const QString& url) {
     QString pipeStr;
     if (isRtsp) {
         pipeStr = QString(
-                      "rtspsrc location=\"%1\" protocols=tcp latency=60 "
+                      "rtspsrc location=\"%1\" protocols=tcp latency=40 "
                       "drop-on-latency=true udp-reconnect=true timeout=5000000 ! "
                       "rtph264depay ! "
                       "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "h264parse ! "
-                      "avdec_h264 ! "
+                      "decodebin ! "
                       "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "videoconvert ! "
                       "video/x-raw,format=RGB ! "
@@ -139,7 +139,7 @@ void GstVideoWidget::startStream(const QString& url) {
         //               "rtph264depay ! "
         //               "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
         //               "h264parse ! "
-        //               "avdec_h264 ! "
+        //               "decodebin ! "
         //               "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
         //               "videoconvert ! "
         //               "video/x-raw,format=RGB ! "

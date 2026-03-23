@@ -11,6 +11,7 @@ find_package(Threads REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(nlohmann_json QUIET)
+find_package(cpp-httplib QUIET CONFIG)
 pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 pkg_check_modules(GST REQUIRED
   gstreamer-1.0
@@ -18,9 +19,22 @@ pkg_check_modules(GST REQUIRED
   gstreamer-video-1.0
   gstreamer-rtsp-server-1.0
 )
-find_path(HTTPLIB_INCLUDE_DIR NAMES httplib.h)
-if(NOT HTTPLIB_INCLUDE_DIR)
-  message(FATAL_ERROR "httplib.h not found. Install cpp-httplib development headers.")
+pkg_check_modules(HTTPLIB QUIET cpp-httplib)
+
+if(NOT TARGET cpp-httplib::cpp-httplib)
+  find_path(HTTPLIB_INCLUDE_DIR
+    NAMES httplib.h
+    HINTS ${HTTPLIB_INCLUDE_DIRS}
+  )
+
+  if(NOT HTTPLIB_INCLUDE_DIR)
+    message(FATAL_ERROR "httplib.h not found. Install cpp-httplib development headers.")
+  endif()
+
+  find_library(HTTPLIB_LIBRARY
+    NAMES cpp-httplib httplib
+    HINTS ${HTTPLIB_LIBRARY_DIRS}
+  )
 endif()
 
 if(NOT nlohmann_json_FOUND)
@@ -43,17 +57,21 @@ add_executable(mqtt_tank_drive
 
 target_include_directories(mqtt_tank_drive PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${HTTPLIB_INCLUDE_DIR}
   ${MOSQUITTO_INCLUDE_DIRS}
   ${GST_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
 )
+
+if(NOT TARGET cpp-httplib::cpp-httplib)
+  target_include_directories(mqtt_tank_drive PRIVATE ${HTTPLIB_INCLUDE_DIR})
+endif()
 
 if(NOT nlohmann_json_FOUND)
   target_include_directories(mqtt_tank_drive PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
 endif()
 
 target_compile_options(mqtt_tank_drive PRIVATE
+  ${HTTPLIB_CFLAGS_OTHER}
   ${MOSQUITTO_CFLAGS_OTHER}
   ${GST_CFLAGS_OTHER}
 )
@@ -71,6 +89,12 @@ target_link_libraries(mqtt_tank_drive
   Threads::Threads
   wiringPi
 )
+
+if(TARGET cpp-httplib::cpp-httplib)
+  target_link_libraries(mqtt_tank_drive cpp-httplib::cpp-httplib)
+elseif(HTTPLIB_LIBRARY)
+  target_link_libraries(mqtt_tank_drive ${HTTPLIB_LIBRARY})
+endif()
 
 if(nlohmann_json_FOUND)
   target_link_libraries(mqtt_tank_drive nlohmann_json::nlohmann_json)

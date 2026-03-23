@@ -20,7 +20,7 @@ namespace stream_config {
     inline constexpr float DEFAULT_TILT_CENTER_DEG = 90.0f;
     inline constexpr float DEFAULT_TILT_UP_DEG = 0.0f;
     inline constexpr float DEFAULT_TILT_DOWN_DEG = 180.0f;
-    inline constexpr int DEFAULT_IMU_PRIORITY_TIMEOUT_MS = 300;
+    inline constexpr int DEFAULT_IMU_PRIORITY_TIMEOUT_MS = 1500;
 
     inline constexpr const char* DEFAULT_RTSP_PORT = "8555";
     inline constexpr const char* DEFAULT_RTSP_PATH = "/cam";

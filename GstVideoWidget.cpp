@@ -98,7 +98,7 @@ void GstVideoWidget::startStream(const QString& url) {
                       "avdec_h264 ! "
                       "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "videoconvert ! "
-                      "video/x-raw,format=BGRA ! "
+                      "video/x-raw,format=BGRx ! "
                       "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
                       "appsink name=vsink sync=false max-buffers=1 drop=true "
                       "emit-signals=false enable-last-sample=false wait-on-eos=false")
@@ -114,7 +114,7 @@ void GstVideoWidget::startStream(const QString& url) {
         //               "avdec_h264 ! "
         //               "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
         //               "videoconvert ! "
-        //               "video/x-raw,format=BGRA ! "
+        //               "video/x-raw,format=BGRx ! "
         //               "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
         //               "appsink name=vsink sync=false max-buffers=1 drop=true "
         //               "emit-signals=false enable-last-sample=false wait-on-eos=false")
@@ -127,7 +127,7 @@ void GstVideoWidget::startStream(const QString& url) {
                       "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "videoconvert ! "
                       "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
-                      "video/x-raw,format=BGRA ! "
+                      "video/x-raw,format=BGRx ! "
                       "appsink name=vsink sync=false max-buffers=1 drop=true "
                       "emit-signals=false enable-last-sample=false wait-on-eos=false")
                       .arg(source);
@@ -245,14 +245,14 @@ void GstVideoWidget::onPullFrame() {
         return;
     }
 
-    // BGRA ?�맷?�로 받았?�니 QImage::Format_ARGB32 ?�용 가??
+    // BGRx로 받아서 alpha 영향을 제거하고 QImage::Format_RGB32로 바로 표시합니다.
     // ?�️ map.data??gst 버퍼 메모리라??sample unref ??무효가 ?????�음 ??deep copy
     GstVideoInfo info;
     const bool infoOk = gst_video_info_from_caps(&info, caps);
     const int bytesPerLine =
         (infoOk && info.stride[0] > 0) ? static_cast<int>(info.stride[0]) : (w * 4);
 
-    QImage img((const uchar*)map.data, w, h, bytesPerLine, QImage::Format_ARGB32);
+    QImage img((const uchar*)map.data, w, h, bytesPerLine, QImage::Format_RGB32);
 
     QImage copy = img.copy(); // ???�정???�선 (?�능보다 ?�실)
 

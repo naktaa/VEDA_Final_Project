@@ -135,6 +135,7 @@ bool handle_key(char ch) {
     if (!g_motor_ready) return false;
 
     bool consumed = true;
+    bool apply_after = true;
     switch (ch) {
     case 'w':
     case 'W':
@@ -174,24 +175,25 @@ bool handle_key(char ch) {
         break;
     case '+':
     case '=':
-        g_pwm = clampPwm(g_pwm + 10);
-        fprintf(stderr, "[TANK] PWM=%d\n", g_pwm);
+        adjust_speed(10);
+        apply_after = false;
         break;
     case '-':
     case '_':
-        g_pwm = clampPwm(g_pwm - 10);
-        fprintf(stderr, "[TANK] PWM=%d\n", g_pwm);
+        adjust_speed(-10);
+        apply_after = false;
         break;
     case 'h':
     case 'H':
         printHelp();
+        apply_after = false;
         break;
     default:
         consumed = false;
         break;
     }
 
-    if (consumed) {
+    if (consumed && apply_after) {
         g_last_motion = std::chrono::steady_clock::now();
         applyDrive(g_left_cmd, g_right_cmd, g_pwm);
         logStateIfChanged();
@@ -210,6 +212,19 @@ void command_drive(int left_cmd, int right_cmd) {
 
 void stop() {
     command_drive(0, 0);
+}
+
+int adjust_speed(int delta) {
+    g_pwm = clampPwm(g_pwm + delta);
+    g_last_motion = std::chrono::steady_clock::now();
+    fprintf(stderr, "[TANK] PWM=%d\n", g_pwm);
+    fflush(stderr);
+
+    if (g_motor_ready) {
+        applyDrive(g_left_cmd, g_right_cmd, g_pwm);
+        logStateIfChanged();
+    }
+    return g_pwm;
 }
 
 void set_idle_autostop(bool enabled, int timeout_ms) {

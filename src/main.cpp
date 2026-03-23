@@ -96,7 +96,7 @@ int main() {
     std::signal(SIGTERM, handle_signal);
 
     tank_drive::init();
-    tank_drive::set_idle_autostop(true, 200);
+    tank_drive::set_idle_autostop(false);
 
     RtspServer rtsp_server;
     if (!rtsp_server.start(config.camera, config.rtsp, false, &error)) {

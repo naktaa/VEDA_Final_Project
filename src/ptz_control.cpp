@@ -49,6 +49,10 @@ float map_axis_from_imu(float value, float center, float negative_limit, float p
     return lerpf(center, negative_limit, (-clamped) / kImuMaxDeg);
 }
 
+const char* mode_to_cstr(PtzMode mode) {
+    return mode == PtzMode::kVr ? "vr" : "manual";
+}
+
 class Pca9685Driver {
 public:
     Pca9685Driver() = default;
@@ -213,6 +217,7 @@ struct PtzController::Impl {
     bool pan_right_active = false;
     bool tilt_up_active = false;
     bool tilt_down_active = false;
+    PtzMode mode = PtzMode::kManual;
     std::string active_source = "hold";
     std::chrono::steady_clock::time_point last_imu_arrival{};
 
@@ -234,11 +239,17 @@ struct PtzController::Impl {
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - last_imu_arrival).count() <=
                         config.imu_timeout_ms;
 
-                if (imu_recent) {
+                if (mode == PtzMode::kVr && imu_recent) {
                     desired_pan = imu_target_pan;
                     desired_tilt = imu_target_tilt;
                     source = "imu";
-                } else {
+                } else if (mode == PtzMode::kVr && !imu_recent) {
+                    mode = PtzMode::kManual;
+                    source = "manual";
+                    std::fprintf(stderr, "[PTZ] IMU timeout; fallback to manual mode.\n");
+                }
+
+                if (mode == PtzMode::kManual) {
                     const bool pan_manual = pan_left_active != pan_right_active;
                     const bool tilt_manual = tilt_up_active != tilt_down_active;
 
@@ -347,12 +358,48 @@ void PtzController::stop() {
     impl_ = nullptr;
 }
 
+bool PtzController::set_mode(PtzMode mode) {
+    if (!impl_) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->mode = mode;
+    impl_->pan_left_active = false;
+    impl_->pan_right_active = false;
+    impl_->tilt_up_active = false;
+    impl_->tilt_down_active = false;
+    if (mode == PtzMode::kManual) {
+        impl_->last_imu_arrival = {};
+        impl_->filtered_pitch = 0.0f;
+        impl_->filtered_roll = 0.0f;
+        impl_->imu_target_pan = impl_->current_pan;
+        impl_->imu_target_tilt = impl_->current_tilt;
+    } else {
+        impl_->last_imu_arrival = std::chrono::steady_clock::now();
+    }
+    std::fprintf(stderr, "[PTZ] mode -> %s\n", mode_to_cstr(mode));
+    return true;
+}
+
+PtzMode PtzController::mode() const {
+    if (!impl_) {
+        return PtzMode::kManual;
+    }
+
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->mode;
+}
+
 void PtzController::handle_mqtt_command(const std::string& command, bool active) {
     if (!impl_) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->mode != PtzMode::kManual) {
+        return;
+    }
     if (command == "pan_left") {
         impl_->pan_left_active = active;
     } else if (command == "pan_right") {
@@ -370,6 +417,9 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     }
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->mode != PtzMode::kVr) {
+        return;
+    }
     impl_->last_pitch = pitch;
     impl_->last_roll = roll;
     impl_->last_yaw = yaw;
@@ -397,6 +447,7 @@ PtzStatus PtzController::latest_status() const {
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
     status.servo_ready = impl_->servo_ready.load();
+    status.mode = mode_to_cstr(impl_->mode);
     status.pitch = impl_->last_pitch;
     status.roll = impl_->last_roll;
     status.yaw = impl_->last_yaw;

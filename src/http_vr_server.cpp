@@ -21,6 +21,21 @@ namespace {
 
 using json = nlohmann::json;
 
+const char* kManualMode = "manual";
+const char* kVrMode = "vr";
+
+bool parse_ptz_mode(const std::string& mode_text, PtzMode& mode) {
+    if (mode_text == kManualMode) {
+        mode = PtzMode::kManual;
+        return true;
+    }
+    if (mode_text == kVrMode) {
+        mode = PtzMode::kVr;
+        return true;
+    }
+    return false;
+}
+
 std::string mime_type_for(const std::string& ext) {
     static const std::unordered_map<std::string, std::string> kMimeTypes = {
         {".html", "text/html; charset=utf-8"},
@@ -89,6 +104,7 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     impl->server->Get("/imu/latest", [impl](const httplib::Request&, httplib::Response& res) {
         const PtzStatus status = impl->ptz->latest_status();
         json body = {
+            {"mode", status.mode},
             {"pitch", status.pitch},
             {"roll", status.roll},
             {"yaw", status.yaw},
@@ -99,6 +115,44 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
             {"source", status.active_source},
         };
         res.set_content(body.dump(), "application/json");
+    });
+
+    impl->server->Get("/ptz/mode", [impl](const httplib::Request&, httplib::Response& res) {
+        const PtzStatus status = impl->ptz->latest_status();
+        json body = {
+            {"mode", status.mode},
+            {"servo_ready", status.servo_ready},
+        };
+        res.set_content(body.dump(), "application/json");
+    });
+
+    impl->server->Post("/ptz/mode", [impl](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const json payload = json::parse(req.body);
+            PtzMode mode = PtzMode::kManual;
+            if (!parse_ptz_mode(payload.value("mode", ""), mode)) {
+                res.status = 400;
+                res.set_content("invalid mode", "text/plain; charset=utf-8");
+                return;
+            }
+            if (!impl->ptz->set_mode(mode)) {
+                res.status = 500;
+                res.set_content("ptz not ready", "text/plain; charset=utf-8");
+                return;
+            }
+
+            const PtzStatus status = impl->ptz->latest_status();
+            json body = {
+                {"ok", true},
+                {"mode", status.mode},
+                {"servo_ready", status.servo_ready},
+            };
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& exc) {
+            res.status = 400;
+            res.set_content(std::string("bad json: ") + exc.what(),
+                            "text/plain; charset=utf-8");
+        }
     });
 
     impl->server->Post("/imu", [impl](const httplib::Request& req, httplib::Response& res) {

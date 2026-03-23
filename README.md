@@ -16,7 +16,8 @@ The PTZ path no longer uses the old serial servo packet protocol. It now drives 
 3. `web/tilt_vr/app.js` reads `deviceorientation` data from the phone and posts it to `POST /imu`.
 4. `src/http_vr_server.cpp` forwards that IMU payload to `PtzController`.
 5. `src/ptz_control.cpp` smooths the sensor values, maps them to pan/tilt angles, and writes PWM output through PCA9685.
-6. If phone IMU input stops for `imu_timeout_ms`, MQTT PTZ commands become the fallback input.
+6. PTZ mode is explicit: `manual` accepts MQTT PTZ, `vr` accepts phone IMU.
+7. If phone IMU input stops for `imu_timeout_ms` while in `vr`, PTZ falls back to `manual`.
 
 ## Build
 
@@ -52,6 +53,7 @@ The build also copies the binary as `./mqtt_tank_drive`.
 - MJPEG stream: `http://<PI_IP>:8000/stream.mjpg`
 - Health check: `http://<PI_IP>:8000/health`
 - Latest IMU/PTZ state: `http://<PI_IP>:8000/imu/latest`
+- PTZ mode state: `http://<PI_IP>:8000/ptz/mode`
 - RTSP stream: `rtsp://<PI_IP>:8555/cam`
 
 ## PTZ hardware defaults
@@ -125,3 +127,16 @@ Accepted drive commands:
 ```
 
 The web client zero-calibrates on connect, then continuously sends recentered phone IMU values to `/imu`.
+
+## PTZ mode payload
+
+```json
+{
+  "mode": "vr"
+}
+```
+
+Allowed values:
+
+- `manual`
+- `vr`

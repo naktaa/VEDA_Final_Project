@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <string>
 
+enum class PtzMode {
+    kManual,
+    kVr
+};
+
 struct PtzConfig {
     std::string i2c_device = "/dev/i2c-1";
     int i2c_address = 0x40;
@@ -20,6 +25,7 @@ struct PtzConfig {
 
 struct PtzStatus {
     bool servo_ready = false;
+    std::string mode = "manual";
     float pitch = 0.0f;
     float roll = 0.0f;
     float yaw = 0.0f;
@@ -41,6 +47,8 @@ public:
     bool start(const PtzConfig& cfg);
     void stop();
 
+    bool set_mode(PtzMode mode);
+    PtzMode mode() const;
     void handle_mqtt_command(const std::string& command, bool active);
     void handle_imu(float pitch, float roll, float yaw, uint64_t client_timestamp_ms);
 

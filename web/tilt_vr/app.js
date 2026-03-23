@@ -1,4 +1,5 @@
 const statusEl = document.getElementById("status");
+const modeEl = document.getElementById("mode");
 const imuEl = document.getElementById("imu");
 const imuAckEl = document.getElementById("imuAck");
 const connectBtn = document.getElementById("connectBtn");
@@ -17,6 +18,7 @@ let orientationHandler = null;
 let sendInterval = null;
 let imuAckInterval = null;
 let connected = false;
+let currentMode = "manual";
 let baseline = { pitch: 0, roll: 0, yaw: 0 };
 let latestRaw = { pitch: 0, roll: 0, yaw: 0 };
 let renderRaf = 0;
@@ -27,6 +29,15 @@ let orientationEventCount = 0;
 
 function setStatus(msg) {
   statusEl.textContent = msg;
+}
+
+function setMode(mode) {
+  currentMode = mode === "vr" ? "vr" : "manual";
+  modeEl.textContent = `PTZ Mode: ${currentMode}`;
+}
+
+function renderConnectButton() {
+  connectBtn.textContent = connected ? "Stop VR + Manual" : "Connect + Start VR";
 }
 
 function getPitchRollYaw(evt) {
@@ -54,7 +65,7 @@ function recenteredValue(raw) {
 
 function zeroCalibrate() {
   baseline = { ...latestRaw };
-  setStatus("0점 조정 완료");
+  setStatus("Zero calibrated");
 }
 
 async function ensureOrientationPermission() {
@@ -69,6 +80,31 @@ async function ensureOrientationPermission() {
   }
 }
 
+async function fetchPtzMode() {
+  const res = await fetch("/ptz/mode");
+  if (!res.ok) {
+    throw new Error(`Mode fetch failed: ${res.status}`);
+  }
+  const body = await res.json();
+  setMode(body.mode);
+  return body;
+}
+
+async function setPtzMode(mode) {
+  const res = await fetch("/ptz/mode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(errorText || `Mode switch failed: ${res.status}`);
+  }
+  const body = await res.json();
+  setMode(body.mode);
+  return body;
+}
+
 function startOrientationFeed() {
   orientationHandler = (evt) => {
     orientationEventCount += 1;
@@ -81,7 +117,7 @@ function startOrientationFeed() {
     latestRaw = getPitchRollYaw(evt);
     const value = recenteredValue(latestRaw);
     if (!hasSensorData) {
-      imuEl.textContent = "IMU: 센서값 없음 (브라우저 설정 확인)";
+      imuEl.textContent = "IMU: no sensor data";
       return;
     }
 
@@ -93,9 +129,10 @@ function startOrientationFeed() {
   window.addEventListener("deviceorientation", orientationHandler, true);
 
   sendInterval = setInterval(() => {
-    if (!connected || !hasSensorData) {
+    if (!connected || currentMode !== "vr" || !hasSensorData) {
       return;
     }
+
     const value = recenteredValue(latestRaw);
     fetch("/imu", {
       method: "POST",
@@ -113,6 +150,34 @@ function startOrientationFeed() {
   }, 33);
 }
 
+async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
+  connectBtn.disabled = true;
+
+  try {
+    if (releaseMode) {
+      await setPtzMode("manual");
+    } else {
+      setMode("manual");
+    }
+  } catch (_) {
+    setMode("manual");
+  } finally {
+    stopOrientationFeed();
+    stopRenderLoop();
+    connected = false;
+    renderConnectButton();
+    streamSource.src = "";
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    imuAckEl.textContent = "Server IMU: -";
+    clearCanvases();
+    setStatus(statusMessage);
+    connectBtn.disabled = false;
+  }
+}
+
 function startImuAckPolling() {
   imuAckInterval = setInterval(async () => {
     if (!connected) {
@@ -125,12 +190,20 @@ function startImuAckPolling() {
         return;
       }
       const body = await res.json();
+      setMode(body.mode);
       imuAckEl.textContent =
-        `Server IMU pitch:${Number(body.pitch).toFixed(1)} ` +
+        `Server mode:${body.mode} pitch:${Number(body.pitch).toFixed(1)} ` +
         `roll:${Number(body.roll).toFixed(1)} ` +
         `yaw:${Number(body.yaw).toFixed(1)} ` +
         `t:${body.t} servo:${body.servo_ready ? "ready" : "off"} ` +
         `src:${body.source ?? "-"}`;
+
+      if (connected && body.mode !== "vr") {
+        await disconnect({
+          releaseMode: false,
+          statusMessage: "VR input lost. Back to manual mode.",
+        });
+      }
     } catch (_) {
       imuAckEl.textContent = "Server IMU: polling error";
     }
@@ -239,6 +312,10 @@ function bindStreamEvents() {
 
 async function connect() {
   if (connected) {
+    await disconnect({
+      releaseMode: true,
+      statusMessage: "Manual mode active",
+    });
     return;
   }
 
@@ -247,7 +324,7 @@ async function connect() {
 
   try {
     if (!window.isSecureContext) {
-      setStatus("주의: HTTP 환경이라 자이로가 차단될 수 있음");
+      setStatus("Warning: sensor access may be blocked on insecure HTTP");
     }
     await ensureOrientationPermission();
 
@@ -256,7 +333,10 @@ async function connect() {
       throw new Error(`Server not ready: ${health.status}`);
     }
 
+    await setPtzMode("vr");
+
     connected = true;
+    renderConnectButton();
     hasSensorData = false;
     orientationEventCount = 0;
     zeroCalibrate();
@@ -265,39 +345,31 @@ async function connect() {
 
     sensorCheckTimer = setTimeout(() => {
       if (connected && !hasSensorData) {
-        if (!window.isSecureContext) {
-          setStatus("자이로 차단됨: HTTPS 또는 insecure-origin 설정 필요");
-        } else if (orientationEventCount === 0) {
-          setStatus("자이로 이벤트 없음: 센서 권한/시스템 센서 토글 확인");
-        } else {
-          setStatus("자이로 값이 null: 브라우저 센서 정책으로 차단됨");
-        }
+        setStatus("No IMU events detected. PTZ will fall back to manual mode.");
       }
     }, 3000);
 
     const token = Date.now();
     streamSource.src = `/stream.mjpg?t=${token}`;
     startRenderLoop();
-    setStatus("Connecting video stream...");
+    setStatus("VR mode active. Connecting video stream...");
   } catch (err) {
-    setStatus(`Error: ${err.message}`);
-    disconnect();
+    await disconnect({
+      releaseMode: true,
+      statusMessage: `Error: ${err.message}`,
+    });
   } finally {
     connectBtn.disabled = false;
   }
 }
 
-function disconnect() {
-  stopOrientationFeed();
-  stopRenderLoop();
-  connected = false;
-  streamSource.src = "";
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+async function initializeMode() {
+  try {
+    await fetchPtzMode();
+  } catch (_) {
+    setMode("manual");
   }
-  imuAckEl.textContent = "Server IMU: -";
-  clearCanvases();
+  renderConnectButton();
 }
 
 async function toggleFullscreen() {
@@ -328,15 +400,29 @@ function scrollToVideo() {
 }
 
 bindStreamEvents();
+initializeMode();
 window.addEventListener("resize", () => {
   if (connected) {
     resizeCanvasToDisplaySize(leftCanvas);
     resizeCanvasToDisplaySize(rightCanvas);
   }
 });
-connectBtn.addEventListener("click", connect);
+connectBtn.addEventListener("click", () => {
+  connect().catch(() => {
+    setStatus("Connect error");
+  });
+});
 centerBtn.addEventListener("click", zeroCalibrate);
 fullscreenBtn.addEventListener("click", toggleFullscreen);
 scrollBtn.addEventListener("click", scrollToVideo);
 document.addEventListener("fullscreenchange", updateFullscreenButton);
-window.addEventListener("beforeunload", disconnect);
+window.addEventListener("beforeunload", () => {
+  if (connected) {
+    fetch("/ptz/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "manual" }),
+      keepalive: true,
+    }).catch(() => {});
+  }
+});

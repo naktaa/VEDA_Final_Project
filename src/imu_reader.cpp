@@ -23,6 +23,7 @@ constexpr uint8_t REG_SMPLRT_DIV = 0x19;
 constexpr uint8_t REG_CONFIG = 0x1A;
 constexpr uint8_t REG_GYRO_CONFIG = 0x1B;
 constexpr uint8_t REG_FIFO_EN = 0x23;
+constexpr uint8_t REG_INT_PIN_CFG = 0x37;
 constexpr uint8_t REG_INT_ENABLE = 0x38;
 constexpr uint8_t REG_INT_STATUS = 0x3A;
 constexpr uint8_t REG_GYRO_XOUT_H = 0x43;
@@ -33,6 +34,7 @@ constexpr uint8_t REG_FIFO_R_W = 0x74;
 
 constexpr uint8_t USERCTRL_FIFO_EN = 0x40;
 constexpr uint8_t USERCTRL_FIFO_RESET = 0x04;
+constexpr uint8_t INTPINCFG_LATCH_INT_EN = 0x20;
 
 int16_t to_i16(uint8_t high, uint8_t low) {
     return static_cast<int16_t>((high << 8) | low);
@@ -99,7 +101,7 @@ bool ImuReader::start(const ImuConfig& imu_config,
             return false;
         }
         pinMode(config_.int_pin_wpi, INPUT);
-        pullUpDnControl(config_.int_pin_wpi, PUD_OFF);
+        pullUpDnControl(config_.int_pin_wpi, PUD_DOWN);
     }
 
     if (refine_bias && !warmup_refine_bias()) {
@@ -226,6 +228,7 @@ bool ImuReader::configure_device(std::string* error) {
         if (!i2c_write_byte(fd_, REG_USER_CTRL, USERCTRL_FIFO_RESET) ||
             !i2c_write_byte(fd_, REG_USER_CTRL, USERCTRL_FIFO_EN) ||
             !i2c_write_byte(fd_, REG_FIFO_EN, 0x70) ||
+            !i2c_write_byte(fd_, REG_INT_PIN_CFG, config_.int_pin_wpi >= 0 ? INTPINCFG_LATCH_INT_EN : 0x00) ||
             !i2c_write_byte(fd_, REG_INT_ENABLE, config_.int_pin_wpi >= 0 ? 0x01 : 0x00)) {
             if (error) *error = "failed to configure FIFO/interrupt mode";
             return false;
@@ -233,6 +236,7 @@ bool ImuReader::configure_device(std::string* error) {
     } else {
         if (!i2c_write_byte(fd_, REG_USER_CTRL, 0x00) ||
             !i2c_write_byte(fd_, REG_FIFO_EN, 0x00) ||
+            !i2c_write_byte(fd_, REG_INT_PIN_CFG, 0x00) ||
             !i2c_write_byte(fd_, REG_INT_ENABLE, 0x00)) {
             if (error) *error = "failed to configure polling mode";
             return false;

@@ -23,6 +23,7 @@ GstVideoWidget::GstVideoWidget(QWidget* parent)
     ensureGstInit();
 
     m_pullTimer = new QTimer(this);
+    m_pullTimer->setTimerType(Qt::PreciseTimer);
     // ??? ?�상??기�? 30fps ?�도�?충분 (추측)
     m_pullTimer->setInterval(15);
     connect(m_pullTimer, &QTimer::timeout, this, &GstVideoWidget::onPullFrame);
@@ -79,42 +80,57 @@ void GstVideoWidget::startStream(const QString& url) {
 
     // ???�상????�� 고정 (기본 640x360)
     // ?�요?�면 854x480 or 1280x720�?변�?가??
-    const int OUT_W = 1280;
-    const int OUT_H = 960;
-
     // ??appsink�??�레?�을 Qt�?가?�온??(?�버?�이 100% 가??
     const bool isRtsp = url.trimmed().startsWith("rtsp://", Qt::CaseInsensitive);
 
     QString pipeStr;
     if (isRtsp) {
+        // RTSP 수신 파이프라인은 아래 둘 중 하나만 켜서 씁니다.
+        // 평소에는 TCP를 기본으로 두고, UDP 테스트가 필요할 때 아래 블록을 서로 바꿔 주석 처리하면 됩니다.
+
+        // TCP: 지연은 더 크지만 손실 복구가 비교적 안정적입니다.
         pipeStr = QString(
-                      "rtspsrc location=\"%1\" protocols=tcp latency=40 drop-on-latency=true udp-reconnect=true timeout=5000000 ! "
+                      "rtspsrc location=\"%1\" protocols=tcp latency=60 "
+                      "drop-on-latency=true udp-reconnect=true timeout=5000000 ! "
                       "rtph264depay ! "
+                      "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "h264parse ! "
                       "avdec_h264 ! "
                       "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "videoconvert ! "
+                      "video/x-raw,format=BGRA ! "
                       "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
-                      "videoscale ! "
-                      "video/x-raw,format=BGRA,width=%2,height=%3 ! "
-                      "appsink name=vsink sync=false max-buffers=1 drop=true emit-signals=false")
-                      .arg(url)
-                      .arg(OUT_W)
-                      .arg(OUT_H);
+                      "appsink name=vsink sync=false max-buffers=1 drop=true "
+                      "emit-signals=false enable-last-sample=false wait-on-eos=false")
+                      .arg(url);
+
+        // UDP: 지연은 짧지만 패킷 손실 시 깍두기와 끊김이 더 잘 보입니다.
+        // pipeStr = QString(
+        //               "rtspsrc location=\"%1\" protocols=udp latency=20 "
+        //               "drop-on-latency=true udp-reconnect=true timeout=5000000 ! "
+        //               "rtph264depay ! "
+        //               "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
+        //               "h264parse ! "
+        //               "avdec_h264 ! "
+        //               "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
+        //               "videoconvert ! "
+        //               "video/x-raw,format=BGRA ! "
+        //               "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
+        //               "appsink name=vsink sync=false max-buffers=1 drop=true "
+        //               "emit-signals=false enable-last-sample=false wait-on-eos=false")
+        //               .arg(url);
     }
     else {
         QString source = QString("uridecodebin uri=\"%1\"").arg(url);
         pipeStr = QString(
                       "%1 ! "
-                      "queue max-size-buffers=2 ! "
+                      "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
                       "videoconvert ! "
                       "videocrop name=zcrop top=0 bottom=0 left=0 right=0 ! "
-                      "videoscale ! "
-                      "video/x-raw,format=BGRA,width=%2,height=%3 ! "
-                      "appsink name=vsink sync=false max-buffers=1 drop=true emit-signals=false")
-                      .arg(source)
-                      .arg(OUT_W)
-                      .arg(OUT_H);
+                      "video/x-raw,format=BGRA ! "
+                      "appsink name=vsink sync=false max-buffers=1 drop=true "
+                      "emit-signals=false enable-last-sample=false wait-on-eos=false")
+                      .arg(source);
     }
 
     qDebug() << "[GstVideoWidget] startStream:" << url;
@@ -143,6 +159,11 @@ void GstVideoWidget::startStream(const QString& url) {
     gst_app_sink_set_drop(as, TRUE);
     gst_app_sink_set_max_buffers(as, 1);
     gst_app_sink_set_emit_signals(as, FALSE);
+    g_object_set(G_OBJECT(as),
+                 "enable-last-sample", FALSE,
+                 "wait-on-eos", FALSE,
+                 "sync", FALSE,
+                 nullptr);
 
     gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
 
@@ -340,7 +361,7 @@ void GstVideoWidget::updateCrop(double zoom, double cx, double cy) {
 
     // appsink 캡스 기�? OUT_W/OUT_H�??�어?��?�?crop 기�???�??�상??
     // ?�기?�는 ?�재 ?�레???�기�??�용 (?�으�?OUT_W/OUT_H 가??
-    int W = 782, H = 592;
+    int W = 640, H = 480;
     {
         QMutexLocker lk(&m_frameMtx);
         if (!m_frame.isNull()) {

@@ -25,6 +25,9 @@ constexpr float kImuMaxDeg = 45.0f;
 constexpr int kUpdateHz = 50;
 constexpr int kUpdateMs = 1000 / kUpdateHz;
 constexpr float kMaxStepPerTickDeg = 3.0f;
+constexpr float kYawPanGain = 1.35f;
+constexpr float kVrPanLimitDeg = 60.0f;
+constexpr float kVrTiltLimitDeg = 50.0f;
 
 float clampf(float value, float lo, float hi) {
     return std::max(lo, std::min(value, hi));
@@ -47,6 +50,10 @@ float map_axis_from_imu(float value, float center, float negative_limit, float p
         return lerpf(center, positive_limit, clamped / kImuMaxDeg);
     }
     return lerpf(center, negative_limit, (-clamped) / kImuMaxDeg);
+}
+
+float clamp_around_center(float value, float center, float max_delta) {
+    return clampf(value, center - max_delta, center + max_delta);
 }
 
 const char* mode_to_cstr(PtzMode mode) {
@@ -428,14 +435,26 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     // Current phone mount uses roll -> tilt, pitch -> pan.
     impl_->filtered_pitch = (1.0f - kImuAlpha) * impl_->filtered_pitch + kImuAlpha * roll;
     impl_->filtered_roll = (1.0f - kImuAlpha) * impl_->filtered_roll + kImuAlpha * pitch;
-    impl_->imu_target_pan = map_axis_from_imu(impl_->filtered_roll,
+    const float pitch_pan = map_axis_from_imu(impl_->filtered_roll,
                                               impl_->config.pan_center_deg,
                                               impl_->config.pan_left_deg,
                                               impl_->config.pan_right_deg);
-    impl_->imu_target_tilt = map_axis_from_imu(impl_->filtered_pitch,
-                                               impl_->config.tilt_center_deg,
-                                               impl_->config.tilt_up_deg,
-                                               impl_->config.tilt_down_deg);
+    const float yaw_pan = map_axis_from_imu(yaw * kYawPanGain,
+                                            impl_->config.pan_center_deg,
+                                            impl_->config.pan_left_deg,
+                                            impl_->config.pan_right_deg);
+    const float blended_pan = (0.35f * pitch_pan) + (0.65f * yaw_pan);
+    impl_->imu_target_pan = clamp_around_center(blended_pan,
+                                                impl_->config.pan_center_deg,
+                                                kVrPanLimitDeg);
+
+    const float tilt_target = map_axis_from_imu(impl_->filtered_pitch,
+                                                impl_->config.tilt_center_deg,
+                                                impl_->config.tilt_up_deg,
+                                                impl_->config.tilt_down_deg);
+    impl_->imu_target_tilt = clamp_around_center(tilt_target,
+                                                 impl_->config.tilt_center_deg,
+                                                 kVrTiltLimitDeg);
     impl_->last_imu_arrival = std::chrono::steady_clock::now();
 }
 

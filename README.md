@@ -1,14 +1,25 @@
 # Tank MQTT Drive + RTSP + tiltVR
 
-이 프로젝트는 다음 기능을 한 프로세스에서 함께 제공합니다.
-- MQTT 기반 탱크 주행 제어 (`drive` 그룹)
-- MQTT 기반 팬/틸트 PTZ 버튼 제어 (`ptz` 그룹)
-- RTSP 영상 송출 (`rtsp://<PI_IP>:8555/cam`)
-- HTTP/MJPEG + 모바일 VR split-view (`http://<PI_IP>:8000/web/`)
-- 휴대폰 IMU 기반 UART 팬/틸트 제어, MQTT PTZ fallback 지원
-- 카메라 캡처 브리지: `appsink(libcamerasrc) -> appsrc(RTSP factory)`
+This project runs a Raspberry Pi based tank controller with four subsystems in one process:
 
-## 빌드
+- MQTT drive control for the tank motors
+- RTSP video streaming
+- HTTP/MJPEG VR web viewer
+- Phone IMU driven pan/tilt using two SG90 servos on a PCA9685 board
+
+The PTZ path no longer uses the old serial servo packet protocol. It now drives two SG90 servos through `I2C -> PCA9685 -> SG90`.
+
+## Runtime flow
+
+1. `src/mqtt_tank_drive.cpp` starts motor control, camera capture, RTSP, HTTP VR, MQTT, and PTZ worker threads.
+2. The phone opens `http://<PI_IP>:8000/web/`.
+3. `web/tilt_vr/app.js` reads `deviceorientation` data from the phone and posts it to `POST /imu`.
+4. `src/http_vr_server.cpp` forwards that IMU payload to `PtzController`.
+5. `src/ptz_control.cpp` smooths the sensor values, maps them to pan/tilt angles, and writes PWM output through PCA9685.
+6. If phone IMU input stops for `imu_timeout_ms`, MQTT PTZ commands become the fallback input.
+
+## Build
+
 ```bash
 mkdir -p build
 cd build
@@ -16,108 +27,93 @@ cmake ..
 make -j
 ```
 
-필요 패키지:
+Required packages:
+
 - `wiringPi`
 - `libmosquitto-dev`
 - `libgstreamer1.0-dev`
 - `libgstrtspserver-1.0-dev`
-- `cpp-httplib` 헤더 (`httplib.h`)
+- `cpp-httplib` headers (`httplib.h`)
 - `nlohmann-json3-dev`
 - `libopencv-dev`
-- `libcamerasrc`, `v4l2h264enc`를 포함한 GStreamer 플러그인
+- GStreamer plugins for `libcamerasrc` and `v4l2h264enc`
 
-## 실행
-기본 실행은 아래처럼 옵션 없이 사용하면 됩니다.
+## Run
 
 ```bash
 ./main
 ```
 
-호환용 별칭:
-- 빌드 후 `./mqtt_tank_drive`도 같이 생성됩니다
+The build also copies the binary as `./mqtt_tank_drive`.
 
-## 기본 설정
-기본 MQTT:
-- Host: `192.168.100.10`
-- Port: `1883`
-- Topic: `wiserisk/rc/control`
+## Default endpoints
 
-기본 PTZ 시리얼:
-- Device: `/dev/serial0`
-- Baud: `115200`
-- Pan/Tilt ID: `1 / 2`
-- Center: `1800 / 2400`
-
-기본 RTSP 출력:
-- URL: `rtsp://<PI_IP>:8555/cam`
-- 포맷: `640x480 @ 20fps`
-- 180도 회전 적용
-- H.264 하드웨어 인코딩 사용 (`v4l2h264enc`)
-- 저지연 설정: leaky queue, I-frame period `10`
-
-기본 HTTP/VR 출력:
 - Web UI: `http://<PI_IP>:8000/web/`
-- MJPEG: `http://<PI_IP>:8000/stream.mjpg`
-- Health: `http://<PI_IP>:8000/health`
-- 최신 IMU/PTZ 상태: `http://<PI_IP>:8000/imu/latest`
-- MJPEG용 JPEG 인코딩은 웹 스트림 클라이언트가 실제로 연결됐을 때만 동작합니다
+- MJPEG stream: `http://<PI_IP>:8000/stream.mjpg`
+- Health check: `http://<PI_IP>:8000/health`
+- Latest IMU/PTZ state: `http://<PI_IP>:8000/imu/latest`
+- RTSP stream: `rtsp://<PI_IP>:8555/cam`
 
-## 선택 옵션
+## PTZ hardware defaults
+
+- I2C device: `/dev/i2c-1`
+- PCA9685 address: `0x40`
+- PWM frequency: `50Hz`
+- Pan channel: `0`
+- Tilt channel: `1`
+- Pan center/left/right: `90 / 180 / 0`
+- Tilt center/up/down: `90 / 0 / 180`
+
+## Options
+
 ```bash
+--host <addr>
+--port <n>
+--topic <topic>
 --no-rtsp
---rtsp-port 8555
---rtsp-path /cam
---rtsp-launch "( appsrc name=stabsrc is-live=true format=time do-timestamp=true block=false ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! videoflip method=rotate-180 ! videoconvert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls=\"controls,video_bitrate=1500000,h264_i_frame_period=20\" ! video/x-h264,level=(string)4,profile=(string)baseline ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! rtph264pay name=pay0 pt=96 config-interval=1 )"
+--rtsp-port <port>
+--rtsp-path <path>
+--rtsp-launch <launch>
 --no-http-vr
---http-port 8000
---serial-dev /dev/serial0
---serial-baud 115200
+--http-port <port>
+--i2c-dev <path>
+--i2c-addr <n>
+--pan-channel <n>
+--tilt-channel <n>
 ```
 
-## 저지연 사용 팁
-- VLC를 쓸 경우 Network caching 값을 낮게 설정하는 편이 좋습니다. 예: `100ms` 이하
-- 가능하면 UDP 전송을 우선 사용하세요
-- 2.4GHz 환경에서는 RTSP와 MJPEG를 동시에 여러 단말에서 붙이면 지연이 커질 수 있습니다
+## MQTT message format
 
-## MQTT 제어 메시지 형식
-예시 payload:
+Example payload:
 
 ```json
 {
   "type": "tank_control",
   "target": "tank",
-  "group": "drive",
-  "command": "forward",
+  "group": "ptz",
+  "command": "pan_left",
   "active": true,
   "source": "qt_main_window",
   "ts_ms": 1773890000000
 }
 ```
 
-수신 조건:
-- `type == "tank_control"`
-- `target == "tank"`
-- `group == "drive"` 또는 `group == "ptz"`
+Accepted PTZ commands:
 
-지원 명령:
-- `forward`
-- `backward`
-- `turn_left`
-- `turn_right`
 - `pan_left`
 - `pan_right`
 - `tilt_up`
 - `tilt_down`
 
-동작 규칙:
-- `active=true`: 동작 시작
-- 같은 `command`에 대해 `active=false`: 동작 정지
-- `group=drive`: 탱크 주행 제어
-- `group=ptz`: 팬/틸트 버튼 제어
-- 최근 휴대폰 IMU 입력이 들어오면 `300ms` 동안 IMU가 우선합니다
-- IMU 입력이 끊기면 다시 MQTT PTZ 제어가 유효해집니다
+Accepted drive commands:
 
-## HTTP IMU 입력 형식
+- `forward`
+- `backward`
+- `turn_left`
+- `turn_right`
+
+## HTTP IMU payload
+
 ```json
 {
   "type": "imu",
@@ -128,4 +124,4 @@ make -j
 }
 ```
 
-포함된 `/web/` 클라이언트는 휴대폰 `deviceorientation` 값을 읽어서 0점 보정 후 `/imu`로 전송합니다.
+The web client zero-calibrates on connect, then continuously sends recentered phone IMU values to `/imu`.

@@ -5,194 +5,195 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <termios.h>
-#include <unistd.h>
+
 #include <fcntl.h>
+#include <linux/i2c-dev.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 namespace {
 
 constexpr float kImuAlpha = 0.2f;
 constexpr float kImuMaxDeg = 45.0f;
-constexpr int kPanId = 1;
-constexpr int kTiltId = 2;
-constexpr int kPanCenter = 1800;
-constexpr int kPanLeft = 2650;
-constexpr int kPanRight = 1150;
-constexpr int kTiltCenter = 2400;
-constexpr int kTiltUp = 2900;
-constexpr int kTiltDown = 2200;
 constexpr int kUpdateHz = 50;
 constexpr int kUpdateMs = 1000 / kUpdateHz;
-constexpr int kMaxStepPerTick = 20;
-
-speed_t to_baud_constant(int baud) {
-    switch (baud) {
-    case 9600:
-        return B9600;
-    case 19200:
-        return B19200;
-    case 38400:
-        return B38400;
-    case 57600:
-        return B57600;
-    case 115200:
-        return B115200;
-    default:
-        return B115200;
-    }
-}
+constexpr float kMaxStepPerTickDeg = 3.0f;
 
 float clampf(float value, float lo, float hi) {
     return std::max(lo, std::min(value, hi));
 }
 
-int lerp_int(int a, int b, float t) {
-    return static_cast<int>(std::lround(static_cast<float>(a) + (b - a) * t));
+float lerpf(float a, float b, float t) {
+    return a + (b - a) * t;
 }
 
-int step_toward(int current, int target, int max_step) {
+float step_toward(float current, float target, float max_step) {
     if (current < target) {
         return std::min(current + max_step, target);
     }
     return std::max(current - max_step, target);
 }
 
-class ServoSerial {
-public:
-    ServoSerial() = default;
+float map_axis_from_imu(float value, float center, float negative_limit, float positive_limit) {
+    const float clamped = clampf(value, -kImuMaxDeg, kImuMaxDeg);
+    if (clamped >= 0.0f) {
+        return lerpf(center, positive_limit, clamped / kImuMaxDeg);
+    }
+    return lerpf(center, negative_limit, (-clamped) / kImuMaxDeg);
+}
 
-    bool open_port(const std::string& device, int baud) {
-        fd_ = open(device.c_str(), O_RDWR | O_NOCTTY | O_SYNC);
+class Pca9685Driver {
+public:
+    Pca9685Driver() = default;
+
+    ~Pca9685Driver() {
+        close_device();
+    }
+
+    bool open_device(const std::string& device, int address, int pwm_frequency_hz) {
+        fd_ = open(device.c_str(), O_RDWR);
         if (fd_ < 0) {
             std::fprintf(stderr,
-                         "[PTZ] Failed to open serial %s: %s\n",
+                         "[PTZ] Failed to open I2C device %s: %s\n",
                          device.c_str(),
                          std::strerror(errno));
             return false;
         }
 
-        struct termios tty {};
-        if (tcgetattr(fd_, &tty) != 0) {
-            std::fprintf(stderr, "[PTZ] tcgetattr failed: %s\n", std::strerror(errno));
-            close(fd_);
-            fd_ = -1;
+        if (ioctl(fd_, I2C_SLAVE, address) < 0) {
+            std::fprintf(stderr,
+                         "[PTZ] Failed to set I2C addr 0x%02X: %s\n",
+                         address,
+                         std::strerror(errno));
+            close_device();
             return false;
         }
 
-        cfsetospeed(&tty, to_baud_constant(baud));
-        cfsetispeed(&tty, to_baud_constant(baud));
+        if (!write_reg(kMode1, 0x00)) {
+            close_device();
+            return false;
+        }
+        usleep(10000);
 
-        tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
-        tty.c_iflag &= ~IGNBRK;
-        tty.c_lflag = 0;
-        tty.c_oflag = 0;
-        tty.c_cc[VMIN] = 0;
-        tty.c_cc[VTIME] = 1;
-        tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-        tty.c_cflag |= (CLOCAL | CREAD);
-        tty.c_cflag &= ~(PARENB | PARODD);
-        tty.c_cflag &= ~CSTOPB;
-        tty.c_cflag &= ~CRTSCTS;
-
-        if (tcsetattr(fd_, TCSANOW, &tty) != 0) {
-            std::fprintf(stderr, "[PTZ] tcsetattr failed: %s\n", std::strerror(errno));
-            close(fd_);
-            fd_ = -1;
+        if (!set_pwm_frequency(static_cast<double>(pwm_frequency_hz))) {
+            close_device();
             return false;
         }
 
-        std::fprintf(stderr, "[PTZ] serial ready: %s @ %d\n", device.c_str(), baud);
+        std::fprintf(stderr,
+                     "[PTZ] PCA9685 ready: %s addr=0x%02X freq=%dHz\n",
+                     device.c_str(),
+                     address,
+                     pwm_frequency_hz);
         return true;
     }
 
-    ~ServoSerial() {
+    bool set_pan_tilt(int pan_channel, int tilt_channel, float pan_deg, float tilt_deg) {
+        return set_servo_angle(pan_channel, pan_deg) &&
+               set_servo_angle(tilt_channel, tilt_deg);
+    }
+
+private:
+    static constexpr uint8_t kMode1 = 0x00;
+    static constexpr uint8_t kPrescale = 0xFE;
+    static constexpr uint8_t kLed0OnL = 0x06;
+    static constexpr uint8_t kLed0OnH = 0x07;
+    static constexpr uint8_t kLed0OffL = 0x08;
+    static constexpr uint8_t kLed0OffH = 0x09;
+    static constexpr double kServoMinUs = 500.0;
+    static constexpr double kServoMaxUs = 2500.0;
+    static constexpr double kFrameUs = 20000.0;
+    static constexpr double kPwmResolution = 4096.0;
+
+    int fd_ = -1;
+
+    void close_device() {
         if (fd_ >= 0) {
             close(fd_);
             fd_ = -1;
         }
     }
 
-    static int clamp_pan(int value) {
-        return std::max(600, std::min(3600, value));
-    }
-
-    static int clamp_tilt(int value) {
-        return std::max(1300, std::min(4095, value));
-    }
-
-    bool control_double(uint8_t index1, int angle1, uint8_t index2, int angle2) {
-        if (fd_ < 0) {
-            return false;
-        }
-
-        angle1 = clamp_pan(angle1);
-        angle2 = clamp_tilt(angle2);
-
-        const uint8_t packet[] = {
-            0xFF, 0xFF, 0xFE, 0x0E, 0x83, 0x2A, 0x04,
-            index1,
-            static_cast<uint8_t>((angle1 >> 8) & 0xFF),
-            static_cast<uint8_t>(angle1 & 0xFF),
-            0x00, 0x0A,
-            index2,
-            static_cast<uint8_t>((angle2 >> 8) & 0xFF),
-            static_cast<uint8_t>(angle2 & 0xFF),
-            0x00, 0x0A,
-            static_cast<uint8_t>(~(0xFE + 0x0E + 0x83 + 0x2A + 0x04 +
-                                   index1 +
-                                   static_cast<uint8_t>((angle1 >> 8) & 0xFF) +
-                                   static_cast<uint8_t>(angle1 & 0xFF) +
-                                   0x00 + 0x0A +
-                                   index2 +
-                                   static_cast<uint8_t>((angle2 >> 8) & 0xFF) +
-                                   static_cast<uint8_t>(angle2 & 0xFF) +
-                                   0x00 + 0x0A))
-        };
-
-        const ssize_t written = write(fd_, packet, sizeof(packet));
-        tcdrain(fd_);
-        if (written != static_cast<ssize_t>(sizeof(packet))) {
-            std::fprintf(stderr, "[PTZ] serial write failed: %s\n", std::strerror(errno));
+    bool write_reg(uint8_t reg, uint8_t value) {
+        const uint8_t buf[2] = {reg, value};
+        if (write(fd_, buf, sizeof(buf)) != static_cast<ssize_t>(sizeof(buf))) {
+            std::fprintf(stderr, "[PTZ] I2C write reg 0x%02X failed: %s\n", reg, std::strerror(errno));
             return false;
         }
         return true;
     }
 
-private:
-    int fd_ = -1;
+    bool read_reg(uint8_t reg, uint8_t& value) {
+        if (write(fd_, &reg, 1) != 1) {
+            std::fprintf(stderr, "[PTZ] I2C address write failed: %s\n", std::strerror(errno));
+            return false;
+        }
+        if (read(fd_, &value, 1) != 1) {
+            std::fprintf(stderr, "[PTZ] I2C read reg 0x%02X failed: %s\n", reg, std::strerror(errno));
+            return false;
+        }
+        return true;
+    }
+
+    bool set_pwm_frequency(double freq_hz) {
+        double prescale_value = 25000000.0 / kPwmResolution / freq_hz - 1.0;
+        const auto prescale = static_cast<uint8_t>(std::floor(prescale_value + 0.5));
+
+        uint8_t old_mode = 0;
+        if (!read_reg(kMode1, old_mode)) {
+            return false;
+        }
+
+        const uint8_t sleep_mode = static_cast<uint8_t>((old_mode & 0x7F) | 0x10);
+        if (!write_reg(kMode1, sleep_mode)) {
+            return false;
+        }
+        if (!write_reg(kPrescale, prescale)) {
+            return false;
+        }
+        if (!write_reg(kMode1, old_mode)) {
+            return false;
+        }
+        usleep(5000);
+        if (!write_reg(kMode1, static_cast<uint8_t>(old_mode | 0xA1))) {
+            return false;
+        }
+        usleep(5000);
+        return true;
+    }
+
+    bool set_pwm(int channel, int on, int off) {
+        if (channel < 0 || channel > 15) {
+            return false;
+        }
+        return write_reg(static_cast<uint8_t>(kLed0OnL + 4 * channel), static_cast<uint8_t>(on & 0xFF)) &&
+               write_reg(static_cast<uint8_t>(kLed0OnH + 4 * channel), static_cast<uint8_t>((on >> 8) & 0x0F)) &&
+               write_reg(static_cast<uint8_t>(kLed0OffL + 4 * channel), static_cast<uint8_t>(off & 0xFF)) &&
+               write_reg(static_cast<uint8_t>(kLed0OffH + 4 * channel), static_cast<uint8_t>((off >> 8) & 0x0F));
+    }
+
+    bool set_servo_angle(int channel, float angle_deg) {
+        const double clamped = clampf(angle_deg, 0.0f, 180.0f);
+        const double pulse_us =
+            kServoMinUs + (clamped / 180.0) * (kServoMaxUs - kServoMinUs);
+        int ticks = static_cast<int>(std::lround((pulse_us / kFrameUs) * kPwmResolution));
+        ticks = std::max(0, std::min(4095, ticks));
+        return set_pwm(channel, 0, ticks);
+    }
 };
-
-int map_pan_from_roll(float roll) {
-    const float clamped = clampf(roll, -kImuMaxDeg, kImuMaxDeg);
-    if (clamped >= 0.0f) {
-        const float t = clamped / kImuMaxDeg;
-        return lerp_int(kPanCenter, kPanRight, t);
-    }
-    const float t = (-clamped) / kImuMaxDeg;
-    return lerp_int(kPanCenter, kPanLeft, t);
-}
-
-int map_tilt_from_pitch(float pitch) {
-    const float clamped = clampf(pitch, -kImuMaxDeg, kImuMaxDeg);
-    if (clamped >= 0.0f) {
-        const float t = clamped / kImuMaxDeg;
-        return lerp_int(kTiltCenter, kTiltDown, t);
-    }
-    const float t = (-clamped) / kImuMaxDeg;
-    return lerp_int(kTiltCenter, kTiltUp, t);
-}
 
 } // namespace
 
 struct PtzController::Impl {
     PtzConfig config;
-    std::unique_ptr<ServoSerial> servo;
+    std::unique_ptr<Pca9685Driver> servo;
     std::atomic<bool> running{false};
     std::atomic<bool> servo_ready{false};
     std::thread worker;
@@ -204,10 +205,10 @@ struct PtzController::Impl {
     float last_roll = 0.0f;
     float last_yaw = 0.0f;
     uint64_t last_client_timestamp_ms = 0;
-    int current_pan = kPanCenter;
-    int current_tilt = kTiltCenter;
-    int imu_target_pan = kPanCenter;
-    int imu_target_tilt = kTiltCenter;
+    float current_pan = 90.0f;
+    float current_tilt = 90.0f;
+    float imu_target_pan = 90.0f;
+    float imu_target_tilt = 90.0f;
     bool pan_left_active = false;
     bool pan_right_active = false;
     bool tilt_up_active = false;
@@ -216,13 +217,13 @@ struct PtzController::Impl {
     std::chrono::steady_clock::time_point last_imu_arrival{};
 
     void run() {
-        int current_pan_local = kPanCenter;
-        int current_tilt_local = kTiltCenter;
+        float current_pan_local = config.pan_center_deg;
+        float current_tilt_local = config.tilt_center_deg;
         auto next_tick = std::chrono::steady_clock::now();
 
         while (running.load()) {
-            int desired_pan = current_pan_local;
-            int desired_tilt = current_tilt_local;
+            float desired_pan = current_pan_local;
+            float desired_tilt = current_tilt_local;
             std::string source = "hold";
 
             {
@@ -242,18 +243,18 @@ struct PtzController::Impl {
                     const bool tilt_manual = tilt_up_active != tilt_down_active;
 
                     if (pan_left_active && !pan_right_active) {
-                        desired_pan = ServoSerial::clamp_pan(current_pan_local + kMaxStepPerTick);
+                        desired_pan = config.pan_left_deg;
                         source = "mqtt";
                     } else if (pan_right_active && !pan_left_active) {
-                        desired_pan = ServoSerial::clamp_pan(current_pan_local - kMaxStepPerTick);
+                        desired_pan = config.pan_right_deg;
                         source = "mqtt";
                     }
 
                     if (tilt_up_active && !tilt_down_active) {
-                        desired_tilt = ServoSerial::clamp_tilt(current_tilt_local + kMaxStepPerTick);
+                        desired_tilt = config.tilt_up_deg;
                         source = "mqtt";
                     } else if (tilt_down_active && !tilt_up_active) {
-                        desired_tilt = ServoSerial::clamp_tilt(current_tilt_local - kMaxStepPerTick);
+                        desired_tilt = config.tilt_down_deg;
                         source = "mqtt";
                     }
 
@@ -265,11 +266,14 @@ struct PtzController::Impl {
                 }
             }
 
-            current_pan_local = step_toward(current_pan_local, desired_pan, kMaxStepPerTick);
-            current_tilt_local = step_toward(current_tilt_local, desired_tilt, kMaxStepPerTick);
+            current_pan_local = step_toward(current_pan_local, desired_pan, kMaxStepPerTickDeg);
+            current_tilt_local = step_toward(current_tilt_local, desired_tilt, kMaxStepPerTickDeg);
 
             if (servo_ready.load() && servo) {
-                servo->control_double(kPanId, current_pan_local, kTiltId, current_tilt_local);
+                servo->set_pan_tilt(config.pan_channel,
+                                    config.tilt_channel,
+                                    current_pan_local,
+                                    current_tilt_local);
             }
 
             {
@@ -296,15 +300,22 @@ bool PtzController::start(const PtzConfig& cfg) {
 
     auto* impl = new Impl();
     impl->config = cfg;
-    impl->servo = std::make_unique<ServoSerial>();
+    impl->servo = std::make_unique<Pca9685Driver>();
+    impl->current_pan = cfg.pan_center_deg;
+    impl->current_tilt = cfg.tilt_center_deg;
+    impl->imu_target_pan = cfg.pan_center_deg;
+    impl->imu_target_tilt = cfg.tilt_center_deg;
 
     impl->running.store(true);
-    if (!impl->servo->open_port(cfg.serial_device, cfg.serial_baud)) {
-        std::fprintf(stderr, "[PTZ] serial servo init failed; PTZ motion disabled.\n");
+    if (!impl->servo->open_device(cfg.i2c_device, cfg.i2c_address, cfg.pwm_frequency_hz)) {
+        std::fprintf(stderr, "[PTZ] SG90 init failed; PTZ motion disabled.\n");
         impl->servo_ready.store(false);
     } else {
         impl->servo_ready.store(true);
-        impl->servo->control_double(kPanId, kPanCenter, kTiltId, kTiltCenter);
+        impl->servo->set_pan_tilt(cfg.pan_channel,
+                                  cfg.tilt_channel,
+                                  cfg.pan_center_deg,
+                                  cfg.tilt_center_deg);
     }
 
     impl->worker = std::thread([impl]() {
@@ -326,7 +337,10 @@ void PtzController::stop() {
     }
 
     if (impl_->servo_ready.load() && impl_->servo) {
-        impl_->servo->control_double(kPanId, kPanCenter, kTiltId, kTiltCenter);
+        impl_->servo->set_pan_tilt(impl_->config.pan_channel,
+                                   impl_->config.tilt_channel,
+                                   impl_->config.pan_center_deg,
+                                   impl_->config.tilt_center_deg);
     }
 
     delete impl_;
@@ -364,8 +378,14 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     // Current phone mount uses roll -> tilt, pitch -> pan.
     impl_->filtered_pitch = (1.0f - kImuAlpha) * impl_->filtered_pitch + kImuAlpha * roll;
     impl_->filtered_roll = (1.0f - kImuAlpha) * impl_->filtered_roll + kImuAlpha * pitch;
-    impl_->imu_target_pan = map_pan_from_roll(impl_->filtered_roll);
-    impl_->imu_target_tilt = map_tilt_from_pitch(impl_->filtered_pitch);
+    impl_->imu_target_pan = map_axis_from_imu(impl_->filtered_roll,
+                                              impl_->config.pan_center_deg,
+                                              impl_->config.pan_left_deg,
+                                              impl_->config.pan_right_deg);
+    impl_->imu_target_tilt = map_axis_from_imu(impl_->filtered_pitch,
+                                               impl_->config.tilt_center_deg,
+                                               impl_->config.tilt_up_deg,
+                                               impl_->config.tilt_down_deg);
     impl_->last_imu_arrival = std::chrono::steady_clock::now();
 }
 

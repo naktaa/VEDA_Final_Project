@@ -4,8 +4,17 @@
 #include <string>
 
 struct PtzConfig {
-    std::string serial_device = "/dev/serial0";
-    int serial_baud = 115200;
+    std::string i2c_device = "/dev/i2c-1";
+    int i2c_address = 0x40;
+    int pwm_frequency_hz = 50;
+    int pan_channel = 0;
+    int tilt_channel = 1;
+    float pan_center_deg = 90.0f;
+    float pan_left_deg = 180.0f;
+    float pan_right_deg = 0.0f;
+    float tilt_center_deg = 90.0f;
+    float tilt_up_deg = 0.0f;
+    float tilt_down_deg = 180.0f;
     int imu_timeout_ms = 300;
 };
 
@@ -15,8 +24,8 @@ struct PtzStatus {
     float roll = 0.0f;
     float yaw = 0.0f;
     uint64_t client_timestamp_ms = 0;
-    int pan = 1800;
-    int tilt = 2400;
+    float pan = 90.0f;
+    float tilt = 90.0f;
     std::string active_source = "hold";
 };
 

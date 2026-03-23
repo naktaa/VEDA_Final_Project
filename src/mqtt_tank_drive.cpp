@@ -49,10 +49,14 @@ void print_usage(const char* prog) {
     fprintf(stderr, "  --no-http-vr            disable HTTP/MJPEG/VR web server\n");
     fprintf(stderr, "  --http-port <port>      HTTP port for /web and /stream.mjpg (default: %d)\n",
             stream_config::DEFAULT_HTTP_PORT);
-    fprintf(stderr, "  --serial-dev <path>     UART device for PTZ servo (default: %s)\n",
-            stream_config::DEFAULT_SERIAL_DEVICE);
-    fprintf(stderr, "  --serial-baud <n>       UART baud for PTZ servo (default: %d)\n",
-            stream_config::DEFAULT_SERIAL_BAUD);
+    fprintf(stderr, "  --i2c-dev <path>        I2C device for PCA9685 (default: %s)\n",
+            stream_config::DEFAULT_I2C_DEVICE);
+    fprintf(stderr, "  --i2c-addr <n>          I2C address for PCA9685 (default: 0x%02X)\n",
+            stream_config::DEFAULT_I2C_ADDRESS);
+    fprintf(stderr, "  --pan-channel <n>       PCA9685 channel for pan SG90 (default: %d)\n",
+            stream_config::DEFAULT_PAN_CHANNEL);
+    fprintf(stderr, "  --tilt-channel <n>      PCA9685 channel for tilt SG90 (default: %d)\n",
+            stream_config::DEFAULT_TILT_CHANNEL);
 }
 
 ParseResult parse_args(int argc,
@@ -83,10 +87,14 @@ ParseResult parse_args(int argc,
             http_cfg.enable = false;
         } else if (std::strcmp(argv[i], "--http-port") == 0 && i + 1 < argc) {
             http_cfg.port = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--serial-dev") == 0 && i + 1 < argc) {
-            ptz_cfg.serial_device = argv[++i];
-        } else if (std::strcmp(argv[i], "--serial-baud") == 0 && i + 1 < argc) {
-            ptz_cfg.serial_baud = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--i2c-dev") == 0 && i + 1 < argc) {
+            ptz_cfg.i2c_device = argv[++i];
+        } else if (std::strcmp(argv[i], "--i2c-addr") == 0 && i + 1 < argc) {
+            ptz_cfg.i2c_address = std::strtol(argv[++i], nullptr, 0);
+        } else if (std::strcmp(argv[i], "--pan-channel") == 0 && i + 1 < argc) {
+            ptz_cfg.pan_channel = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--tilt-channel") == 0 && i + 1 < argc) {
+            ptz_cfg.tilt_channel = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return ParseResult::kHelp;
@@ -120,8 +128,17 @@ int main(int argc, char* argv[]) {
         std::string(TANK_SOURCE_DIR) + "/web/tilt_vr"};
 
     PtzConfig ptz_cfg{
-        stream_config::DEFAULT_SERIAL_DEVICE,
-        stream_config::DEFAULT_SERIAL_BAUD,
+        stream_config::DEFAULT_I2C_DEVICE,
+        stream_config::DEFAULT_I2C_ADDRESS,
+        stream_config::DEFAULT_PWM_FREQUENCY_HZ,
+        stream_config::DEFAULT_PAN_CHANNEL,
+        stream_config::DEFAULT_TILT_CHANNEL,
+        stream_config::DEFAULT_PAN_CENTER_DEG,
+        stream_config::DEFAULT_PAN_LEFT_DEG,
+        stream_config::DEFAULT_PAN_RIGHT_DEG,
+        stream_config::DEFAULT_TILT_CENTER_DEG,
+        stream_config::DEFAULT_TILT_UP_DEG,
+        stream_config::DEFAULT_TILT_DOWN_DEG,
         stream_config::DEFAULT_IMU_PRIORITY_TIMEOUT_MS};
 
     const ParseResult parse_result = parse_args(argc, argv, mqtt_cfg, rtsp_cfg, http_cfg, ptz_cfg);

@@ -22,10 +22,16 @@ let currentMode = "manual";
 let baseline = { pitch: 0, roll: 0, yaw: 0 };
 let latestRaw = { pitch: 0, roll: 0, yaw: 0 };
 let renderRaf = 0;
-let reconnectTimer = null;
 let hasSensorData = false;
 let sensorCheckTimer = null;
 let orientationEventCount = 0;
+let peerConnection = null;
+let connectInFlight = false;
+let uiCommandInterval = null;
+let lastUiCommandSeq = {
+  sessionToggle: 0,
+  zeroCalibrate: 0,
+};
 
 function setStatus(msg) {
   statusEl.textContent = msg;
@@ -150,7 +156,29 @@ function startOrientationFeed() {
   }, 33);
 }
 
+async function stopWebRtcStream() {
+  const oldPc = peerConnection;
+  peerConnection = null;
+
+  if (oldPc) {
+    oldPc.ontrack = null;
+    oldPc.onconnectionstatechange = null;
+    oldPc.oniceconnectionstatechange = null;
+    oldPc.close();
+  }
+
+  streamSource.pause();
+  streamSource.srcObject = null;
+
+  try {
+    await fetch("/webrtc/stop", { method: "POST", keepalive: true });
+  } catch (_) {
+    // Ignore cleanup errors on shutdown paths.
+  }
+}
+
 async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
+  connectInFlight = true;
   connectBtn.disabled = true;
 
   try {
@@ -163,18 +191,15 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
     setMode("manual");
   } finally {
     stopOrientationFeed();
+    await stopWebRtcStream();
     stopRenderLoop();
     connected = false;
     renderConnectButton();
-    streamSource.src = "";
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
     imuAckEl.textContent = "Server IMU: -";
     clearCanvases();
     setStatus(statusMessage);
     connectBtn.disabled = false;
+    connectInFlight = false;
   }
 }
 
@@ -239,20 +264,20 @@ function resizeCanvasToDisplaySize(canvas) {
   }
 }
 
-function drawCover(ctx, canvas, img) {
+function drawCover(ctx, canvas, video) {
   const cw = canvas.width;
   const ch = canvas.height;
-  if (!cw || !ch || !img.naturalWidth || !img.naturalHeight) {
+  if (!cw || !ch || !video.videoWidth || !video.videoHeight) {
     return;
   }
 
-  const scale = Math.max(cw / img.naturalWidth, ch / img.naturalHeight);
+  const scale = Math.max(cw / video.videoWidth, ch / video.videoHeight);
   const sw = Math.floor(cw / scale);
   const sh = Math.floor(ch / scale);
-  const sx = Math.floor((img.naturalWidth - sw) / 2);
-  const sy = Math.floor((img.naturalHeight - sh) / 2);
+  const sx = Math.floor((video.videoWidth - sw) / 2);
+  const sy = Math.floor((video.videoHeight - sh) / 2);
 
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
 }
 
 function renderStereo() {
@@ -289,28 +314,107 @@ function clearCanvases() {
   rightCtx.fillRect(0, 0, rightCanvas.width || 1, rightCanvas.height || 1);
 }
 
-function bindStreamEvents() {
-  streamSource.onload = () => {
-    setStatus("Video stream connected");
+function waitForIceGatheringComplete(pc) {
+  if (pc.iceGatheringState === "complete") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const onStateChange = () => {
+      if (pc.iceGatheringState === "complete") {
+        pc.removeEventListener("icegatheringstatechange", onStateChange);
+        resolve();
+      }
+    };
+    pc.addEventListener("icegatheringstatechange", onStateChange);
+  });
+}
+
+async function requestWebRtcAnswer(offer) {
+  const res = await fetch("/webrtc/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: offer.type,
+      sdp: offer.sdp,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `WebRTC session failed: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+async function startWebRtcStream() {
+  if (peerConnection) {
+    await stopWebRtcStream();
+  }
+
+  const pc = new RTCPeerConnection({
+    sdpSemantics: "unified-plan",
+    iceServers: [],
+  });
+  peerConnection = pc;
+
+  pc.addTransceiver("video", { direction: "recvonly" });
+
+  pc.ontrack = async (event) => {
+    const [stream] = event.streams;
+    if (!stream) {
+      return;
+    }
+    streamSource.srcObject = stream;
+    try {
+      await streamSource.play();
+    } catch (_) {
+      // Ignore autoplay race; the element is muted and usually succeeds.
+    }
     startRenderLoop();
+    setStatus("WebRTC video connected");
   };
 
-  streamSource.onerror = () => {
-    setStatus("Video stream error - retrying...");
+  pc.onconnectionstatechange = () => {
     if (!connected) {
       return;
     }
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
+
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      setStatus(`WebRTC ${pc.connectionState}`);
     }
-    reconnectTimer = setTimeout(() => {
-      const token = Date.now();
-      streamSource.src = `/stream.mjpg?t=${token}`;
-    }, 800);
   };
+
+  pc.oniceconnectionstatechange = () => {
+    if (!connected) {
+      return;
+    }
+
+    if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+      setStatus(`ICE ${pc.iceConnectionState}`);
+    }
+  };
+
+  const offer = await pc.createOffer({
+    offerToReceiveAudio: false,
+    offerToReceiveVideo: true,
+  });
+  await pc.setLocalDescription(offer);
+  await waitForIceGatheringComplete(pc);
+
+  const answer = await requestWebRtcAnswer(pc.localDescription);
+  await pc.setRemoteDescription({
+    type: answer.type,
+    sdp: answer.sdp,
+  });
 }
 
 async function connect() {
+  if (connectInFlight) {
+    return;
+  }
+
   if (connected) {
     await disconnect({
       releaseMode: true,
@@ -319,6 +423,7 @@ async function connect() {
     return;
   }
 
+  connectInFlight = true;
   connectBtn.disabled = true;
   setStatus("Requesting sensor permission...");
 
@@ -349,10 +454,8 @@ async function connect() {
       }
     }, 3000);
 
-    const token = Date.now();
-    streamSource.src = `/stream.mjpg?t=${token}`;
-    startRenderLoop();
-    setStatus("VR mode active. Connecting video stream...");
+    setStatus("VR mode active. Negotiating WebRTC...");
+    await startWebRtcStream();
   } catch (err) {
     await disconnect({
       releaseMode: true,
@@ -360,7 +463,61 @@ async function connect() {
     });
   } finally {
     connectBtn.disabled = false;
+    connectInFlight = false;
   }
+}
+
+async function fetchUiCommands() {
+  const res = await fetch("/vr/ui-commands");
+  if (!res.ok) {
+    throw new Error(`UI command fetch failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+async function handleUiCommands() {
+  if (connectInFlight) {
+    return;
+  }
+
+  try {
+    const body = await fetchUiCommands();
+    const sessionToggleSeq = Number(body.session_toggle_seq || 0);
+    const zeroCalibrateSeq = Number(body.zero_calibrate_seq || 0);
+
+    if (sessionToggleSeq > lastUiCommandSeq.sessionToggle) {
+      lastUiCommandSeq.sessionToggle = sessionToggleSeq;
+      try {
+        await connect();
+      } catch (_) {
+        setStatus("Controller VR toggle failed");
+      }
+    }
+
+    if (zeroCalibrateSeq > lastUiCommandSeq.zeroCalibrate) {
+      lastUiCommandSeq.zeroCalibrate = zeroCalibrateSeq;
+      if (connected) {
+        zeroCalibrate();
+      } else {
+        setStatus("Zero calibrate ignored: VR not connected");
+      }
+    }
+  } catch (_) {
+    if (!connected) {
+      return;
+    }
+    setStatus("UI command polling error");
+  }
+}
+
+function startUiCommandPolling() {
+  if (uiCommandInterval) {
+    clearInterval(uiCommandInterval);
+  }
+
+  uiCommandInterval = setInterval(() => {
+    handleUiCommands().catch(() => {});
+  }, 250);
 }
 
 async function initializeMode() {
@@ -369,6 +526,15 @@ async function initializeMode() {
   } catch (_) {
     setMode("manual");
   }
+
+  try {
+    const body = await fetchUiCommands();
+    lastUiCommandSeq.sessionToggle = Number(body.session_toggle_seq || 0);
+    lastUiCommandSeq.zeroCalibrate = Number(body.zero_calibrate_seq || 0);
+  } catch (_) {
+    // Ignore initial command sync failures; polling will retry.
+  }
+
   renderConnectButton();
 }
 
@@ -399,8 +565,8 @@ function scrollToVideo() {
   vrStage.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-bindStreamEvents();
 initializeMode();
+startUiCommandPolling();
 window.addEventListener("resize", () => {
   if (connected) {
     resizeCanvasToDisplaySize(leftCanvas);
@@ -418,6 +584,7 @@ scrollBtn.addEventListener("click", scrollToVideo);
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 window.addEventListener("beforeunload", () => {
   if (connected) {
+    fetch("/webrtc/stop", { method: "POST", keepalive: true }).catch(() => {});
     fetch("/ptz/mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

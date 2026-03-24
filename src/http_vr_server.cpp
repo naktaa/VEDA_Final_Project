@@ -16,6 +16,8 @@
 
 #include "frame_jpeg_cache.hpp"
 #include "ptz_control.hpp"
+#include "vr_ui_command_bridge.hpp"
+#include "web_rtc_stream.hpp"
 
 namespace {
 
@@ -71,6 +73,8 @@ struct HttpVrServer::Impl {
     std::atomic<bool>* app_running = nullptr;
     FrameJpegCache* frame_cache = nullptr;
     PtzController* ptz = nullptr;
+    WebRtcStreamServer* web_rtc = nullptr;
+    VrUiCommandBridge* vr_ui_command_bridge = nullptr;
     std::unique_ptr<httplib::Server> server;
     std::thread server_thread;
     std::atomic<bool> listen_finished{false};
@@ -84,7 +88,9 @@ HttpVrServer::~HttpVrServer() {
 bool HttpVrServer::start(const HttpVrConfig& cfg,
                          std::atomic<bool>& app_running,
                          FrameJpegCache& frame_cache,
-                         PtzController& ptz_controller) {
+                         PtzController& ptz_controller,
+                         WebRtcStreamServer& web_rtc_server,
+                         VrUiCommandBridge& vr_ui_command_bridge) {
     if (impl_) {
         return true;
     }
@@ -94,6 +100,8 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     impl->app_running = &app_running;
     impl->frame_cache = &frame_cache;
     impl->ptz = &ptz_controller;
+    impl->web_rtc = &web_rtc_server;
+    impl->vr_ui_command_bridge = &vr_ui_command_bridge;
     impl->server = std::make_unique<httplib::Server>();
 
     impl->server->Get("/health", [](const httplib::Request&, httplib::Response& res) {
@@ -170,6 +178,66 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
             res.set_content(std::string("bad json: ") + exc.what(),
                             "text/plain; charset=utf-8");
         }
+    });
+
+    impl->server->Get("/webrtc/status", [impl](const httplib::Request&, httplib::Response& res) {
+        json body = {
+            {"ok", true},
+            {"active", impl->web_rtc->has_active_session()},
+        };
+        res.set_content(body.dump(), "application/json");
+    });
+
+    impl->server->Post("/webrtc/session", [impl](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const json payload = json::parse(req.body);
+            const std::string type = payload.value("type", "");
+            const std::string sdp = payload.value("sdp", "");
+            if (type != "offer" || sdp.empty()) {
+                res.status = 400;
+                res.set_content("invalid offer payload", "text/plain; charset=utf-8");
+                return;
+            }
+
+            std::string answer_sdp;
+            std::string error;
+            if (!impl->web_rtc->create_session(sdp, answer_sdp, error)) {
+                res.status = 500;
+                res.set_content(error.empty() ? "webrtc session failed" : error,
+                                "text/plain; charset=utf-8");
+                return;
+            }
+
+            json body = {
+                {"ok", true},
+                {"type", "answer"},
+                {"sdp", answer_sdp},
+            };
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& exc) {
+            res.status = 400;
+            res.set_content(std::string("bad json: ") + exc.what(),
+                            "text/plain; charset=utf-8");
+        }
+    });
+
+    impl->server->Post("/webrtc/stop", [impl](const httplib::Request&, httplib::Response& res) {
+        impl->web_rtc->close_session();
+        json body = {
+            {"ok", true},
+            {"active", false},
+        };
+        res.set_content(body.dump(), "application/json");
+    });
+
+    impl->server->Get("/vr/ui-commands", [impl](const httplib::Request&, httplib::Response& res) {
+        const VrUiCommandSnapshot snapshot = impl->vr_ui_command_bridge->snapshot();
+        json body = {
+            {"ok", true},
+            {"session_toggle_seq", snapshot.session_toggle_seq},
+            {"zero_calibrate_seq", snapshot.zero_calibrate_seq},
+        };
+        res.set_content(body.dump(), "application/json");
     });
 
     impl->server->Get("/stream.mjpg", [impl](const httplib::Request&, httplib::Response& res) {

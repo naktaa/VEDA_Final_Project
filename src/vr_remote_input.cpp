@@ -100,6 +100,18 @@ public:
     }
 
 private:
+    void dispatch_ui_action(VrUiAction action, const char* action_name) {
+        if (!config_.ui_action_callback) {
+            fprintf(stderr, "[VR] ui action ignored: %s (no callback)\n", action_name);
+            fflush(stderr);
+            return;
+        }
+
+        fprintf(stderr, "[VR] ui action -> %s\n", action_name);
+        fflush(stderr);
+        config_.ui_action_callback(action);
+    }
+
     void handle_rel(const input_event& ev) {
         if (ev.code == REL_Y && ev.value != 0) {
             if (ev.value < 0) {
@@ -122,17 +134,15 @@ private:
     void handle_key(const input_event& ev) {
         if (ev.code == BTN_LEFT && ev.value == 1) {
             update_last_input();
-            fprintf(stderr, "[VR] EV_KEY %s value=%d -> stop\n", key_code_name(ev.code), ev.value);
-            fflush(stderr);
-            stop_drive("btn_left");
+            dispatch_ui_action(VrUiAction::kZeroCalibrate, "zero_calibrate");
             return;
         }
 
         if (ev.code == BTN_SIDE && (ev.value == 0 || ev.value == 1)) {
             update_last_input();
-            fprintf(stderr, "[VR] EV_KEY %s value=%d\n", key_code_name(ev.code), ev.value);
-            fflush(stderr);
-            handle_side_button(ev.value == 1);
+            if (ev.value == 1) {
+                dispatch_ui_action(VrUiAction::kToggleSession, "toggle_session");
+            }
             return;
         }
 
@@ -152,39 +162,10 @@ private:
         }
     }
 
-    void handle_side_button(bool pressed) {
-        switch (config_.side_button_action) {
-        case SideButtonAction::kEstop:
-            if (pressed) {
-                estop_active_ = true;
-                fprintf(stderr, "[VR] side button -> estop active\n");
-                fflush(stderr);
-                stop_drive("estop");
-            } else {
-                estop_active_ = false;
-                fprintf(stderr, "[VR] side button -> estop released\n");
-                fflush(stderr);
-            }
-            return;
-        case SideButtonAction::kModeToggle:
-            if (pressed) {
-                fprintf(stderr, "[VR] side button mode toggle is not enabled in this build\n");
-                fflush(stderr);
-            }
-            return;
-        }
-    }
-
     void drive_command(int left_cmd, int right_cmd, const input_event& ev, const char* action) {
         update_last_input();
         fprintf(stderr, "[VR] EV_REL %s value=%d -> %s\n", rel_code_name(ev.code), ev.value, action);
         fflush(stderr);
-
-        if (estop_active_) {
-            fprintf(stderr, "[VR] ignored while estop is active\n");
-            fflush(stderr);
-            return;
-        }
 
         left_cmd_ = normalize_cmd(left_cmd);
         right_cmd_ = normalize_cmd(right_cmd);
@@ -242,7 +223,6 @@ private:
     int current_speed_ = kDefaultSpeed;
     int left_cmd_ = 0;
     int right_cmd_ = 0;
-    bool estop_active_ = false;
     Clock::time_point last_input_;
 };
 
@@ -289,7 +269,7 @@ bool run_vr_remote_input_loop(const VrRemoteInputConfig& config, std::atomic<boo
     }
 
     fprintf(stderr,
-            "[VR] input=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s\n",
+            "[VR] input=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s ui_buttons=BTN_SIDE(toggle),BTN_LEFT(zero)\n",
             config.input_device.c_str(),
             config.log_only ? "log-only" : "drive",
             config.idle_stop_ms,

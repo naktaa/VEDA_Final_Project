@@ -16,7 +16,9 @@ pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 pkg_check_modules(GST REQUIRED
   gstreamer-1.0
   gstreamer-app-1.0
+  gstreamer-sdp-1.0
   gstreamer-video-1.0
+  gstreamer-webrtc-1.0
   gstreamer-rtsp-server-1.0
 )
 pkg_check_modules(HTTPLIB QUIET cpp-httplib)
@@ -56,6 +58,8 @@ add_executable(mqtt_tank_drive
   src/rtsp_stream.cpp
   src/tank_drive.cpp
   src/vr_remote_input.cpp
+  src/vr_ui_command_bridge.cpp
+  src/web_rtc_stream.cpp
 )
 
 target_include_directories(mqtt_tank_drive PRIVATE

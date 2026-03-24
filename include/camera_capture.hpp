@@ -4,6 +4,7 @@
 
 class RtspStreamServer;
 class FrameJpegCache;
+class WebRtcStreamServer;
 
 class CameraCapture {
 public:
@@ -16,7 +17,8 @@ public:
 
     bool start(std::atomic<bool>& app_running,
                RtspStreamServer* rtsp_server,
-               FrameJpegCache* frame_cache);
+               FrameJpegCache* frame_cache,
+               WebRtcStreamServer* web_rtc_server);
     void stop();
 
 private:

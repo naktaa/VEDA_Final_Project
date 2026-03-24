@@ -19,8 +19,13 @@
 
 namespace {
 
-struct CalibFrame {
+constexpr double kMinReliableCorr = 0.25;
+constexpr double kMaxIntervalScale = 1.5;
+
+struct CalibInterval {
+    uint64_t prev_frame_index = 0;
     uint64_t frame_index = 0;
+    double prev_t_ms = 0.0;
     double t_ms = 0.0;
     double lk_da = 0.0;
     double lk_confidence = 0.0;
@@ -35,10 +40,19 @@ struct SweepCandidate {
     size_t pair_count = 0;
 };
 
-struct AxisHintCandidate {
+struct SweepResult {
+    double best_offset_ms = 0.0;
+    double best_corr = 0.0;
+    size_t pair_count = 0;
+};
+
+struct AxisSearchCandidate {
     int axis = -1;
     int sign = 1;
-    double corr = 0.0;
+    double coarse_offset_ms = 0.0;
+    double coarse_corr = 0.0;
+    double fine_offset_ms = 0.0;
+    double fine_corr = 0.0;
     size_t pair_count = 0;
 };
 
@@ -55,8 +69,8 @@ bool integrate_axis_delta(const GyroBuffer& buffer,
                           double t0_ms,
                           double t1_ms,
                           int axis,
-                          bool use_mapped,
                           int sign,
+                          const cv::Vec3d& bias_counts,
                           double& out_delta) {
     out_delta = 0.0;
     std::vector<ImuSample> samples;
@@ -69,8 +83,8 @@ bool integrate_axis_delta(const GyroBuffer& buffer,
     }
 
     auto pick_value = [&](const ImuSample& sample) {
-        const cv::Vec3d& source = use_mapped ? sample.gyro_rad_s : sample.raw_counts;
-        return sign * source[axis];
+        const cv::Vec3d corrected = sample.raw_counts - bias_counts;
+        return sign * corrected[axis];
     };
 
     double prev_t = t0_ms;
@@ -116,48 +130,74 @@ double correlation(const std::vector<std::pair<double, double>>& values) {
     return (n * sum_xy - sum_x * sum_y) / denom;
 }
 
-double sweep_offset_ms(const GyroBuffer& buffer,
-                       const std::vector<CalibFrame>& frames,
-                       double center_ms,
-                       double range_ms,
-                       double step_ms,
-                       double* best_corr_out,
-                       std::vector<SweepCandidate>* trace_out = nullptr) {
-    double best_offset = center_ms;
-    double best_corr = 0.0;
+double abs_with_sign(double value) {
+    return std::abs(value);
+}
+
+bool interval_duration_is_reliable(const AppConfig& config, double dt_ms) {
+    if (!std::isfinite(dt_ms) || dt_ms <= 0.0) {
+        return false;
+    }
+    const double nominal_ms =
+        config.camera.fps > 0
+            ? 1000.0 / static_cast<double>(config.camera.fps)
+            : static_cast<double>(config.camera.frame_duration_us) / 1000.0;
+    if (!std::isfinite(nominal_ms) || nominal_ms <= 0.0) {
+        return true;
+    }
+    return dt_ms <= nominal_ms * kMaxIntervalScale;
+}
+
+bool offset_hits_boundary(double offset_ms, double center_ms, double range_ms, double step_ms) {
+    const double min_offset = center_ms - range_ms;
+    const double max_offset = center_ms + range_ms;
+    const double tolerance = std::max(1e-6, step_ms * 0.51);
+    return std::abs(offset_ms - min_offset) <= tolerance ||
+           std::abs(offset_ms - max_offset) <= tolerance;
+}
+
+SweepResult sweep_offset(const GyroBuffer& buffer,
+                         const std::vector<CalibInterval>& intervals,
+                         int axis,
+                         int sign,
+                         const cv::Vec3d& bias_counts,
+                         double center_ms,
+                         double range_ms,
+                         double step_ms,
+                         std::vector<SweepCandidate>* trace_out = nullptr) {
+    SweepResult result;
+    result.best_offset_ms = center_ms;
     bool first = true;
 
     for (double offset = center_ms - range_ms; offset <= center_ms + range_ms + 1e-6; offset += step_ms) {
         std::vector<std::pair<double, double>> pairs;
-        pairs.reserve(frames.size());
-        for (size_t i = 1; i < frames.size(); ++i) {
+        pairs.reserve(intervals.size());
+        for (const CalibInterval& interval : intervals) {
             double gyro_delta = 0.0;
             if (!integrate_axis_delta(buffer,
-                                      frames[i - 1].t_ms + offset,
-                                      frames[i].t_ms + offset,
-                                      2,
-                                      true,
-                                      1,
+                                      interval.prev_t_ms + offset,
+                                      interval.t_ms + offset,
+                                      axis,
+                                      sign,
+                                      bias_counts,
                                       gyro_delta)) {
                 continue;
             }
-            pairs.emplace_back(frames[i].lk_da, gyro_delta);
+            pairs.emplace_back(interval.lk_da, gyro_delta);
         }
         const double corr = correlation(pairs);
         if (trace_out) {
             trace_out->push_back({offset, corr, pairs.size()});
         }
-        if (first || std::abs(corr) > std::abs(best_corr)) {
-            best_corr = corr;
-            best_offset = offset;
+        if (first || abs_with_sign(corr) > abs_with_sign(result.best_corr)) {
+            result.best_corr = corr;
+            result.best_offset_ms = offset;
+            result.pair_count = pairs.size();
             first = false;
         }
     }
 
-    if (best_corr_out) {
-        *best_corr_out = best_corr;
-    }
-    return best_offset;
+    return result;
 }
 
 } // namespace
@@ -237,10 +277,12 @@ bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
     }
 
     LkTracker lk_tracker(config.eis);
-    std::vector<CalibFrame> frames;
-    frames.reserve(300);
+    std::vector<CalibInterval> intervals;
+    intervals.reserve(300);
     cv::Mat prev_frame;
     bool prev_ok = false;
+    uint64_t prev_frame_index = 0;
+    double prev_frame_time_ms = 0.0;
     double start_ms = -1.0;
     int total_pairs = 0;
 
@@ -262,18 +304,24 @@ bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
         if (prev_ok) {
             ++total_pairs;
             const LkMotionEstimate lk = lk_tracker.estimate(prev_frame, frame.image);
-            if (lk.valid && lk.confidence >= config.eis.lk_confidence_gate) {
-                frames.push_back({frame.frame_index,
-                                  frame.frame_time_ms,
-                                  lk.da,
-                                  lk.confidence,
-                                  lk.features,
-                                  lk.valid_points,
-                                  lk.inliers});
+            const double dt_ms = frame.frame_time_ms - prev_frame_time_ms;
+            const bool reliable_interval = interval_duration_is_reliable(config, dt_ms);
+            if (reliable_interval && lk.valid && lk.confidence >= config.eis.lk_confidence_gate) {
+                intervals.push_back({prev_frame_index,
+                                     frame.frame_index,
+                                     prev_frame_time_ms,
+                                     frame.frame_time_ms,
+                                     lk.da,
+                                     lk.confidence,
+                                     lk.features,
+                                     lk.valid_points,
+                                     lk.inliers});
             }
         }
         prev_frame = frame.image.clone();
         prev_ok = true;
+        prev_frame_index = frame.frame_index;
+        prev_frame_time_ms = frame.frame_time_ms;
 
         if ((frame.frame_time_ms - start_ms) >= config.calib.sweep_duration_ms) {
             break;
@@ -282,11 +330,14 @@ bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
 
     capture.shutdown();
 
-    calib_log << "# section=lk_frames\n";
-    calib_log << "frame_index\tt_ms\tlk_da\tlk_confidence\tlk_features\tlk_valid_points\tlk_inliers\n";
-    for (const CalibFrame& sample : frames) {
-        calib_log << sample.frame_index << '\t'
+    calib_log << "# section=lk_intervals\n";
+    calib_log << "prev_frame_index\tframe_index\tprev_t_ms\tt_ms\tdt_ms\tlk_da\tlk_confidence\tlk_features\tlk_valid_points\tlk_inliers\n";
+    for (const CalibInterval& sample : intervals) {
+        calib_log << sample.prev_frame_index << '\t'
+                  << sample.frame_index << '\t'
+                  << sample.prev_t_ms << '\t'
                   << sample.t_ms << '\t'
+                  << (sample.t_ms - sample.prev_t_ms) << '\t'
                   << sample.lk_da << '\t'
                   << sample.lk_confidence << '\t'
                   << sample.lk_features << '\t'
@@ -296,35 +347,83 @@ bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
     calib_log << "# section=lk_summary\n";
     calib_log << "total_pairs\taccepted_pairs\taccept_ratio\n";
     calib_log << total_pairs << '\t'
-              << frames.size() << '\t'
-              << (total_pairs > 0 ? static_cast<double>(frames.size()) / static_cast<double>(total_pairs) : 0.0)
+              << intervals.size() << '\t'
+              << (total_pairs > 0 ? static_cast<double>(intervals.size()) / static_cast<double>(total_pairs) : 0.0)
               << '\n';
 
-    if (frames.size() < 12) {
+    if (intervals.size() < 12) {
         imu_reader.stop();
         calib_log.flush();
         if (error) *error = "not enough LK calibration samples were collected";
         return false;
     }
 
-    double coarse_corr = 0.0;
+    std::vector<AxisSearchCandidate> axis_candidates;
+    axis_candidates.reserve(6);
+    cv::Vec3d bias_counts(config.calib.bias_x, config.calib.bias_y, config.calib.bias_z);
+    AxisSearchCandidate best_axis_candidate;
+    bool best_axis_candidate_ok = false;
+
+    for (int axis = 0; axis < 3; ++axis) {
+        for (int sign : {-1, 1}) {
+            const SweepResult coarse = sweep_offset(imu_reader.buffer(),
+                                                    intervals,
+                                                    axis,
+                                                    sign,
+                                                    bias_counts,
+                                                    config.calib.imu_offset_ms,
+                                                    config.calib.coarse_range_ms,
+                                                    config.calib.coarse_step_ms);
+            const SweepResult fine = sweep_offset(imu_reader.buffer(),
+                                                  intervals,
+                                                  axis,
+                                                  sign,
+                                                  bias_counts,
+                                                  coarse.best_offset_ms,
+                                                  config.calib.fine_range_ms,
+                                                  config.calib.fine_step_ms);
+
+            const AxisSearchCandidate candidate{
+                axis,
+                sign,
+                coarse.best_offset_ms,
+                coarse.best_corr,
+                fine.best_offset_ms,
+                fine.best_corr,
+                fine.pair_count,
+            };
+            axis_candidates.push_back(candidate);
+
+            if (!best_axis_candidate_ok ||
+                abs_with_sign(candidate.fine_corr) > abs_with_sign(best_axis_candidate.fine_corr) ||
+                (std::abs(abs_with_sign(candidate.fine_corr) - abs_with_sign(best_axis_candidate.fine_corr)) < 1e-9 &&
+                 candidate.pair_count > best_axis_candidate.pair_count)) {
+                best_axis_candidate = candidate;
+                best_axis_candidate_ok = true;
+            }
+        }
+    }
+
     std::vector<SweepCandidate> coarse_trace;
-    const double coarse_offset = sweep_offset_ms(imu_reader.buffer(),
-                                                 frames,
-                                                 config.calib.imu_offset_ms,
-                                                 config.calib.coarse_range_ms,
-                                                 config.calib.coarse_step_ms,
-                                                 &coarse_corr,
-                                                 &coarse_trace);
-    double fine_corr = 0.0;
+    const SweepResult coarse = sweep_offset(imu_reader.buffer(),
+                                            intervals,
+                                            best_axis_candidate.axis,
+                                            best_axis_candidate.sign,
+                                            bias_counts,
+                                            config.calib.imu_offset_ms,
+                                            config.calib.coarse_range_ms,
+                                            config.calib.coarse_step_ms,
+                                            &coarse_trace);
     std::vector<SweepCandidate> fine_trace;
-    const double fine_offset = sweep_offset_ms(imu_reader.buffer(),
-                                               frames,
-                                               coarse_offset,
-                                               config.calib.fine_range_ms,
-                                               config.calib.fine_step_ms,
-                                               &fine_corr,
-                                               &fine_trace);
+    const SweepResult fine = sweep_offset(imu_reader.buffer(),
+                                          intervals,
+                                          best_axis_candidate.axis,
+                                          best_axis_candidate.sign,
+                                          bias_counts,
+                                          coarse.best_offset_ms,
+                                          config.calib.fine_range_ms,
+                                          config.calib.fine_step_ms,
+                                          &fine_trace);
 
     calib_log << "# section=sweep_coarse\n";
     calib_log << "offset_ms\tcorr\tpair_count\n";
@@ -341,70 +440,69 @@ bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
                   << sample.pair_count << '\n';
     }
 
-    std::fprintf(stderr, "[CALIB] coarse offset %.2f ms corr=%.3f\n", coarse_offset, coarse_corr);
-    std::fprintf(stderr, "[CALIB] fine offset %.2f ms corr=%.3f\n", fine_offset, fine_corr);
+    std::fprintf(stderr,
+                 "[CALIB] best yaw axis/sign candidate: axis=%d sign=%d\n",
+                 best_axis_candidate.axis,
+                 best_axis_candidate.sign);
+    std::fprintf(stderr, "[CALIB] coarse offset %.2f ms corr=%.3f\n", coarse.best_offset_ms, coarse.best_corr);
+    std::fprintf(stderr, "[CALIB] fine offset %.2f ms corr=%.3f\n", fine.best_offset_ms, fine.best_corr);
     calib_log << "# section=sweep_summary\n";
-    calib_log << "coarse_offset_ms\tcoarse_corr\tfine_offset_ms\tfine_corr\n";
-    calib_log << coarse_offset << '\t'
-              << coarse_corr << '\t'
-              << fine_offset << '\t'
-              << fine_corr << '\n';
+    calib_log << "axis\tsign\tcoarse_offset_ms\tcoarse_corr\tfine_offset_ms\tfine_corr\tpair_count\n";
+    calib_log << best_axis_candidate.axis << '\t'
+              << best_axis_candidate.sign << '\t'
+              << coarse.best_offset_ms << '\t'
+              << coarse.best_corr << '\t'
+              << fine.best_offset_ms << '\t'
+              << fine.best_corr << '\t'
+              << fine.pair_count << '\n';
 
-    double best_axis_corr = 0.0;
-    int best_axis = -1;
-    int best_sign = 1;
-    std::vector<AxisHintCandidate> axis_trace;
-    for (int axis = 0; axis < 3; ++axis) {
-        for (int sign : {-1, 1}) {
-            std::vector<std::pair<double, double>> pairs;
-            for (size_t i = 1; i < frames.size(); ++i) {
-                double delta = 0.0;
-                if (!integrate_axis_delta(imu_reader.buffer(),
-                                          frames[i - 1].t_ms + fine_offset,
-                                          frames[i].t_ms + fine_offset,
-                                          axis,
-                                          false,
-                                          sign,
-                                          delta)) {
-                    continue;
-                }
-                pairs.emplace_back(frames[i].lk_da, delta);
-            }
-            const double corr = correlation(pairs);
-            axis_trace.push_back({axis, sign, corr, pairs.size()});
-            if (std::abs(corr) > std::abs(best_axis_corr)) {
-                best_axis_corr = corr;
-                best_axis = axis;
-                best_sign = sign;
-            }
-        }
-    }
-
-    calib_log << "# section=axis_hint\n";
-    calib_log << "axis\tsign\tcorr\tpair_count\n";
-    for (const AxisHintCandidate& sample : axis_trace) {
+    calib_log << "# section=axis_search\n";
+    calib_log << "axis\tsign\tcoarse_offset_ms\tcoarse_corr\tfine_offset_ms\tfine_corr\tpair_count\n";
+    for (const AxisSearchCandidate& sample : axis_candidates) {
         calib_log << sample.axis << '\t'
                   << sample.sign << '\t'
-                  << sample.corr << '\t'
+                  << sample.coarse_offset_ms << '\t'
+                  << sample.coarse_corr << '\t'
+                  << sample.fine_offset_ms << '\t'
+                  << sample.fine_corr << '\t'
                   << sample.pair_count << '\n';
     }
     calib_log << "# section=axis_summary\n";
-    calib_log << "best_axis\tbest_sign\tbest_corr\tcurrent_axis_yaw\tcurrent_sign_yaw\n";
-    calib_log << best_axis << '\t'
-              << best_sign << '\t'
-              << best_axis_corr << '\t'
+    calib_log << "best_axis\tbest_sign\tbest_offset_ms\tbest_corr\tcurrent_axis_yaw\tcurrent_sign_yaw\n";
+    calib_log << best_axis_candidate.axis << '\t'
+              << best_axis_candidate.sign << '\t'
+              << fine.best_offset_ms << '\t'
+              << fine.best_corr << '\t'
               << config.imu.axis_yaw << '\t'
               << config.imu.sign_yaw << '\n';
 
     std::fprintf(stderr,
-                 "[CALIB] yaw mapping hint: axis=%d sign=%d corr=%.3f (current axis_yaw=%d sign_yaw=%d)\n",
-                 best_axis,
-                 best_sign,
-                 best_axis_corr,
+                 "[CALIB] yaw mapping result: axis=%d sign=%d corr=%.3f (current axis_yaw=%d sign_yaw=%d)\n",
+                 best_axis_candidate.axis,
+                 best_axis_candidate.sign,
+                 fine.best_corr,
                  config.imu.axis_yaw,
                  config.imu.sign_yaw);
 
-    config.calib.imu_offset_ms = fine_offset;
+    const bool fine_hits_boundary =
+        offset_hits_boundary(fine.best_offset_ms,
+                             coarse.best_offset_ms,
+                             config.calib.fine_range_ms,
+                             config.calib.fine_step_ms);
+    if (abs_with_sign(fine.best_corr) < kMinReliableCorr || fine_hits_boundary) {
+        imu_reader.stop();
+        calib_log.flush();
+        if (error) {
+            *error = "calibration quality too low: fine_corr=" + std::to_string(fine.best_corr) +
+                     ", fine_offset_ms=" + std::to_string(fine.best_offset_ms) +
+                     (fine_hits_boundary ? " (search boundary hit)" : "");
+        }
+        return false;
+    }
+
+    config.imu.axis_yaw = best_axis_candidate.axis;
+    config.imu.sign_yaw = best_axis_candidate.sign;
+    config.calib.imu_offset_ms = fine.best_offset_ms;
     config.calib.ts_source = "sensor";
     config.calib.last_calibration = now_timestamp();
 

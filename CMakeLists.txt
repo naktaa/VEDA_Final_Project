@@ -78,6 +78,7 @@ add_executable(main_raw
   src/rtsp_server.cpp
   src/tank_drive.cpp
   src/timebase.cpp
+  src/vr_remote_input.cpp
 )
 
 target_include_directories(main_raw PRIVATE ${COMMON_INCLUDE_DIRS})

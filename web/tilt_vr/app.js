@@ -23,6 +23,7 @@ let sensorCheckTimer = null;
 let renderRaf = 0;
 let peerConnection = null;
 let lastVideoWaitLogAt = 0;
+let reconnectTimer = null;
 
 let sessionActive = false;
 let connectInFlight = false;
@@ -245,6 +246,26 @@ async function stopWebRtcStream() {
   }
 }
 
+function startMjpegStream() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  const token = Date.now();
+  streamSource.src = `/stream.mjpg?t=${token}`;
+  appendDebug(`Starting MJPEG stream token=${token}`);
+}
+
+function stopMjpegStream() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  streamSource.removeAttribute("src");
+  streamSource.src = "";
+  appendDebug("Stopping MJPEG stream");
+}
+
 function resizeCanvasToDisplaySize(canvas) {
   const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
@@ -255,20 +276,30 @@ function resizeCanvasToDisplaySize(canvas) {
   }
 }
 
-function drawCover(ctx, canvas, video) {
+function getSourceWidth(mediaEl) {
+  return mediaEl.naturalWidth || mediaEl.videoWidth || 0;
+}
+
+function getSourceHeight(mediaEl) {
+  return mediaEl.naturalHeight || mediaEl.videoHeight || 0;
+}
+
+function drawCover(ctx, canvas, mediaEl) {
   const cw = canvas.width;
   const ch = canvas.height;
-  if (!cw || !ch || !video.videoWidth || !video.videoHeight) {
+  const sourceWidth = getSourceWidth(mediaEl);
+  const sourceHeight = getSourceHeight(mediaEl);
+  if (!cw || !ch || !sourceWidth || !sourceHeight) {
     return;
   }
 
-  const scale = Math.max(cw / video.videoWidth, ch / video.videoHeight);
+  const scale = Math.max(cw / sourceWidth, ch / sourceHeight);
   const sw = Math.floor(cw / scale);
   const sh = Math.floor(ch / scale);
-  const sx = Math.floor((video.videoWidth - sw) / 2);
-  const sy = Math.floor((video.videoHeight - sh) / 2);
+  const sx = Math.floor((sourceWidth - sw) / 2);
+  const sy = Math.floor((sourceHeight - sh) / 2);
 
-  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
+  ctx.drawImage(mediaEl, sx, sy, sw, sh, 0, 0, cw, ch);
 }
 
 function renderStereo() {
@@ -277,7 +308,7 @@ function renderStereo() {
     return;
   }
 
-  if (!streamSource.videoWidth || !streamSource.videoHeight) {
+  if (!getSourceWidth(streamSource) || !getSourceHeight(streamSource)) {
     const now = Date.now();
     if (now - lastVideoWaitLogAt > 1000) {
       appendDebug("Waiting for decoded video frames");
@@ -480,7 +511,7 @@ async function stopSession(statusMessage = "Idle") {
     }
 
     stopOrientationFeed();
-    await stopWebRtcStream();
+    stopMjpegStream();
     stopRenderLoop();
     sessionActive = false;
     renderConnectButton();
@@ -523,12 +554,13 @@ async function startSession({ requestPermission = true } = {}) {
     startImuAckPolling();
 
     if (!sessionActive) {
-      setStatus("Negotiating WebRTC...");
-      await startWebRtcStream();
+      setStatus("Connecting MJPEG stream...");
+      startMjpegStream();
       sessionActive = true;
       renderConnectButton();
       await notifySessionState(true, false);
-      appendDebug("WebRTC session marked active");
+      appendDebug("MJPEG session marked active");
+      startRenderLoop();
     }
 
     await setPtzMode("vr");
@@ -621,27 +653,27 @@ function startUiCommandPolling() {
   }, 250);
 }
 
-function bindVideoDebugEvents() {
-  streamSource.addEventListener("loadedmetadata", () => {
-    appendDebug(`loadedmetadata ${streamSource.videoWidth}x${streamSource.videoHeight}`);
-  });
-  streamSource.addEventListener("loadeddata", () => {
-    appendDebug(`loadeddata ${streamSource.videoWidth}x${streamSource.videoHeight}`);
-  });
-  streamSource.addEventListener("playing", () => {
-    appendDebug(`playing ${streamSource.videoWidth}x${streamSource.videoHeight}`);
-  });
-  streamSource.addEventListener("waiting", () => {
-    appendDebug("video waiting");
-  });
-  streamSource.addEventListener("stalled", () => {
-    appendDebug("video stalled");
-  });
-  streamSource.addEventListener("resize", () => {
-    appendDebug(`video resize ${streamSource.videoWidth}x${streamSource.videoHeight}`);
+function bindStreamDebugEvents() {
+  streamSource.addEventListener("load", () => {
+    appendDebug(`mjpeg load ${getSourceWidth(streamSource)}x${getSourceHeight(streamSource)}`);
+    if (sessionActive) {
+      setStatus(currentMode === "vr" ? "MJPEG video connected" : "Video connected");
+    }
   });
   streamSource.addEventListener("error", () => {
-    appendDebug("video element error");
+    appendDebug("mjpeg element error");
+    if (!sessionActive) {
+      return;
+    }
+    setStatus("MJPEG stream error - retrying...");
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+    }
+    reconnectTimer = setTimeout(() => {
+      if (sessionActive) {
+        startMjpegStream();
+      }
+    }, 800);
   });
 }
 
@@ -706,7 +738,7 @@ function scrollToVideo() {
   vrStage.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-bindVideoDebugEvents();
+bindStreamDebugEvents();
 initializeMode();
 startUiCommandPolling();
 
@@ -741,7 +773,6 @@ window.addEventListener("beforeunload", () => {
       body: JSON.stringify({ active: false, vr_mode_active: false }),
       keepalive: true,
     }).catch(() => {});
-    fetch("/webrtc/stop", { method: "POST", keepalive: true }).catch(() => {});
     fetch("/ptz/mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -33,6 +33,7 @@ set(COMMON_SOURCES
   src/rtsp_server.cpp
   src/tank_drive.cpp
   src/timebase.cpp
+  src/vr_remote_input.cpp
 )
 
 set(COMMON_INCLUDE_DIRS

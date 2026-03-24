@@ -20,6 +20,7 @@
 #include "mqtt_drive.hpp"
 #include "rtsp_server.hpp"
 #include "tank_drive.hpp"
+#include "vr_remote_input.hpp"
 
 namespace {
 
@@ -145,6 +146,14 @@ int main() {
 
     HybridEisProcessor processor(config, &imu_reader.buffer());
 
+    VrRemoteInputConfig vr_input_config;
+    std::thread vr_input_thread([&]() {
+        const bool ok = run_vr_remote_input_loop(vr_input_config, running);
+        if (!ok && running.load()) {
+            std::fprintf(stderr, "[VR] controller loop unavailable; MQTT control remains active\n");
+        }
+    });
+
     std::thread tick_thread([&]() {
         while (running.load()) {
             tank_drive::tick();
@@ -245,6 +254,9 @@ int main() {
 
     if (frame_thread.joinable()) {
         frame_thread.join();
+    }
+    if (vr_input_thread.joinable()) {
+        vr_input_thread.join();
     }
     if (tick_thread.joinable()) {
         tick_thread.join();

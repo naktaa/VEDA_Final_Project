@@ -14,13 +14,15 @@
 ## 의존성
 - `cmake`
 - `pkg-config`
-- `wiringPi`
+- `libgpiod-dev`
 - `libmosquitto-dev`
 - `libgstreamer1.0-dev`
 - `libgstreamer-plugins-base1.0-dev`
 - `libgstrtspserver-1.0-dev`
 - `libcamera-dev`
 - `OpenCV`
+
+라즈베리파이에서 모터 구동까지 쓰려면 하드웨어 PWM 채널이 `/sys/class/pwm` 아래에 노출되어 있어야 합니다. 보통 `dtoverlay=pwm-2chan` 계열 설정이 필요합니다.
 
 ## 빌드
 예전처럼 직접 빌드해서 `build` 안의 실행파일을 실행하면 됩니다.

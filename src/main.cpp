@@ -76,6 +76,8 @@ int main() {
     runtime_log << "# camera_fps=" << config.camera.fps << "\n";
     runtime_log << "# imu_target_hz=" << config.imu.target_hz << "\n";
     runtime_log << "# imu_use_fifo=" << (config.imu.use_fifo ? 1 : 0) << "\n";
+    runtime_log << "# imu_int_gpio_chip=" << config.imu.int_gpio_chip << "\n";
+    runtime_log << "# imu_int_line_offset=" << config.imu.int_line_offset << "\n";
     runtime_log << "# imu_int_pin_wpi=" << config.imu.int_pin_wpi << "\n";
     runtime_log << "# calib_imu_offset_ms=" << config.calib.imu_offset_ms << "\n";
     runtime_log << "frame_index\tframe_time_ms\tsensor_ts_ns\texposure_us\tframe_duration_us\t"

@@ -4,9 +4,14 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
 
-#include <wiringPi.h>
+#include "gpio_line.hpp"
 
 namespace tank_drive {
 
@@ -18,16 +23,18 @@ constexpr int STOP = 0;
 constexpr int FORWARD = 1;
 constexpr int BACKWARD = 2;
 
-// wiringPi pin numbers (same as legacy tank+eis.cpp)
-//   L_EN -> GPIO18 (wPi 1,  physical 12) PWM0
-//   R_EN -> GPIO19 (wPi 24, physical 35) PWM1
-constexpr int L_IN1 = 28; // GPIO20, physical 38
-constexpr int L_IN2 = 27; // GPIO16, physical 36
-constexpr int L_EN  = 1;  // GPIO18, physical 12 (HW PWM0)
+constexpr const char* kGpioChipPath = "/dev/gpiochip0";
+constexpr const char* kPwmClassPath = "/sys/class/pwm";
+constexpr int kPwmPeriodNs = 1706667; // ~586Hz, close to legacy wiringPi hardware PWM setup
 
-constexpr int R_IN1 = 25; // GPIO26, physical 37
-constexpr int R_IN2 = 23; // GPIO13, physical 33
-constexpr int R_EN  = 24; // GPIO19, physical 35 (HW PWM1)
+// BCM GPIO offsets on gpiochip0.
+constexpr unsigned int L_IN1 = 20;
+constexpr unsigned int L_IN2 = 16;
+constexpr unsigned int R_IN1 = 26;
+constexpr unsigned int R_IN2 = 13;
+
+constexpr int L_PWM_CHANNEL = 0; // GPIO18
+constexpr int R_PWM_CHANNEL = 1; // GPIO19
 
 bool g_motor_ready = false;
 int g_pwm = 200;
@@ -50,6 +57,22 @@ struct SourceDriveState {
 };
 
 std::array<SourceDriveState, 3> g_source_states{};
+GpioOutputLine g_left_in1;
+GpioOutputLine g_left_in2;
+GpioOutputLine g_right_in1;
+GpioOutputLine g_right_in2;
+
+struct PwmChannel {
+    std::string chip_dir;
+    int channel = -1;
+
+    bool valid() const { return !chip_dir.empty() && channel >= 0; }
+    std::string channel_dir() const { return chip_dir + "/pwm" + std::to_string(channel); }
+    std::string path(const std::string& leaf) const { return channel_dir() + "/" + leaf; }
+};
+
+PwmChannel g_left_pwm;
+PwmChannel g_right_pwm;
 
 int clamp_pwm(int v) {
     return std::max(0, std::min(255, v));
@@ -72,34 +95,199 @@ std::size_t source_index(DriveSource source) {
 }
 
 int to_hw_pwm_duty(int pwm_255) {
-    constexpr int HW_RANGE = 1024;
     const int p = clamp_pwm(pwm_255);
-    return (p * HW_RANGE) / 255;
+    return (kPwmPeriodNs * p) / 255;
 }
 
-void set_motor_control(int en, int in1, int in2, int pwm, int dir) {
-    if (!g_motor_ready) return;
+bool write_text_file(const std::string& path, const std::string& value) {
+    std::ofstream output(path);
+    if (!output.is_open()) {
+        return false;
+    }
+    output << value;
+    return output.good();
+}
+
+bool wait_for_path(const std::filesystem::path& path, int retries = 50) {
+    for (int i = 0; i < retries; ++i) {
+        if (std::filesystem::exists(path)) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return std::filesystem::exists(path);
+}
+
+std::optional<std::string> discover_pwm_chip_dir(int required_channels) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(kPwmClassPath, ec)) {
+        return std::nullopt;
+    }
+
+    for (const fs::directory_entry& entry : fs::directory_iterator(kPwmClassPath, ec)) {
+        if (ec || !entry.is_directory()) {
+            continue;
+        }
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("pwmchip", 0) != 0) {
+            continue;
+        }
+
+        std::ifstream input(entry.path() / "npwm");
+        int npwm = 0;
+        if (!(input >> npwm)) {
+            continue;
+        }
+        if (npwm > required_channels) {
+            return entry.path().string();
+        }
+    }
+    return std::nullopt;
+}
+
+bool export_pwm_channel(PwmChannel& channel, std::string* error) {
+    namespace fs = std::filesystem;
+    const fs::path pwm_dir = channel.channel_dir();
+    if (!fs::exists(pwm_dir)) {
+        if (!write_text_file(channel.chip_dir + "/export", std::to_string(channel.channel))) {
+            if (error) {
+                *error = "failed to export PWM channel " + std::to_string(channel.channel) +
+                         " under " + channel.chip_dir;
+            }
+            return false;
+        }
+        if (!wait_for_path(pwm_dir)) {
+            if (error) {
+                *error = "PWM channel path did not appear: " + pwm_dir.string();
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool configure_pwm_channel(PwmChannel& channel, std::string* error) {
+    if (!export_pwm_channel(channel, error)) {
+        return false;
+    }
+
+    write_text_file(channel.path("enable"), "0");
+    if (!write_text_file(channel.path("period"), std::to_string(kPwmPeriodNs))) {
+        if (error) *error = "failed to set PWM period for " + channel.channel_dir();
+        return false;
+    }
+    if (!write_text_file(channel.path("duty_cycle"), "0")) {
+        if (error) *error = "failed to set PWM duty_cycle for " + channel.channel_dir();
+        return false;
+    }
+    if (!write_text_file(channel.path("enable"), "1")) {
+        if (error) *error = "failed to enable PWM channel at " + channel.channel_dir();
+        return false;
+    }
+    return true;
+}
+
+bool set_pwm_duty(const PwmChannel& channel, int pwm_255, std::string* error) {
+    if (!channel.valid()) {
+        if (error) *error = "PWM channel is not initialized";
+        return false;
+    }
+    if (!write_text_file(channel.path("duty_cycle"), std::to_string(to_hw_pwm_duty(pwm_255)))) {
+        if (error) *error = "failed to update PWM duty_cycle for " + channel.channel_dir();
+        return false;
+    }
+    return true;
+}
+
+void shutdown_pwm_channel(const PwmChannel& channel) {
+    if (!channel.valid()) {
+        return;
+    }
+    write_text_file(channel.path("duty_cycle"), "0");
+    write_text_file(channel.path("enable"), "0");
+}
+
+bool log_and_disable_motor(const std::string& message) {
+    std::fprintf(stderr, "[TANK] %s; motor control disabled.\n", message.c_str());
+    std::fflush(stderr);
+    g_motor_ready = false;
+    return false;
+}
+
+bool set_direction(GpioOutputLine& line, int value) {
+    std::string error;
+    if (line.set_value(value, &error)) {
+        return true;
+    }
+    return log_and_disable_motor(error);
+}
+
+bool set_motor_control(const PwmChannel& enable_channel,
+                       GpioOutputLine& in1,
+                       GpioOutputLine& in2,
+                       int pwm,
+                       int dir) {
+    if (!g_motor_ready) return false;
     pwm = clamp_pwm(pwm);
-    pwmWrite(en, to_hw_pwm_duty(pwm));
+    std::string error;
+    if (!set_pwm_duty(enable_channel, pwm, &error)) {
+        return log_and_disable_motor(error);
+    }
 
     if (dir == FORWARD) {
-        digitalWrite(in1, LOW);
-        digitalWrite(in2, HIGH);
-    } else if (dir == BACKWARD) {
-        digitalWrite(in1, HIGH);
-        digitalWrite(in2, LOW);
-    } else {
-        pwmWrite(en, 0);
-        digitalWrite(in1, LOW);
-        digitalWrite(in2, LOW);
+        return set_direction(in1, 0) && set_direction(in2, 1);
     }
+    if (dir == BACKWARD) {
+        return set_direction(in1, 1) && set_direction(in2, 0);
+    }
+
+    if (!set_pwm_duty(enable_channel, 0, &error)) {
+        return log_and_disable_motor(error);
+    }
+    return set_direction(in1, 0) && set_direction(in2, 0);
+}
+
+bool init_motor_outputs(std::string* error) {
+    if (!g_left_in1.open(kGpioChipPath, L_IN1, "tank_left_in1", 0, error) ||
+        !g_left_in2.open(kGpioChipPath, L_IN2, "tank_left_in2", 0, error) ||
+        !g_right_in1.open(kGpioChipPath, R_IN1, "tank_right_in1", 0, error) ||
+        !g_right_in2.open(kGpioChipPath, R_IN2, "tank_right_in2", 0, error)) {
+        return false;
+    }
+
+    const std::optional<std::string> pwm_chip_dir = discover_pwm_chip_dir(R_PWM_CHANNEL);
+    if (!pwm_chip_dir) {
+        if (error) {
+            *error = "usable pwmchip not found under /sys/class/pwm";
+        }
+        return false;
+    }
+
+    g_left_pwm = PwmChannel{*pwm_chip_dir, L_PWM_CHANNEL};
+    g_right_pwm = PwmChannel{*pwm_chip_dir, R_PWM_CHANNEL};
+    if (!configure_pwm_channel(g_left_pwm, error) || !configure_pwm_channel(g_right_pwm, error)) {
+        return false;
+    }
+    return true;
+}
+
+void close_motor_outputs() {
+    shutdown_pwm_channel(g_left_pwm);
+    shutdown_pwm_channel(g_right_pwm);
+    g_left_pwm = {};
+    g_right_pwm = {};
+    g_left_in1.close();
+    g_left_in2.close();
+    g_right_in1.close();
+    g_right_in2.close();
 }
 
 void apply_drive(int left_cmd, int right_cmd, int pwm) {
     const int ldir = (left_cmd > 0) ? FORWARD : (left_cmd < 0 ? BACKWARD : STOP);
     const int rdir = (right_cmd > 0) ? FORWARD : (right_cmd < 0 ? BACKWARD : STOP);
-    set_motor_control(L_EN, L_IN1, L_IN2, (ldir == STOP) ? 0 : pwm, ldir);
-    set_motor_control(R_EN, R_IN1, R_IN2, (rdir == STOP) ? 0 : pwm, rdir);
+    set_motor_control(g_left_pwm, g_left_in1, g_left_in2, (ldir == STOP) ? 0 : pwm, ldir);
+    set_motor_control(g_right_pwm, g_right_in1, g_right_in2, (rdir == STOP) ? 0 : pwm, rdir);
 }
 
 void stop_all() {
@@ -162,27 +350,13 @@ void apply_selected_drive_locked() {
 
 bool init() {
     std::lock_guard<std::mutex> lock(g_state_mutex);
-    if (wiringPiSetup() == -1) {
-        std::fprintf(stderr, "[TANK] wiringPiSetup failed; motor control disabled.\n");
+    std::string error;
+    if (!init_motor_outputs(&error)) {
+        close_motor_outputs();
+        std::fprintf(stderr, "[TANK] %s; motor control disabled.\n", error.c_str());
         g_motor_ready = false;
         return false;
     }
-
-    pinMode(L_EN, PWM_OUTPUT);
-    pinMode(R_EN, PWM_OUTPUT);
-    pinMode(L_IN1, OUTPUT);
-    pinMode(L_IN2, OUTPUT);
-    pinMode(R_IN1, OUTPUT);
-    pinMode(R_IN2, OUTPUT);
-
-    digitalWrite(L_IN1, LOW);
-    digitalWrite(L_IN2, LOW);
-    digitalWrite(R_IN1, LOW);
-    digitalWrite(R_IN2, LOW);
-
-    pwmSetMode(PWM_MODE_MS);
-    pwmSetClock(32);
-    pwmSetRange(1024);
 
     g_motor_ready = true;
     g_active_source = DriveSource::kManualKey;
@@ -198,6 +372,7 @@ void shutdown() {
     g_source_states = {};
     stop_all();
     g_motor_ready = false;
+    close_motor_outputs();
 }
 
 bool handle_key(char ch) {

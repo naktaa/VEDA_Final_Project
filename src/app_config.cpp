@@ -139,6 +139,8 @@ std::string make_default_config_text() {
     append_section(oss, "imu");
     append_kv(oss, "bus", cfg.imu.bus);
     append_kv(oss, "addr", cfg.imu.addr);
+    append_kv(oss, "int_gpio_chip", cfg.imu.int_gpio_chip);
+    append_kv(oss, "int_line_offset", cfg.imu.int_line_offset);
     append_kv(oss, "int_pin_wpi", cfg.imu.int_pin_wpi);
     append_kv(oss, "target_hz", cfg.imu.target_hz);
     append_kv(oss, "use_fifo", cfg.imu.use_fifo ? 1 : 0);
@@ -272,6 +274,8 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
 
         load_int(map, "imu.bus", config.imu.bus);
         load_int(map, "imu.addr", config.imu.addr);
+        load_string(map, "imu.int_gpio_chip", config.imu.int_gpio_chip);
+        load_int(map, "imu.int_line_offset", config.imu.int_line_offset);
         load_int(map, "imu.int_pin_wpi", config.imu.int_pin_wpi);
         load_int(map, "imu.target_hz", config.imu.target_hz);
         load_bool(map, "imu.use_fifo", config.imu.use_fifo);
@@ -377,6 +381,8 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_section(oss, "imu");
         append_kv(oss, "bus", copy.imu.bus);
         append_kv(oss, "addr", copy.imu.addr);
+        append_kv(oss, "int_gpio_chip", copy.imu.int_gpio_chip);
+        append_kv(oss, "int_line_offset", copy.imu.int_line_offset);
         append_kv(oss, "int_pin_wpi", copy.imu.int_pin_wpi);
         append_kv(oss, "target_hz", copy.imu.target_hz);
         append_kv(oss, "use_fifo", copy.imu.use_fifo ? 1 : 0);

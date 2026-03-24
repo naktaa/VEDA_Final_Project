@@ -85,6 +85,26 @@ target_include_directories(main_raw PRIVATE ${COMMON_INCLUDE_DIRS})
 target_compile_options(main_raw PRIVATE ${COMMON_COMPILE_OPTIONS})
 target_link_libraries(main_raw PRIVATE ${COMMON_LINK_LIBS})
 
+add_executable(main_lkonly
+  src/main_lkonly.cpp
+  src/app_config.cpp
+  src/gyro_eis.cpp
+  src/gst_camera_capture.cpp
+  src/hybrid_eis.cpp
+  src/image_utils.cpp
+  src/libcamera_capture.cpp
+  src/lk_tracker.cpp
+  src/mqtt_drive.cpp
+  src/rtsp_server.cpp
+  src/tank_drive.cpp
+  src/timebase.cpp
+  src/vr_remote_input.cpp
+)
+
+target_include_directories(main_lkonly PRIVATE ${COMMON_INCLUDE_DIRS})
+target_compile_options(main_lkonly PRIVATE ${COMMON_COMPILE_OPTIONS})
+target_link_libraries(main_lkonly PRIVATE ${COMMON_LINK_LIBS})
+
 add_executable(calib
   src/calib_offset.cpp
   src/app_config.cpp

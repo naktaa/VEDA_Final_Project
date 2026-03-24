@@ -16,6 +16,7 @@
 
 #include "frame_jpeg_cache.hpp"
 #include "ptz_control.hpp"
+#include "vr_ui_command_bridge.hpp"
 
 namespace {
 
@@ -71,6 +72,7 @@ struct HttpVrServer::Impl {
     std::atomic<bool>* app_running = nullptr;
     FrameJpegCache* frame_cache = nullptr;
     PtzController* ptz = nullptr;
+    VrUiCommandBridge* vr_ui_command_bridge = nullptr;
     std::unique_ptr<httplib::Server> server;
     std::thread server_thread;
     std::atomic<bool> listen_finished{false};
@@ -84,7 +86,8 @@ HttpVrServer::~HttpVrServer() {
 bool HttpVrServer::start(const HttpVrConfig& cfg,
                          std::atomic<bool>& app_running,
                          FrameJpegCache& frame_cache,
-                         PtzController& ptz_controller) {
+                         PtzController& ptz_controller,
+                         VrUiCommandBridge& vr_ui_command_bridge) {
     if (impl_) {
         return true;
     }
@@ -94,6 +97,7 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     impl->app_running = &app_running;
     impl->frame_cache = &frame_cache;
     impl->ptz = &ptz_controller;
+    impl->vr_ui_command_bridge = &vr_ui_command_bridge;
     impl->server = std::make_unique<httplib::Server>();
 
     impl->server->Get("/health", [](const httplib::Request&, httplib::Response& res) {
@@ -176,6 +180,38 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
                 impl->ptz->handle_imu(pitch, roll, yaw, t);
             }
             res.status = 204;
+        } catch (const std::exception& exc) {
+            res.status = 400;
+            res.set_content(std::string("bad json: ") + exc.what(),
+                            "text/plain; charset=utf-8");
+        }
+    });
+
+    impl->server->Get("/vr/ui-commands", [impl](const httplib::Request&, httplib::Response& res) {
+        const VrUiCommandSnapshot snapshot = impl->vr_ui_command_bridge->snapshot();
+        json body = {
+            {"ok", true},
+            {"session_start_seq", snapshot.session_start_seq},
+            {"session_stop_seq", snapshot.session_stop_seq},
+            {"zero_calibrate_seq", snapshot.zero_calibrate_seq},
+            {"session_active", snapshot.session_active},
+            {"vr_mode_active", snapshot.vr_mode_active},
+        };
+        res.set_content(body.dump(), "application/json");
+    });
+
+    impl->server->Post("/vr/session-state", [impl](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const json payload = json::parse(req.body);
+            const bool active = payload.value("active", false);
+            const bool vr_mode_active = payload.value("vr_mode_active", false);
+            impl->vr_ui_command_bridge->set_state(active, vr_mode_active);
+            json body = {
+                {"ok", true},
+                {"active", active},
+                {"vr_mode_active", vr_mode_active},
+            };
+            res.set_content(body.dump(), "application/json");
         } catch (const std::exception& exc) {
             res.status = 400;
             res.set_content(std::string("bad json: ") + exc.what(),

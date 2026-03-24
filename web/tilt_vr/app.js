@@ -18,16 +18,24 @@ const rightCtx = rightCanvas.getContext("2d", { alpha: false });
 let orientationHandler = null;
 let sendInterval = null;
 let imuAckInterval = null;
+let uiCommandInterval = null;
 let connected = false;
 let currentMode = "manual";
+let vrArmed = false;
 let baseline = { pitch: 0, roll: 0, yaw: 0 };
 let latestRaw = { pitch: 0, roll: 0, yaw: 0 };
 let renderRaf = 0;
 let reconnectTimer = null;
 let hasSensorData = false;
+let sensorPermissionGranted = false;
 let sensorCheckTimer = null;
 let orientationEventCount = 0;
 let lastDebug = "Debug: -";
+let lastUiCommandSeq = {
+  sessionStart: 0,
+  sessionStop: 0,
+  zeroCalibrate: 0,
+};
 
 function setStatus(msg) {
   statusEl.textContent = msg;
@@ -72,8 +80,38 @@ function recenteredValue(raw) {
 }
 
 function zeroCalibrate() {
+  if (!connected) {
+    setStatus("Connect first");
+    return Promise.resolve();
+  }
+  if (!hasSensorData) {
+    setStatus("Zero calibrate ignored: sensor data unavailable");
+    return Promise.resolve();
+  }
   baseline = { ...latestRaw };
-  setStatus("Zero calibrated");
+  vrArmed = true;
+  setStatus("Zero calibrated. VR pan/tilt active.");
+  return setPtzMode("vr").then(() => notifySessionState(true, true));
+}
+
+async function notifySessionState(active, vrModeActive) {
+  try {
+    await fetch("/vr/session-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active, vr_mode_active: vrModeActive }),
+      keepalive: true,
+    });
+  } catch (_) {
+  }
+}
+
+async function fetchUiCommands() {
+  const res = await fetch("/vr/ui-commands");
+  if (!res.ok) {
+    throw new Error(`UI command fetch failed: ${res.status}`);
+  }
+  return res.json();
 }
 
 async function ensureOrientationPermission() {
@@ -91,6 +129,7 @@ async function ensureOrientationPermission() {
   } else {
     setDebug("Sensor permission API not required");
   }
+  sensorPermissionGranted = true;
 }
 
 async function fetchPtzMode() {
@@ -125,6 +164,7 @@ function startOrientationFeed() {
       Number.isFinite(evt.alpha) || Number.isFinite(evt.beta) || Number.isFinite(evt.gamma);
     if (hasFiniteAngles) {
       hasSensorData = true;
+      sensorPermissionGranted = true;
       if (orientationEventCount === 1) {
         setDebug(
           `First deviceorientation alpha=${Number(evt.alpha || 0).toFixed(1)} beta=${Number(
@@ -150,7 +190,7 @@ function startOrientationFeed() {
   setDebug("deviceorientation listener attached");
 
   sendInterval = setInterval(() => {
-    if (!connected || currentMode !== "vr" || !hasSensorData) {
+    if (!connected || !vrArmed || currentMode !== "vr" || !hasSensorData) {
       return;
     }
 
@@ -186,6 +226,7 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
     stopOrientationFeed();
     stopRenderLoop();
     connected = false;
+    vrArmed = false;
     renderConnectButton();
     streamSource.src = "";
     if (reconnectTimer) {
@@ -195,6 +236,7 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
     imuAckEl.textContent = "Server IMU: -";
     clearCanvases();
     setStatus(statusMessage);
+    await notifySessionState(false, false);
     connectBtn.disabled = false;
   }
 }
@@ -219,7 +261,7 @@ function startImuAckPolling() {
         `t:${body.t} servo:${body.servo_ready ? "ready" : "off"} ` +
         `src:${body.source ?? "-"}`;
 
-      if (connected && body.mode !== "vr") {
+      if (connected && vrArmed && body.mode !== "vr") {
         await disconnect({
           releaseMode: false,
           statusMessage: "VR input lost. Back to manual mode.",
@@ -331,7 +373,7 @@ function bindStreamEvents() {
   };
 }
 
-async function connect() {
+async function connect({ requestPermission = true } = {}) {
   if (connected) {
     await disconnect({
       releaseMode: true,
@@ -347,22 +389,25 @@ async function connect() {
     if (!window.isSecureContext) {
       setStatus("Warning: sensor access may be blocked on insecure HTTP");
     }
-    await ensureOrientationPermission();
+    if (requestPermission) {
+      await ensureOrientationPermission();
+    } else if (!sensorPermissionGranted) {
+      throw new Error("Sensor permission requires one phone tap first");
+    }
 
     const health = await fetch("/health");
     if (!health.ok) {
       throw new Error(`Server not ready: ${health.status}`);
     }
 
-    await setPtzMode("vr");
-
     connected = true;
+    vrArmed = false;
     renderConnectButton();
     hasSensorData = false;
     orientationEventCount = 0;
-    zeroCalibrate();
     startOrientationFeed();
     startImuAckPolling();
+    await notifySessionState(true, false);
 
     sensorCheckTimer = setTimeout(() => {
       if (connected && !hasSensorData) {
@@ -374,7 +419,7 @@ async function connect() {
     const token = Date.now();
     streamSource.src = `/stream.mjpg?t=${token}`;
     startRenderLoop();
-    setStatus("VR mode active. Connecting video stream...");
+    setStatus("Video connected. Press 0점 조정 to start VR pan/tilt.");
   } catch (err) {
     await disconnect({
       releaseMode: true,
@@ -391,7 +436,63 @@ async function initializeMode() {
   } catch (_) {
     setMode("manual");
   }
+  try {
+    const body = await fetchUiCommands();
+    lastUiCommandSeq.sessionStart = Number(body.session_start_seq || 0);
+    lastUiCommandSeq.sessionStop = Number(body.session_stop_seq || 0);
+    lastUiCommandSeq.zeroCalibrate = Number(body.zero_calibrate_seq || 0);
+  } catch (_) {
+  }
   renderConnectButton();
+}
+
+async function handleUiCommands() {
+  try {
+    const body = await fetchUiCommands();
+    const sessionStartSeq = Number(body.session_start_seq || 0);
+    const sessionStopSeq = Number(body.session_stop_seq || 0);
+    const zeroCalibrateSeq = Number(body.zero_calibrate_seq || 0);
+
+    if (sessionStartSeq > lastUiCommandSeq.sessionStart) {
+      lastUiCommandSeq.sessionStart = sessionStartSeq;
+      if (!connected) {
+        try {
+          await connect({ requestPermission: false });
+        } catch (_) {
+          setStatus("Controller VR start failed. Tap phone once to grant sensor permission.");
+        }
+      }
+    }
+
+    if (sessionStopSeq > lastUiCommandSeq.sessionStop) {
+      lastUiCommandSeq.sessionStop = sessionStopSeq;
+      if (connected) {
+        await disconnect({
+          releaseMode: true,
+          statusMessage: "Manual mode active",
+        });
+      }
+    }
+
+    if (zeroCalibrateSeq > lastUiCommandSeq.zeroCalibrate) {
+      lastUiCommandSeq.zeroCalibrate = zeroCalibrateSeq;
+      if (connected && hasSensorData) {
+        await zeroCalibrate();
+      } else if (connected) {
+        setStatus("Zero calibrate ignored: sensor data unavailable");
+      }
+    }
+  } catch (_) {
+  }
+}
+
+function startUiCommandPolling() {
+  if (uiCommandInterval) {
+    clearInterval(uiCommandInterval);
+  }
+  uiCommandInterval = setInterval(() => {
+    handleUiCommands().catch(() => {});
+  }, 250);
 }
 
 async function toggleFullscreen() {
@@ -423,6 +524,7 @@ function scrollToVideo() {
 
 bindStreamEvents();
 initializeMode();
+startUiCommandPolling();
 window.addEventListener("resize", () => {
   if (connected) {
     resizeCanvasToDisplaySize(leftCanvas);
@@ -430,16 +532,26 @@ window.addEventListener("resize", () => {
   }
 });
 connectBtn.addEventListener("click", () => {
-  connect().catch(() => {
+  connect({ requestPermission: true }).catch(() => {
     setStatus("Connect error");
   });
 });
-centerBtn.addEventListener("click", zeroCalibrate);
+centerBtn.addEventListener("click", () => {
+  zeroCalibrate().catch(() => {
+    setStatus("Zero calibrate error");
+  });
+});
 fullscreenBtn.addEventListener("click", toggleFullscreen);
 scrollBtn.addEventListener("click", scrollToVideo);
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 window.addEventListener("beforeunload", () => {
   if (connected) {
+    fetch("/vr/session-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: false, vr_mode_active: false }),
+      keepalive: true,
+    }).catch(() => {});
     fetch("/ptz/mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

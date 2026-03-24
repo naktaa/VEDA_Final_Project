@@ -13,7 +13,7 @@ HomographyPublisher::HomographyPublisher(const ServerConfig& config,
 
 bool HomographyPublisher::RefreshAndPublish(mosquitto* mosq) {
     cv::Mat H;
-    if (!LoadHomography(config_.homography_yaml, H)) {
+    if (!LoadHomography(config_.homography_yaml.string(), H)) {
         return false;
     }
 
@@ -25,7 +25,7 @@ bool HomographyPublisher::RefreshAndPublish(mosquitto* mosq) {
         shared_.update_count.fetch_add(1);
     }
 
-    const std::string homography_payload = BuildHomographyPayload(H, config_.homography_yaml);
+    const std::string homography_payload = BuildHomographyPayload(H, config_.homography_yaml.string());
     if (homography_payload != last_homography_payload_) {
         if (PublishJson(mosq, config_.homography_topic, homography_payload, true)) {
             last_homography_payload_ = homography_payload;

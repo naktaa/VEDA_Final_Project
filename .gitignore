@@ -16,3 +16,6 @@ Makefile
 
 # VSCode
 .vscode/
+
+# Local runtime config
+config/rc_control.ini

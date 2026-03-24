@@ -1,28 +1,32 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <mutex>
 #include <string>
 
 #include <opencv2/core.hpp>
 
+#include "server_defaults.hpp"
+
 namespace veda_server {
 
 struct ServerConfig {
-    std::string rtsp_url = "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp";
-    std::string mqtt_host = "192.168.100.10";
-    int mqtt_port = 1883;
+    std::string rtsp_url = std::string(defaults::kRtspUrl);
+    std::string mqtt_host = std::string(defaults::kMqttHost);
+    int mqtt_port = defaults::kMqttPort;
 
-    std::string pose_topic = "wiserisk/p1/pose";
-    std::string homography_topic = "wiserisk/map/H_img2world";
-    std::string map_topic = "wiserisk/map/graph";
+    std::string pose_topic = std::string(defaults::kPoseTopic);
+    std::string homography_topic = std::string(defaults::kHomographyTopic);
+    std::string map_topic = std::string(defaults::kMapTopic);
 
-    std::string homography_yaml = "config/H_img2world.yaml";
-    std::string camera_yaml = "config/camera.yaml";
+    std::filesystem::path config_dir = "config";
+    std::filesystem::path homography_yaml = defaults::kHomographyYaml;
+    std::filesystem::path camera_yaml = defaults::kCameraYaml;
 
-    double marker_size = 0.17;
-    double cube_size = 0.17;
-    int publish_interval_ms = 1000;
+    double marker_size = defaults::kMarkerSize;
+    double cube_size = defaults::kCubeSize;
+    int publish_interval_ms = defaults::kPublishIntervalMs;
 };
 
 struct CameraModel {

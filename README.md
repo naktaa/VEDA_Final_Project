@@ -9,6 +9,7 @@
 - `calib_file/calib_aruco_homography.cpp`
   - 바닥 ArUco 4점으로 `config/H_img2world.yaml` 생성
 - `server_main.cpp`
+  - 최종 실행 파일 이름은 `main`
   - RTSP 입력을 읽어 `wiserisk/p1/pose` 발행
   - `config/H_img2world.yaml`을 주기적으로 읽어 `wiserisk/map/H_img2world`, `wiserisk/map/graph` 발행
 
@@ -33,8 +34,10 @@
 - CMake 3.16 이상
 
 ```bash
-cmake -S . -B build
-cmake --build build --target calib_camera calib_aruco_homography server_main -j$(nproc)
+mkdir -p build
+cd build
+cmake ..
+make -j
 ```
 
 ## 실행 파일
@@ -42,7 +45,7 @@ cmake --build build --target calib_camera calib_aruco_homography server_main -j$
 ### 1. 카메라 캘리브레이션
 
 ```bash
-./build/calib_camera <체스보드_이미지_폴더> 8 6 3.0 ./config/camera.yaml
+./calib_camera <체스보드_이미지_폴더> 8 6 3.0 ../config/camera.yaml
 ```
 
 출력:
@@ -52,7 +55,7 @@ cmake --build build --target calib_camera calib_aruco_homography server_main -j$
 ### 2. 바닥 호모그래피 캘리브레이션
 
 ```bash
-./build/calib_aruco_homography ./config/H_img2world.yaml
+./calib_aruco_homography ../config/H_img2world.yaml
 ```
 
 출력:
@@ -62,33 +65,14 @@ cmake --build build --target calib_camera calib_aruco_homography server_main -j$
 ### 3. 서버 메인 실행
 
 ```bash
-./build/server_main \
-  "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" \
-  192.168.100.10 \
-  1883 \
-  wiserisk/p1/pose \
-  ./config/H_img2world.yaml \
-  ./config/camera.yaml \
-  0.17 \
-  0.17 \
-  wiserisk/map/H_img2world \
-  wiserisk/map/graph \
-  1000
+./main
 ```
 
-인자 순서:
+동작 방식:
 
-1. `rtsp_url`
-2. `mqtt_host`
-3. `mqtt_port`
-4. `pose_topic`
-5. `homography_yaml`
-6. `camera_yaml`
-7. `marker_size`
-8. `cube_size`
-9. `homography_topic`
-10. `map_topic`
-11. `publish_interval_ms`
+1. `build/main`은 자동으로 상위 디렉터리의 `config/camera.yaml`, `config/H_img2world.yaml`를 사용합니다.
+2. RTSP URL, MQTT broker, 토픽, marker 크기는 코드 기본값을 사용합니다.
+3. 즉 서버 메인은 실행 인자를 받지 않습니다.
 
 ## MQTT 토픽
 
@@ -96,15 +80,23 @@ cmake --build build --target calib_camera calib_aruco_homography server_main -j$
 - 발행: `wiserisk/map/H_img2world`
 - 발행: `wiserisk/map/graph`
 
+## 고정 기본값
+
+- RTSP URL: `rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp`
+- MQTT broker: `192.168.100.10:1883`
+- marker size: `0.17`
+- cube size: `0.17`
+- homography publish 주기: `1000ms`
+
 ## 권장 운영 순서
 
 1. 카메라 위치나 렌즈 상태가 바뀌었으면 `calib_camera` 실행
 2. 카메라 위치나 바닥 마커 배치가 바뀌었으면 `calib_aruco_homography` 실행
-3. `server_main` 실행
+3. `main` 실행
 
 ## 리팩토링 방향
 
-기존에는 `p1_tracker`와 `homography_mqtt_pub`를 따로 실행했지만, 현재는 내부 모듈로 통합해서 `server_main` 하나로 운용합니다.
+기존에는 `p1_tracker`와 `homography_mqtt_pub`를 따로 실행했지만, 현재는 내부 모듈로 통합해서 최종 실행 파일 `main` 하나로 운용합니다.
 
 내부 역할은 다음처럼 분리되어 있습니다.
 

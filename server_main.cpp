@@ -5,6 +5,8 @@
 
 int main(int argc, char** argv) {
     veda_server::ServerConfig config;
+    veda_server::ResolveServerPaths(argv[0], config);
+
     std::string error;
     if (!veda_server::ParseServerConfig(argc, argv, config, error)) {
         std::cerr << "[ERR] " << error << "\n";

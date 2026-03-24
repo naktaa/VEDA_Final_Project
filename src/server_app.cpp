@@ -10,6 +10,7 @@
 #include <chrono>
 #include <csignal>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <thread>
 
@@ -30,12 +31,12 @@ public:
           pose_tracker_(config_, camera_model_, shared_) {}
 
     int Run() {
-        if (!LoadCameraModel(config_.camera_yaml, camera_model_)) {
+        if (!LoadCameraModel(config_.camera_yaml.string(), camera_model_)) {
             return 1;
         }
 
         cv::Mat H_img2world;
-        if (!LoadHomography(config_.homography_yaml, H_img2world)) {
+        if (!LoadHomography(config_.homography_yaml.string(), H_img2world)) {
             return 2;
         }
 
@@ -152,40 +153,33 @@ private:
 } // namespace
 
 void PrintServerUsage(const char* exe) {
-    std::cout
-        << "사용법: " << exe
-        << " <rtsp_url> [mqtt_host] [mqtt_port] [pose_topic] [homography_yaml] [camera_yaml] "
-        << "[marker_size] [cube_size] [homography_topic] [map_topic] [publish_interval_ms]\n";
+    std::cout << "사용법: " << exe << "\n";
+    std::cout << "빌드 후 build 디렉터리에서 ./main 으로 실행합니다.\n";
 }
 
 bool ParseServerConfig(int argc, char** argv, ServerConfig& config, std::string& error) {
-    if (argc < 2) {
-        error = "RTSP URL이 필요합니다.";
-        return false;
-    }
-
-    try {
-        config.rtsp_url = argv[1];
-        if (argc > 2) config.mqtt_host = argv[2];
-        if (argc > 3) config.mqtt_port = std::stoi(argv[3]);
-        if (argc > 4) config.pose_topic = argv[4];
-        if (argc > 5) config.homography_yaml = argv[5];
-        if (argc > 6) config.camera_yaml = argv[6];
-        if (argc > 7) config.marker_size = std::stod(argv[7]);
-        if (argc > 8) config.cube_size = std::stod(argv[8]);
-        if (argc > 9) config.homography_topic = argv[9];
-        if (argc > 10) config.map_topic = argv[10];
-        if (argc > 11) config.publish_interval_ms = std::stoi(argv[11]);
-    } catch (const std::exception& ex) {
-        error = std::string("인자 파싱 실패: ") + ex.what();
-        return false;
-    }
-
-    if (config.publish_interval_ms <= 0) {
-        error = "publish_interval_ms는 1 이상이어야 합니다.";
+    if (argc > 1) {
+        (void)config;
+        error = "CLI 인자는 사용하지 않습니다. 기본값과 config yaml 경로를 사용합니다.";
         return false;
     }
     return true;
+}
+
+void ResolveServerPaths(const char* exe, ServerConfig& config) {
+    namespace fs = std::filesystem;
+
+    fs::path exe_path = fs::absolute(exe);
+    if (!exe_path.has_parent_path()) {
+        exe_path = fs::current_path() / exe_path;
+    }
+
+    const fs::path build_dir = exe_path.parent_path();
+    const fs::path repo_dir = build_dir.parent_path();
+
+    config.config_dir = repo_dir / "config";
+    config.homography_yaml = config.config_dir / "H_img2world.yaml";
+    config.camera_yaml = config.config_dir / "camera.yaml";
 }
 
 int RunServerApp(const ServerConfig& config) {

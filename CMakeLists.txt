@@ -36,6 +36,7 @@ add_executable(server_main
 )
 
 target_link_libraries(server_main PRIVATE server_core)
+set_target_properties(server_main PROPERTIES OUTPUT_NAME main)
 
 add_executable(calib_aruco_homography
     calib_file/calib_aruco_homography.cpp

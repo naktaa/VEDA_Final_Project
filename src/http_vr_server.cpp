@@ -180,6 +180,32 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
         }
     });
 
+    impl->server->Post("/ptz/zero", [impl](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const json payload = json::parse(req.body);
+            const float pitch = payload.value("pitch", 0.0f);
+            const float roll = payload.value("roll", 0.0f);
+            const float yaw = payload.value("yaw", 0.0f);
+            if (!impl->ptz->zero_calibrate(pitch, roll, yaw)) {
+                res.status = 500;
+                res.set_content("ptz zero calibration failed", "text/plain; charset=utf-8");
+                return;
+            }
+
+            json body = {
+                {"ok", true},
+                {"pitch", pitch},
+                {"roll", roll},
+                {"yaw", yaw},
+            };
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& exc) {
+            res.status = 400;
+            res.set_content(std::string("bad json: ") + exc.what(),
+                            "text/plain; charset=utf-8");
+        }
+    });
+
     impl->server->Get("/webrtc/status", [impl](const httplib::Request&, httplib::Response& res) {
         json body = {
             {"ok", true},
@@ -234,10 +260,32 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
         const VrUiCommandSnapshot snapshot = impl->vr_ui_command_bridge->snapshot();
         json body = {
             {"ok", true},
-            {"session_toggle_seq", snapshot.session_toggle_seq},
+            {"session_start_seq", snapshot.session_start_seq},
+            {"session_stop_seq", snapshot.session_stop_seq},
             {"zero_calibrate_seq", snapshot.zero_calibrate_seq},
+            {"session_active", snapshot.session_active},
+            {"vr_mode_active", snapshot.vr_mode_active},
         };
         res.set_content(body.dump(), "application/json");
+    });
+
+    impl->server->Post("/vr/session-state", [impl](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const json payload = json::parse(req.body);
+            const bool active = payload.value("active", false);
+            const bool vr_mode_active = payload.value("vr_mode_active", false);
+            impl->vr_ui_command_bridge->set_state(active, vr_mode_active);
+            json body = {
+                {"ok", true},
+                {"active", active},
+                {"vr_mode_active", vr_mode_active},
+            };
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& exc) {
+            res.status = 400;
+            res.set_content(std::string("bad json: ") + exc.what(),
+                            "text/plain; charset=utf-8");
+        }
     });
 
     impl->server->Get("/stream.mjpg", [impl](const httplib::Request&, httplib::Response& res) {

@@ -212,8 +212,8 @@ int main(int argc, char* argv[]) {
 
     vr_input_cfg.ui_action_callback = [&](VrUiAction action) {
         switch (action) {
-        case VrUiAction::kToggleSession:
-            vr_ui_command_bridge.request_session_toggle();
+        case VrUiAction::kSessionButton:
+            vr_ui_command_bridge.handle_session_button();
             break;
         case VrUiAction::kZeroCalibrate:
             vr_ui_command_bridge.request_zero_calibrate();

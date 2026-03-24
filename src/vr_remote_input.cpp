@@ -20,6 +20,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr int kDefaultSpeed = 200;
 constexpr int kPollTimeoutMs = 10;
+constexpr int kUiButtonDebounceMs = 350;
 
 int clamp_speed(int value) {
     return std::max(0, std::min(255, value));
@@ -134,6 +135,9 @@ private:
     void handle_key(const input_event& ev) {
         if (ev.code == BTN_LEFT && ev.value == 1) {
             update_last_input();
+            if (!should_accept_ui_button(last_zero_button_at_)) {
+                return;
+            }
             dispatch_ui_action(VrUiAction::kZeroCalibrate, "zero_calibrate");
             return;
         }
@@ -141,7 +145,10 @@ private:
         if (ev.code == BTN_SIDE && (ev.value == 0 || ev.value == 1)) {
             update_last_input();
             if (ev.value == 1) {
-                dispatch_ui_action(VrUiAction::kToggleSession, "toggle_session");
+                if (!should_accept_ui_button(last_session_button_at_)) {
+                    return;
+                }
+                dispatch_ui_action(VrUiAction::kSessionButton, "session_button");
             }
             return;
         }
@@ -215,6 +222,17 @@ private:
         last_input_ = Clock::now();
     }
 
+    bool should_accept_ui_button(Clock::time_point& last_pressed_at) {
+        const auto now = Clock::now();
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_pressed_at).count();
+        if (last_pressed_at.time_since_epoch().count() != 0 && elapsed_ms < kUiButtonDebounceMs) {
+            return false;
+        }
+        last_pressed_at = now;
+        return true;
+    }
+
     static int normalize_cmd(int value) {
         return (value > 0) ? 1 : (value < 0 ? -1 : 0);
     }
@@ -224,6 +242,8 @@ private:
     int left_cmd_ = 0;
     int right_cmd_ = 0;
     Clock::time_point last_input_;
+    Clock::time_point last_session_button_at_{};
+    Clock::time_point last_zero_button_at_{};
 };
 
 bool read_events(int fd, VrTankDispatcher& dispatcher) {

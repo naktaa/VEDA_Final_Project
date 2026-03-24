@@ -10,7 +10,7 @@ enum class SideButtonAction {
 };
 
 enum class VrUiAction {
-    kToggleSession,
+    kSessionButton,
     kZeroCalibrate,
 };
 

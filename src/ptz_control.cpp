@@ -248,6 +248,10 @@ struct PtzController::Impl {
     float last_pitch = 0.0f;
     float last_roll = 0.0f;
     float last_yaw = 0.0f;
+    float zero_pitch = 0.0f;
+    float zero_roll = 0.0f;
+    float zero_yaw = 0.0f;
+    bool zero_initialized = false;
     uint64_t last_client_timestamp_ms = 0;
     float current_pan = 90.0f;
     float current_tilt = 90.0f;
@@ -447,6 +451,38 @@ PtzMode PtzController::mode() const {
     return impl_->mode;
 }
 
+bool PtzController::zero_calibrate(float pitch, float roll, float yaw) {
+    if (!impl_) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->zero_pitch = pitch;
+    impl_->zero_roll = roll;
+    impl_->zero_yaw = yaw;
+    impl_->zero_initialized = true;
+
+    impl_->filtered_pitch = 0.0f;
+    impl_->filtered_roll = 0.0f;
+    impl_->filtered_yaw = 0.0f;
+    impl_->yaw_unwrapped = 0.0f;
+    impl_->last_raw_yaw = 0.0f;
+    impl_->yaw_initialized = false;
+    impl_->last_raw_pitch = 0.0f;
+    impl_->last_raw_roll = 0.0f;
+    impl_->pitch_roll_initialized = false;
+    impl_->imu_target_pan = impl_->current_pan;
+    impl_->imu_target_tilt = impl_->current_tilt;
+    impl_->last_imu_arrival = std::chrono::steady_clock::now();
+
+    std::fprintf(stderr,
+                 "[PTZ] zero calibrated pitch=%.2f roll=%.2f yaw=%.2f\n",
+                 pitch,
+                 roll,
+                 yaw);
+    return true;
+}
+
 void PtzController::handle_mqtt_command(const std::string& command, bool active) {
     if (!impl_) {
         return;
@@ -492,6 +528,13 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     impl_->last_yaw = yaw;
     impl_->last_client_timestamp_ms = client_timestamp_ms;
 
+    const float centered_pitch =
+        impl_->zero_initialized ? wrap_angle_180(pitch - impl_->zero_pitch) : pitch;
+    const float centered_roll =
+        impl_->zero_initialized ? wrap_angle_180(roll - impl_->zero_roll) : roll;
+    const float centered_yaw =
+        impl_->zero_initialized ? wrap_angle_180(yaw - impl_->zero_yaw) : yaw;
+
     const auto now = std::chrono::steady_clock::now();
     float imu_dt_sec = kDefaultImuDtSec;
     if (impl_->last_imu_arrival.time_since_epoch().count() != 0) {
@@ -502,28 +545,28 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     const float yaw_alpha = imu_dt_sec / (kYawFilterTauSec + imu_dt_sec);
 
     if (!impl_->yaw_initialized) {
-        impl_->last_raw_yaw = yaw;
-        impl_->yaw_unwrapped = yaw;
-        impl_->filtered_yaw = yaw;
+        impl_->last_raw_yaw = centered_yaw;
+        impl_->yaw_unwrapped = centered_yaw;
+        impl_->filtered_yaw = centered_yaw;
         impl_->yaw_initialized = true;
     } else {
-        const float raw_delta = wrap_angle_180(yaw - impl_->last_raw_yaw);
+        const float raw_delta = wrap_angle_180(centered_yaw - impl_->last_raw_yaw);
         const float guarded_delta =
             clampf(raw_delta, -kYawMaxDeltaPerSampleDeg, kYawMaxDeltaPerSampleDeg);
         impl_->yaw_unwrapped += guarded_delta;
-        impl_->last_raw_yaw = yaw;
+        impl_->last_raw_yaw = centered_yaw;
         impl_->filtered_yaw += yaw_alpha * (impl_->yaw_unwrapped - impl_->filtered_yaw);
     }
 
-    float guarded_pitch = pitch;
-    float guarded_roll = roll;
+    float guarded_pitch = centered_pitch;
+    float guarded_roll = centered_roll;
     if (!impl_->pitch_roll_initialized) {
-        impl_->last_raw_pitch = pitch;
-        impl_->last_raw_roll = roll;
+        impl_->last_raw_pitch = centered_pitch;
+        impl_->last_raw_roll = centered_roll;
         impl_->pitch_roll_initialized = true;
     } else {
-        guarded_pitch = guard_delta(pitch, impl_->last_raw_pitch, kPitchMaxDeltaPerSampleDeg);
-        guarded_roll = guard_delta(roll, impl_->last_raw_roll, kRollMaxDeltaPerSampleDeg);
+        guarded_pitch = guard_delta(centered_pitch, impl_->last_raw_pitch, kPitchMaxDeltaPerSampleDeg);
+        guarded_roll = guard_delta(centered_roll, impl_->last_raw_roll, kRollMaxDeltaPerSampleDeg);
         impl_->last_raw_pitch = guarded_pitch;
         impl_->last_raw_roll = guarded_roll;
     }

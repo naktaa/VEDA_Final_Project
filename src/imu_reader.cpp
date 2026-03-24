@@ -124,14 +124,22 @@ bool ImuReader::start(const ImuConfig& imu_config,
         g_irq_seq_ptr = &irq_seq_;
         g_irq_time_ns_ptr = &irq_time_ns_;
         if (wiringPiISR(config_.int_pin_wpi, INT_EDGE_RISING, &imu_interrupt_handler) < 0) {
-            if (error) *error = std::string("wiringPiISR failed: ") + std::strerror(errno);
+            const std::string isr_error = std::string("wiringPiISR failed: ") + std::strerror(errno);
+            std::fprintf(stderr,
+                         "[IMU] %s; falling back to FIFO polling on wiringPi pin %d\n",
+                         isr_error.c_str(),
+                         config_.int_pin_wpi);
+            std::fflush(stderr);
             g_irq_seq_ptr = nullptr;
             g_irq_time_ns_ptr = nullptr;
-            close(fd_);
-            fd_ = -1;
-            return false;
+            use_interrupt_ = false;
+            if (error) {
+                *error = isr_error;
+            }
+        } else {
+            std::fprintf(stderr, "[IMU] interrupt enabled on wiringPi pin %d\n", config_.int_pin_wpi);
+            std::fflush(stderr);
         }
-        std::fprintf(stderr, "[IMU] interrupt enabled on wiringPi pin %d\n", config_.int_pin_wpi);
     }
 
     if (refine_bias && !warmup_refine_bias()) {

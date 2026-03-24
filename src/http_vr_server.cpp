@@ -16,7 +16,6 @@
 
 #include "frame_jpeg_cache.hpp"
 #include "ptz_control.hpp"
-#include "vr_ui_command_bridge.hpp"
 
 namespace {
 
@@ -72,7 +71,6 @@ struct HttpVrServer::Impl {
     std::atomic<bool>* app_running = nullptr;
     FrameJpegCache* frame_cache = nullptr;
     PtzController* ptz = nullptr;
-    VrUiCommandBridge* vr_ui_command_bridge = nullptr;
     std::unique_ptr<httplib::Server> server;
     std::thread server_thread;
     std::atomic<bool> listen_finished{false};
@@ -86,8 +84,7 @@ HttpVrServer::~HttpVrServer() {
 bool HttpVrServer::start(const HttpVrConfig& cfg,
                          std::atomic<bool>& app_running,
                          FrameJpegCache& frame_cache,
-                         PtzController& ptz_controller,
-                         VrUiCommandBridge& vr_ui_command_bridge) {
+                         PtzController& ptz_controller) {
     if (impl_) {
         return true;
     }
@@ -97,7 +94,6 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     impl->app_running = &app_running;
     impl->frame_cache = &frame_cache;
     impl->ptz = &ptz_controller;
-    impl->vr_ui_command_bridge = &vr_ui_command_bridge;
     impl->server = std::make_unique<httplib::Server>();
 
     impl->server->Get("/health", [](const httplib::Request&, httplib::Response& res) {
@@ -163,55 +159,12 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
         try {
             const json payload = json::parse(req.body);
             if (payload.value("type", "") == "imu") {
-                const float pitch = payload.value("pitch", 0.0f);
-                const float roll = payload.value("roll", 0.0f);
-                const float yaw = payload.value("yaw", 0.0f);
-                const uint64_t t = payload.value("t", static_cast<uint64_t>(0));
-                static thread_local int imu_log_count = 0;
-                if (imu_log_count < 5) {
-                    std::fprintf(stderr,
-                                 "[HTTP] /imu pitch=%.1f roll=%.1f yaw=%.1f t=%llu\n",
-                                 pitch,
-                                 roll,
-                                 yaw,
-                                 static_cast<unsigned long long>(t));
-                    ++imu_log_count;
-                }
-                impl->ptz->handle_imu(pitch, roll, yaw, t);
+                impl->ptz->handle_imu(payload.value("pitch", 0.0f),
+                                      payload.value("roll", 0.0f),
+                                      payload.value("yaw", 0.0f),
+                                      payload.value("t", static_cast<uint64_t>(0)));
             }
             res.status = 204;
-        } catch (const std::exception& exc) {
-            res.status = 400;
-            res.set_content(std::string("bad json: ") + exc.what(),
-                            "text/plain; charset=utf-8");
-        }
-    });
-
-    impl->server->Get("/vr/ui-commands", [impl](const httplib::Request&, httplib::Response& res) {
-        const VrUiCommandSnapshot snapshot = impl->vr_ui_command_bridge->snapshot();
-        json body = {
-            {"ok", true},
-            {"session_start_seq", snapshot.session_start_seq},
-            {"session_stop_seq", snapshot.session_stop_seq},
-            {"zero_calibrate_seq", snapshot.zero_calibrate_seq},
-            {"session_active", snapshot.session_active},
-            {"vr_mode_active", snapshot.vr_mode_active},
-        };
-        res.set_content(body.dump(), "application/json");
-    });
-
-    impl->server->Post("/vr/session-state", [impl](const httplib::Request& req, httplib::Response& res) {
-        try {
-            const json payload = json::parse(req.body);
-            const bool active = payload.value("active", false);
-            const bool vr_mode_active = payload.value("vr_mode_active", false);
-            impl->vr_ui_command_bridge->set_state(active, vr_mode_active);
-            json body = {
-                {"ok", true},
-                {"active", active},
-                {"vr_mode_active", vr_mode_active},
-            };
-            res.set_content(body.dump(), "application/json");
         } catch (const std::exception& exc) {
             res.status = 400;
             res.set_content(std::string("bad json: ") + exc.what(),

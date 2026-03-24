@@ -20,7 +20,6 @@
 #include "stream_config.hpp"
 #include "tank_drive.hpp"
 #include "vr_remote_input.hpp"
-#include "vr_ui_command_bridge.hpp"
 
 #ifndef TANK_SOURCE_DIR
 #define TANK_SOURCE_DIR "."
@@ -205,20 +204,8 @@ int main(int argc, char* argv[]) {
 
     bool vr_input_enabled = true;
     VrRemoteInputConfig vr_input_cfg;
-    VrUiCommandBridge vr_ui_command_bridge;
     bool status_publish_enabled = true;
     RcStatusPublisher::Config status_cfg;
-
-    vr_input_cfg.ui_action_callback = [&](VrUiAction action) {
-        switch (action) {
-        case VrUiAction::kSessionButton:
-            vr_ui_command_bridge.handle_session_button();
-            break;
-        case VrUiAction::kZeroCalibrate:
-            vr_ui_command_bridge.request_zero_calibrate();
-            break;
-        }
-    };
 
     const ParseResult parse_result = parse_args(argc, argv, mqtt_cfg, rtsp_cfg, http_cfg, ptz_cfg,
                                                 vr_input_enabled, vr_input_cfg,
@@ -271,7 +258,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (http_cfg.enable) {
-        if (!http_server.start(http_cfg, g_running, frame_cache, ptz_controller, vr_ui_command_bridge)) {
+        if (!http_server.start(http_cfg, g_running, frame_cache, ptz_controller)) {
             camera_capture.stop();
             rtsp_server.stop();
             ptz_controller.stop();

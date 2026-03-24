@@ -5,7 +5,6 @@
 
 class FrameJpegCache;
 class PtzController;
-class VrUiCommandBridge;
 
 struct HttpVrConfig {
     bool enable = true;
@@ -25,8 +24,7 @@ public:
     bool start(const HttpVrConfig& cfg,
                std::atomic<bool>& app_running,
                FrameJpegCache& frame_cache,
-               PtzController& ptz_controller,
-               VrUiCommandBridge& vr_ui_command_bridge);
+               PtzController& ptz_controller);
     void stop();
 
 private:

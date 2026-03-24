@@ -56,8 +56,7 @@ button {
 
 #status,
 #imu,
-#imuAck,
-#debug {
+#imuAck {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 0.9rem;

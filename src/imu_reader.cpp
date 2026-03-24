@@ -2,8 +2,10 @@
 
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -65,6 +67,21 @@ std::string i2c_device_path(int bus) {
     return "/dev/i2c-" + std::to_string(bus);
 }
 
+std::mutex g_irq_wait_mutex;
+std::condition_variable g_irq_wait_cv;
+std::atomic<uint64_t>* g_irq_seq_ptr = nullptr;
+std::atomic<int64_t>* g_irq_time_ns_ptr = nullptr;
+
+void imu_interrupt_handler() {
+    if (g_irq_time_ns_ptr) {
+        g_irq_time_ns_ptr->store(clock_ns(CLOCK_MONOTONIC_RAW), std::memory_order_relaxed);
+    }
+    if (g_irq_seq_ptr) {
+        g_irq_seq_ptr->fetch_add(1, std::memory_order_relaxed);
+    }
+    g_irq_wait_cv.notify_one();
+}
+
 } // namespace
 
 ImuReader::ImuReader(size_t max_samples)
@@ -102,6 +119,19 @@ bool ImuReader::start(const ImuConfig& imu_config,
         }
         pinMode(config_.int_pin_wpi, INPUT);
         pullUpDnControl(config_.int_pin_wpi, PUD_DOWN);
+        irq_seq_.store(0);
+        irq_time_ns_.store(0);
+        g_irq_seq_ptr = &irq_seq_;
+        g_irq_time_ns_ptr = &irq_time_ns_;
+        if (wiringPiISR(config_.int_pin_wpi, INT_EDGE_RISING, &imu_interrupt_handler) < 0) {
+            if (error) *error = std::string("wiringPiISR failed: ") + std::strerror(errno);
+            g_irq_seq_ptr = nullptr;
+            g_irq_time_ns_ptr = nullptr;
+            close(fd_);
+            fd_ = -1;
+            return false;
+        }
+        std::fprintf(stderr, "[IMU] interrupt enabled on wiringPi pin %d\n", config_.int_pin_wpi);
     }
 
     if (refine_bias && !warmup_refine_bias()) {
@@ -120,8 +150,15 @@ bool ImuReader::start(const ImuConfig& imu_config,
 void ImuReader::stop() {
     running_ = false;
     ready_ = false;
+    g_irq_wait_cv.notify_all();
     if (worker_.joinable()) {
         worker_.join();
+    }
+    if (g_irq_seq_ptr == &irq_seq_) {
+        g_irq_seq_ptr = nullptr;
+    }
+    if (g_irq_time_ns_ptr == &irq_time_ns_) {
+        g_irq_time_ns_ptr = nullptr;
     }
     if (fd_ >= 0) {
         close(fd_);
@@ -339,6 +376,7 @@ ImuSample ImuReader::make_sample(const cv::Vec3d& raw_counts, double sample_time
 void ImuReader::run() {
     const double period_ms = 1000.0 / std::max(1, config_.target_hz);
     int64_t last_time_ns = clock_ns(CLOCK_MONOTONIC_RAW);
+    uint64_t last_irq_seq = irq_seq_.load(std::memory_order_relaxed);
 
     while (running_) {
         std::vector<cv::Vec3d> fifo_samples;
@@ -346,16 +384,26 @@ void ImuReader::run() {
         int64_t event_ns = 0;
 
         if (use_interrupt_) {
-            const int wait_rc = waitForInterrupt(config_.int_pin_wpi, 200);
-            if (wait_rc < 0) {
-                std::fprintf(stderr, "[IMU] waitForInterrupt failed\n");
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            uint64_t observed_irq_seq = irq_seq_.load(std::memory_order_relaxed);
+            if (observed_irq_seq == last_irq_seq) {
+                std::unique_lock<std::mutex> lock(g_irq_wait_mutex);
+                g_irq_wait_cv.wait_for(lock, std::chrono::milliseconds(200), [&]() {
+                    return !running_.load() ||
+                           irq_seq_.load(std::memory_order_relaxed) != last_irq_seq;
+                });
+                observed_irq_seq = irq_seq_.load(std::memory_order_relaxed);
+            }
+            if (!running_) {
+                break;
+            }
+            if (observed_irq_seq == last_irq_seq) {
                 continue;
             }
-            if (wait_rc == 0) {
-                continue;
+            last_irq_seq = observed_irq_seq;
+            event_ns = irq_time_ns_.load(std::memory_order_relaxed);
+            if (event_ns <= 0) {
+                event_ns = clock_ns(CLOCK_MONOTONIC_RAW);
             }
-            event_ns = clock_ns(CLOCK_MONOTONIC_RAW);
             uint8_t status = 0;
             i2c_read_bytes(fd_, REG_INT_STATUS, &status, 1);
             have_samples = read_fifo_samples(fifo_samples);

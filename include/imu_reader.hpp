@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -51,6 +52,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> ready_{false};
     std::atomic<double> actual_hz_{0.0};
+    std::atomic<uint64_t> irq_seq_{0};
+    std::atomic<int64_t> irq_time_ns_{0};
     std::thread worker_;
 
     mutable std::mutex sample_mutex_;

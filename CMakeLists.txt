@@ -18,13 +18,11 @@ pkg_check_modules(GST REQUIRED
 )
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
-pkg_check_modules(LIBGPIOD REQUIRED libgpiod)
 
 set(COMMON_SOURCES
   src/app_config.cpp
   src/gyro_eis.cpp
   src/gst_camera_capture.cpp
-  src/gpio_line.cpp
   src/hybrid_eis.cpp
   src/image_utils.cpp
   src/imu_reader.cpp
@@ -44,14 +42,12 @@ set(COMMON_INCLUDE_DIRS
   ${GST_INCLUDE_DIRS}
   ${LIBCAMERA_INCLUDE_DIRS}
   ${MOSQUITTO_INCLUDE_DIRS}
-  ${LIBGPIOD_INCLUDE_DIRS}
 )
 
 set(COMMON_COMPILE_OPTIONS
   ${GST_CFLAGS_OTHER}
   ${LIBCAMERA_CFLAGS_OTHER}
   ${MOSQUITTO_CFLAGS_OTHER}
-  ${LIBGPIOD_CFLAGS_OTHER}
 )
 
 set(COMMON_LINK_LIBS
@@ -59,13 +55,9 @@ set(COMMON_LINK_LIBS
   ${GST_LIBRARIES}
   ${LIBCAMERA_LIBRARIES}
   ${MOSQUITTO_LIBRARIES}
-  ${LIBGPIOD_LIBRARIES}
   Threads::Threads
+  wiringPi
 )
-
-if(LIBGPIOD_VERSION VERSION_GREATER_EQUAL 2.0.0)
-  add_compile_definitions(USE_LIBGPIOD_V2)
-endif()
 
 add_executable(main
   src/main.cpp
@@ -80,7 +72,6 @@ add_executable(main_raw
   src/main_raw.cpp
   src/app_config.cpp
   src/gst_camera_capture.cpp
-  src/gpio_line.cpp
   src/image_utils.cpp
   src/libcamera_capture.cpp
   src/mqtt_drive.cpp
@@ -132,8 +123,8 @@ target_link_libraries(calib PRIVATE
   ${OpenCV_LIBS}
   ${GST_LIBRARIES}
   ${LIBCAMERA_LIBRARIES}
-  ${LIBGPIOD_LIBRARIES}
   Threads::Threads
+  wiringPi
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config_template.ini")

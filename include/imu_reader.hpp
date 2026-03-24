@@ -10,7 +10,6 @@
 
 #include "app_config.hpp"
 #include "app_types.hpp"
-#include "gpio_line.hpp"
 #include "gyro_eis.hpp"
 
 class ImuReader {
@@ -49,14 +48,13 @@ private:
     ImuConfig config_;
     int fd_ = -1;
     bool use_interrupt_ = false;
-    int resolved_int_line_offset_ = -1;
-    std::string resolved_int_gpio_chip_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> ready_{false};
     std::atomic<double> actual_hz_{0.0};
+    std::atomic<uint64_t> irq_seq_{0};
+    std::atomic<int64_t> irq_time_ns_{0};
     std::thread worker_;
-    GpioEdgeLine irq_line_;
 
     mutable std::mutex sample_mutex_;
     ImuSample latest_sample_;

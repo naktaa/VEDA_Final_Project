@@ -44,6 +44,7 @@ constexpr float kOrientationFlipPitchDeg = 150.0f;
 constexpr float kOrientationFlipRollDeg = 150.0f;
 constexpr float kOrientationFlipYawDeg = 150.0f;
 constexpr int kOrientationFreezeMs = 300;
+constexpr int kVrFirstImuGraceMs = 5000;
 
 float clampf(float value, float lo, float hi) {
     return std::max(lo, std::min(value, hi));
@@ -270,6 +271,8 @@ struct PtzController::Impl {
     std::string active_source = "hold";
     std::chrono::steady_clock::time_point last_imu_arrival{};
     std::chrono::steady_clock::time_point imu_freeze_until{};
+    std::chrono::steady_clock::time_point vr_mode_entered_at{};
+    bool waiting_for_first_imu = false;
 
     void run() {
         float current_pan_local = config.pan_center_deg;
@@ -290,6 +293,11 @@ struct PtzController::Impl {
                         config.imu_timeout_ms;
                 const bool imu_frozen =
                     imu_freeze_until.time_since_epoch().count() != 0 && now < imu_freeze_until;
+                const bool first_imu_grace_active =
+                    waiting_for_first_imu &&
+                    vr_mode_entered_at.time_since_epoch().count() != 0 &&
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - vr_mode_entered_at).count() <
+                        kVrFirstImuGraceMs;
 
                 if (mode == PtzMode::kVr && imu_recent && !imu_frozen) {
                     desired_pan = imu_target_pan;
@@ -299,8 +307,13 @@ struct PtzController::Impl {
                     desired_pan = current_pan_local;
                     desired_tilt = current_tilt_local;
                     source = "imu-freeze";
+                } else if (mode == PtzMode::kVr && !imu_recent && first_imu_grace_active) {
+                    desired_pan = current_pan_local;
+                    desired_tilt = current_tilt_local;
+                    source = "imu-wait";
                 } else if (mode == PtzMode::kVr && !imu_recent) {
                     mode = PtzMode::kManual;
+                    waiting_for_first_imu = false;
                     source = "manual";
                     std::fprintf(stderr, "[PTZ] IMU timeout; fallback to manual mode.\n");
                 }
@@ -444,6 +457,8 @@ bool PtzController::set_mode(PtzMode mode) {
         impl_->imu_target_pan = impl_->current_pan;
         impl_->imu_target_tilt = impl_->current_tilt;
         impl_->imu_freeze_until = {};
+        impl_->vr_mode_entered_at = {};
+        impl_->waiting_for_first_imu = false;
     } else {
         impl_->last_imu_arrival = std::chrono::steady_clock::now();
         impl_->filtered_pitch = 0.0f;
@@ -461,6 +476,8 @@ bool PtzController::set_mode(PtzMode mode) {
         impl_->reject_reference_initialized = false;
         impl_->imu_warmup_samples_remaining = 8;
         impl_->imu_freeze_until = {};
+        impl_->vr_mode_entered_at = std::chrono::steady_clock::now();
+        impl_->waiting_for_first_imu = true;
     }
     std::fprintf(stderr, "[PTZ] mode -> %s\n", mode_to_cstr(mode));
     return true;
@@ -506,6 +523,7 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     }
 
     const auto now = std::chrono::steady_clock::now();
+    impl_->waiting_for_first_imu = false;
 
     if (impl_->imu_warmup_samples_remaining > 0) {
         impl_->imu_warmup_samples_remaining -= 1;

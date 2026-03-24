@@ -79,19 +79,40 @@ function recenteredValue(raw) {
   };
 }
 
-function zeroCalibrate() {
+async function sendImuSample() {
+  const value = recenteredValue(latestRaw);
+  await fetch("/imu", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "imu",
+      t: Date.now(),
+      pitch: value.pitch,
+      roll: value.roll,
+      yaw: value.yaw,
+    }),
+  });
+}
+
+async function zeroCalibrate() {
   if (!connected) {
     setStatus("Connect first");
-    return Promise.resolve();
+    return;
   }
   if (!hasSensorData) {
     setStatus("Zero calibrate ignored: sensor data unavailable");
-    return Promise.resolve();
+    return;
   }
   baseline = { ...latestRaw };
   vrArmed = true;
   setStatus("Zero calibrated. VR pan/tilt active.");
-  return setPtzMode("vr").then(() => notifySessionState(true, true));
+  await setPtzMode("vr");
+  try {
+    await sendImuSample();
+  } catch (_) {
+    setStatus("Zero calibrated, but first IMU send failed.");
+  }
+  await notifySessionState(true, true);
 }
 
 async function notifySessionState(active, vrModeActive) {
@@ -190,22 +211,11 @@ function startOrientationFeed() {
   setDebug("deviceorientation listener attached");
 
   sendInterval = setInterval(() => {
-    if (!connected || !vrArmed || currentMode !== "vr" || !hasSensorData) {
+    if (!connected || !vrArmed || !hasSensorData) {
       return;
     }
 
-    const value = recenteredValue(latestRaw);
-    fetch("/imu", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "imu",
-        t: Date.now(),
-        pitch: value.pitch,
-        roll: value.roll,
-        yaw: value.yaw,
-      }),
-    }).catch(() => {
+    sendImuSample().catch(() => {
       setStatus("IMU send error");
     });
   }, 33);
@@ -262,10 +272,9 @@ function startImuAckPolling() {
         `src:${body.source ?? "-"}`;
 
       if (connected && vrArmed && body.mode !== "vr") {
-        await disconnect({
-          releaseMode: false,
-          statusMessage: "VR input lost. Back to manual mode.",
-        });
+        vrArmed = false;
+        await notifySessionState(true, false);
+        setStatus("VR input lost. Press 0점 조정 to resume.");
       }
     } catch (_) {
       imuAckEl.textContent = "Server IMU: polling error";

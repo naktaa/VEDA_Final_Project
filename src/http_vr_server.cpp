@@ -159,10 +159,21 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
         try {
             const json payload = json::parse(req.body);
             if (payload.value("type", "") == "imu") {
-                impl->ptz->handle_imu(payload.value("pitch", 0.0f),
-                                      payload.value("roll", 0.0f),
-                                      payload.value("yaw", 0.0f),
-                                      payload.value("t", static_cast<uint64_t>(0)));
+                const float pitch = payload.value("pitch", 0.0f);
+                const float roll = payload.value("roll", 0.0f);
+                const float yaw = payload.value("yaw", 0.0f);
+                const uint64_t t = payload.value("t", static_cast<uint64_t>(0));
+                static thread_local int imu_log_count = 0;
+                if (imu_log_count < 5) {
+                    std::fprintf(stderr,
+                                 "[HTTP] /imu pitch=%.1f roll=%.1f yaw=%.1f t=%llu\n",
+                                 pitch,
+                                 roll,
+                                 yaw,
+                                 static_cast<unsigned long long>(t));
+                    ++imu_log_count;
+                }
+                impl->ptz->handle_imu(pitch, roll, yaw, t);
             }
             res.status = 204;
         } catch (const std::exception& exc) {

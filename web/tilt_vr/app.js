@@ -2,6 +2,7 @@ const statusEl = document.getElementById("status");
 const modeEl = document.getElementById("mode");
 const imuEl = document.getElementById("imu");
 const imuAckEl = document.getElementById("imuAck");
+const debugEl = document.getElementById("debug");
 const connectBtn = document.getElementById("connectBtn");
 const centerBtn = document.getElementById("centerBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
@@ -26,9 +27,16 @@ let reconnectTimer = null;
 let hasSensorData = false;
 let sensorCheckTimer = null;
 let orientationEventCount = 0;
+let lastDebug = "Debug: -";
 
 function setStatus(msg) {
   statusEl.textContent = msg;
+}
+
+function setDebug(msg) {
+  lastDebug = `Debug: ${msg}`;
+  debugEl.textContent = lastDebug;
+  console.log(`[VRDBG] ${msg}`);
 }
 
 function setMode(mode) {
@@ -69,14 +77,19 @@ function zeroCalibrate() {
 }
 
 async function ensureOrientationPermission() {
+  setDebug("Requesting sensor permission");
   if (
     typeof DeviceOrientationEvent !== "undefined" &&
     typeof DeviceOrientationEvent.requestPermission === "function"
   ) {
     const result = await DeviceOrientationEvent.requestPermission();
     if (result !== "granted") {
+      setDebug(`Sensor permission denied: ${result}`);
       throw new Error("DeviceOrientation permission denied");
     }
+    setDebug(`Sensor permission granted: ${result}`);
+  } else {
+    setDebug("Sensor permission API not required");
   }
 }
 
@@ -112,6 +125,13 @@ function startOrientationFeed() {
       Number.isFinite(evt.alpha) || Number.isFinite(evt.beta) || Number.isFinite(evt.gamma);
     if (hasFiniteAngles) {
       hasSensorData = true;
+      if (orientationEventCount === 1) {
+        setDebug(
+          `First deviceorientation alpha=${Number(evt.alpha || 0).toFixed(1)} beta=${Number(
+            evt.beta || 0
+          ).toFixed(1)} gamma=${Number(evt.gamma || 0).toFixed(1)}`
+        );
+      }
     }
 
     latestRaw = getPitchRollYaw(evt);
@@ -127,6 +147,7 @@ function startOrientationFeed() {
   };
 
   window.addEventListener("deviceorientation", orientationHandler, true);
+  setDebug("deviceorientation listener attached");
 
   sendInterval = setInterval(() => {
     if (!connected || currentMode !== "vr" || !hasSensorData) {
@@ -345,6 +366,7 @@ async function connect() {
 
     sensorCheckTimer = setTimeout(() => {
       if (connected && !hasSensorData) {
+        setDebug(`No IMU events after 3s (count=${orientationEventCount})`);
         setStatus("No IMU events detected. PTZ will fall back to manual mode.");
       }
     }, 3000);

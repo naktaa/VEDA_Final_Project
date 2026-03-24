@@ -74,10 +74,10 @@ std::string make_pipeline_launch(const WebRtcConfig& cfg) {
         << ",framerate=" << cfg.fps << "/1 "
         << "! v4l2h264enc extra-controls=\"controls,video_bitrate=" << cfg.bitrate_bps
         << ",h264_i_frame_period=" << cfg.fps << "\" "
-        << "! video/x-h264,profile=baseline "
-        << "! h264parse "
-        << "! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency "
-        << "! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 "
+        << "! video/x-h264,stream-format=byte-stream,alignment=au,profile=constrained-baseline "
+        << "! h264parse config-interval=1 disable-passthrough=true "
+        << "! rtph264pay pt=96 config-interval=1 "
+        << "! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000,packetization-mode=1,profile-level-id=42e01f "
         << "! queue "
         << "! webrtc.";
     return launch.str();

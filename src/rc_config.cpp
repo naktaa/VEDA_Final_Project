@@ -55,21 +55,7 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
         const std::string scoped_key = section.empty() ? key : section + "." + key;
 
         try {
-            if (scoped_key == "mqtt.host") {
-                config.host = value;
-            } else if (scoped_key == "mqtt.port") {
-                config.port = std::stoi(value);
-            } else if (scoped_key == "mqtt.goal_topic") {
-                config.topics.goal = value;
-            } else if (scoped_key == "mqtt.pose_topic") {
-                config.topics.pose = value;
-            } else if (scoped_key == "mqtt.safety_topic") {
-                config.topics.safety = value;
-            } else if (scoped_key == "mqtt.status_topic") {
-                config.topics.status = value;
-            } else if (scoped_key == "mqtt.status_publish_interval_ms") {
-                config.status_publish_interval_ms = std::stoi(value);
-            } else if (scoped_key == "control.k_linear") {
+            if (scoped_key == "control.k_linear") {
                 config.control.k_linear = std::stod(value);
             } else if (scoped_key == "control.k_yaw") {
                 config.control.k_yaw = std::stod(value);
@@ -105,7 +91,7 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
             } else if (scoped_key == "motor.pwm_max") {
                 config.motor.pwm_max = std::stoi(value);
             } else {
-                std::cerr << "[WARN] unknown ini key: " << scoped_key << "\n";
+                std::cerr << "[WARN] unknown tuning ini key: " << scoped_key << "\n";
             }
         } catch (const std::exception&) {
             std::cerr << "[WARN] invalid ini value for " << scoped_key
@@ -117,13 +103,7 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
         std::cerr << "[WARN] legacy *_cm* RC config keys detected; converted to meter-based values\n";
     }
 
-    std::cout << "[OK] loaded ini params from " << ini_path
-              << " | mqtt=(" << config.host << ":" << config.port
-              << ", " << config.topics.goal
-              << ", " << config.topics.pose
-              << ", " << config.topics.safety
-              << ", " << config.topics.status
-              << ", " << config.status_publish_interval_ms << "ms)"
+    std::cout << "[OK] loaded tuning params from " << ini_path
               << " | control=(" << config.control.k_linear << ", " << config.control.k_yaw << ", "
               << config.control.max_speed_mps << ", " << config.control.max_yaw_rate_rps << ", "
               << config.control.tolerance_m << ")"

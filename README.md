@@ -14,6 +14,7 @@
 - `config/rc_control.ini`
   - 첫 실행 때 템플릿에서 복사되어 생성되는 로컬 설정 파일
   - git에는 올라가지 않음
+  - 제어 튜닝값만 수정
 
 ## 내부 모듈 구조
 
@@ -58,20 +59,25 @@
 
 ## 설정 정책
 
-meter 기반 키를 우선 사용합니다.
+고정 계약은 코드에 둡니다.
 
-- `mqtt.host`
-- `mqtt.port`
-- `mqtt.goal_topic`
-- `mqtt.pose_topic`
-- `mqtt.safety_topic`
-- `mqtt.status_topic`
-- `mqtt.status_publish_interval_ms`
+- MQTT broker 기본값: `192.168.100.10:1883`
+- 토픽: `wiserisk/rc/goal`, `wiserisk/p1/pose`, `wiserisk/rc/safety`, `wiserisk/rc/status`
+- status publish 주기: `50ms`
+- payload 형식: `Tank_status` 고정
+
+로컬 튜닝값만 `rc_control.ini`에서 조정합니다.
+
+- `control.k_linear`
+- `control.k_yaw`
 - `control.max_speed_mps`
+- `control.max_yaw_rate_rps`
 - `control.tolerance_m`
 - `motor.track_width_m`
 - `motor.wheel_max_speed_mps`
 - `motor.speed_deadband_mps`
+- `motor.pwm_min_effective`
+- `motor.pwm_max`
 
 기존 `*_cm*` 키도 한 번은 읽어서 meter로 변환하고 warning을 출력합니다.
 
@@ -103,7 +109,7 @@ sudo ./main
 2. 파일이 없으면 `config/rc_control.template.ini`를 복사해서 `config/rc_control.ini`를 만들고 종료합니다.
 3. 사용자는 `config/rc_control.ini`만 수정한 뒤 다시 `sudo ./main`으로 실행하면 됩니다.
 
-즉 실행 인자는 사용하지 않습니다.
+즉 실행 인자는 사용하지 않고, 토픽이나 브로커 주소도 ini에서 바꾸지 않습니다.
 
 ## 빠른 확인
 

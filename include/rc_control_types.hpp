@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <string>
 
+#include "rc_defaults.hpp"
+
 struct RcGoal {
     double x = 0.0;
     double y = 0.0;
@@ -56,17 +58,17 @@ struct RcMotorParams {
 };
 
 struct RcTopics {
-    std::string goal = "wiserisk/rc/goal";
-    std::string pose = "wiserisk/p1/pose";
-    std::string safety = "wiserisk/rc/safety";
-    std::string status = "wiserisk/rc/status";
+    std::string goal = std::string(rc_defaults::kGoalTopic);
+    std::string pose = std::string(rc_defaults::kPoseTopic);
+    std::string safety = std::string(rc_defaults::kSafetyTopic);
+    std::string status = std::string(rc_defaults::kStatusTopic);
 };
 
 struct RcAppConfig {
-    std::string host = "192.168.100.10";
-    int port = 1883;
+    std::string host = std::string(rc_defaults::kBrokerHost);
+    int port = rc_defaults::kBrokerPort;
     RcTopics topics;
-    int status_publish_interval_ms = 50;
+    int status_publish_interval_ms = rc_defaults::kStatusPublishIntervalMs;
     std::filesystem::path config_dir = "config";
     std::filesystem::path ini_path = "config/rc_control.ini";
     std::filesystem::path template_ini_path = "config/rc_control.template.ini";

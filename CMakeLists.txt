@@ -12,22 +12,34 @@ pkg_check_modules(MOSQ REQUIRED libmosquitto)
 
 find_library(WIRINGPI_LIBRARY NAMES wiringPi)
 
-add_executable(rc_control_node
-    rc/rc_control_node.cpp
+add_library(auto_core
+    src/auto_app.cpp
+    src/rc_config.cpp
+    src/rc_control_node.cpp
+    src/rc_json_utils.cpp
+    src/rc_motor_driver.cpp
     src/rc_status_types.cpp
 )
 
-target_include_directories(rc_control_node PRIVATE
+target_include_directories(auto_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/rc
     ${MOSQ_INCLUDE_DIRS}
 )
 
-target_link_libraries(rc_control_node PRIVATE
+target_compile_options(auto_core PRIVATE ${MOSQ_CFLAGS_OTHER})
+target_link_directories(auto_core PRIVATE ${MOSQ_LIBRARY_DIRS})
+
+target_link_libraries(auto_core PUBLIC
     ${MOSQ_LIBRARIES}
     Threads::Threads
 )
 
 if(WIRINGPI_LIBRARY)
-    target_link_libraries(rc_control_node PRIVATE ${WIRINGPI_LIBRARY})
+    target_link_libraries(auto_core PUBLIC ${WIRINGPI_LIBRARY})
 endif()
+
+add_executable(auto_main
+    auto_main.cpp
+)
+
+target_link_libraries(auto_main PRIVATE auto_core)

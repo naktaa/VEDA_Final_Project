@@ -1,44 +1,61 @@
-# VEDA RC Auto Branch
+# VEDA RC Auto 브랜치
 
-This branch contains only the RC car auto-drive node and the `wiserisk/rc/status` publisher logic based on the `test/mqtt/Tank_status` payload schema.
+이 브랜치는 RC카 자동주행 실행부만 담당합니다. 서버가 발행하는 `wiserisk/p1/pose`를 받아서 목표점 추종을 수행하고, UI에는 `test/mqtt/Tank_status` 형식의 `wiserisk/rc/status`만 발행합니다.
 
-## Responsibility
+## 실행 파일 구성
 
-- `rc/rc_control_node.cpp`, `rc/rc_control_node.h`
-  - Subscribe to `wiserisk/rc/goal`, `wiserisk/p1/pose`, `wiserisk/rc/safety`
-  - Generate motor commands
-  - Publish `wiserisk/rc/status`
-- `include/rc_status_types.h`, `src/rc_status_types.cpp`
-  - Define and serialize the fixed `Tank_status` payload shape
+- `auto_main`
+  - MQTT 연결
+  - goal / pose / safety 구독
+  - 제어 루프 실행
+  - `wiserisk/rc/status` 발행
 - `config/rc_control.ini`
-  - RC control and motor parameters
+  - 제어 gain, 모터 파라미터 설정
 
-## MQTT Interface
+## 내부 모듈 구조
 
-- Subscribe: `wiserisk/rc/goal`
-- Subscribe: `wiserisk/p1/pose`
-- Subscribe: `wiserisk/rc/safety`
-- Publish: `wiserisk/rc/status`
-- LWT: retained offline snapshot on `wiserisk/rc/status`
+- `auto_main.cpp`
+  - 얇은 엔트리 포인트
+- `src/auto_app.cpp`
+  - 인자 파싱, 시그널 처리, 실행 orchestration
+- `src/rc_control_node.cpp`
+  - MQTT 콜백, 상태기, 제어 루프
+- `src/rc_config.cpp`
+  - `rc_control.ini` 파싱
+- `src/rc_json_utils.cpp`
+  - goal / pose / safety payload 파싱
+- `src/rc_motor_driver.cpp`
+  - wiringPi 기반 모터 출력
+- `src/rc_status_types.cpp`
+  - `Tank_status` 고정 payload 직렬화
 
-## Status Mapping
+## MQTT 인터페이스
 
-- `connected`: MQTT connection state
-- `mode`: `auto` when a goal exists, otherwise `idle`
-- `mission`: `goal_tracking` when a goal exists, otherwise `none`
-- `speed`: current commanded speed in `m/s`
-- `x`, `y`: latest pose in world `m`
-- `heading`: latest pose yaw converted to `deg`
+- 구독: `wiserisk/rc/goal`
+- 구독: `wiserisk/p1/pose`
+- 구독: `wiserisk/rc/safety`
+- 발행: `wiserisk/rc/status`
+- LWT: `wiserisk/rc/status`에 offline 상태 retained 발행
+
+## 상태 필드 매핑
+
+- `connected`: MQTT 연결 상태
+- `mode`: goal이 있으면 `auto`, 없으면 `idle`
+- `mission`: goal이 있으면 `goal_tracking`, 없으면 `none`
+- `speed`: 현재 명령 선속도 `m/s`
+- `x`, `y`: 최신 pose 좌표 `m`
+- `heading`: 최신 pose yaw를 `deg`로 변환
 - `comm_state`: `connected` / `disconnected`
 - `robot_state`: `WAIT_INPUT`, `TRACKING`, `ROTATE`, `REACHED`, `SAFE_STOP`, `POSE_TIMEOUT`, `offline`
 - `data_period`: `50ms`
-- `target`: goal `(x, y)` with `z = -1.0`, or placeholder `(-1.0, -1.0, -1.0)`
-- `battery`: placeholder `-1.0`
-- `z`, `task_*`, `motors`: omitted unless real data is available
+- `target`: goal이 있으면 `{x,y,z=-1.0}`, 없으면 placeholder
+- `battery`: `-1.0` placeholder 유지
 
-## Config Policy
+`battery`, `z`, `task_*`, `motors`는 실제 데이터가 없으면 placeholder 또는 omission 정책을 유지합니다.
 
-The branch uses meter-based RC config keys:
+## 설정 정책
+
+meter 기반 키를 우선 사용합니다.
 
 - `control.max_speed_mps`
 - `control.tolerance_m`
@@ -46,26 +63,26 @@ The branch uses meter-based RC config keys:
 - `motor.wheel_max_speed_mps`
 - `motor.speed_deadband_mps`
 
-Legacy `*_cm*` keys are still accepted once and converted to meters with a warning.
+기존 `*_cm*` 키도 한 번은 읽어서 meter로 변환하고 warning을 출력합니다.
 
-## Build
+## 빌드
 
-Prerequisites:
+필수:
 
-- libmosquitto
-- pthreads
-- CMake 3.16+
-- optional: wiringPi
+- `libmosquitto`
+- `pthread`
+- `CMake 3.16+`
+- 선택: `wiringPi`
 
 ```bash
 cmake -S . -B build
-cmake --build build --target rc_control_node -j$(nproc)
+cmake --build build --target auto_main -j$(nproc)
 ```
 
-## Run
+## 실행
 
 ```bash
-./build/rc_control_node \
+./build/auto_main \
   192.168.100.10 \
   1883 \
   wiserisk/rc/goal \
@@ -75,15 +92,23 @@ cmake --build build --target rc_control_node -j$(nproc)
   ./config/rc_control.ini
 ```
 
-## Quick Checks
+인자 순서:
 
-Use `mosquitto_sub` to inspect the status payload:
+1. `mqtt_host`
+2. `mqtt_port`
+3. `goal_topic`
+4. `pose_topic`
+5. `safety_topic`
+6. `status_topic`
+7. `ini_path`
+
+## 빠른 확인
 
 ```bash
 mosquitto_sub -h 192.168.100.10 -t wiserisk/rc/status -v
 ```
 
-Example expected UI-connected fields:
+UI에서 우선 확인할 필드:
 
 - `connected`
 - `mode`

@@ -11,6 +11,7 @@
 #include <thread>
 #include <vector>
 
+#include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video/tracking.hpp>
 
@@ -41,6 +42,15 @@ constexpr double kFeatureQuality = 0.01;
 constexpr double kFeatureMinDist = 30.0;
 constexpr double kKalmanQ = 0.004;
 constexpr double kKalmanR = 0.5;
+constexpr int kMinGoodPoints = 12;
+constexpr int kMinInliers = 10;
+constexpr double kMaxAbsRawDxPx = 45.0;
+constexpr double kMaxAbsRawDyPx = 35.0;
+constexpr double kMaxAbsRawDaRad = 8.0 * CV_PI / 180.0;
+constexpr double kMaxScaleDeviation = 0.08;
+constexpr double kMaxAbsCorrDxPx = 20.0;
+constexpr double kMaxAbsCorrDyPx = 20.0;
+constexpr double kMaxAbsCorrDaRad = 5.0 * CV_PI / 180.0;
 
 struct KalmanState {
     double x = 0.0;
@@ -81,44 +91,6 @@ bool use_gstreamer_capture(const CameraConfig& config) {
 
 int scaled_border_crop_px(int width) {
     return std::max(1, static_cast<int>(std::lround(width * (30.0 / 960.0))));
-}
-
-void draw_reference_overlay(cv::Mat& image,
-                            double diff_dx,
-                            double diff_dy,
-                            double diff_da,
-                            size_t feature_count) {
-    char line1[128];
-    std::snprintf(line1,
-                  sizeof(line1),
-                  "ref lk dx:%+5.1f dy:%+5.1f da:%+5.2f deg",
-                  diff_dx,
-                  diff_dy,
-                  diff_da * 180.0 / CV_PI);
-    cv::putText(image,
-                line1,
-                cv::Point(8, 18),
-                cv::FONT_HERSHEY_SIMPLEX,
-                0.45,
-                cv::Scalar(0, 255, 0),
-                1,
-                cv::LINE_AA);
-
-    char line2[128];
-    std::snprintf(line2,
-                  sizeof(line2),
-                  "features:%zu Q:%.4f R:%.1f",
-                  feature_count,
-                  kKalmanQ,
-                  kKalmanR);
-    cv::putText(image,
-                line2,
-                cv::Point(8, 36),
-                cv::FONT_HERSHEY_SIMPLEX,
-                0.4,
-                cv::Scalar(0, 255, 255),
-                1,
-                cv::LINE_AA);
 }
 
 } // namespace
@@ -229,7 +201,6 @@ int main() {
         kalman_init(kf_ty, kKalmanQ, kKalmanR);
 
         cv::Mat prev_gray;
-        cv::Mat prev_frame;
         int frame_count = 0;
         uint64_t logged_frames = 0;
         const int crop_x = scaled_border_crop_px(config.camera.width);
@@ -256,6 +227,7 @@ int main() {
 
             size_t feature_count = 0;
             size_t valid_points = 0;
+            size_t inlier_count = 0;
             bool lk_ok = false;
             double raw_dx = 0.0;
             double raw_dy = 0.0;
@@ -266,7 +238,6 @@ int main() {
 
             if (frame_count == 0) {
                 prev_gray = curr_gray.clone();
-                prev_frame = frame.image.clone();
                 frame_count++;
             } else {
                 std::vector<cv::Point2f> features_prev;
@@ -301,55 +272,75 @@ int main() {
                     }
                     valid_points = good_prev.size();
 
-                    if (good_prev.size() >= 6U) {
-                        cv::Mat affine = cv::estimateAffinePartial2D(good_prev, good_curr);
+                    if (good_prev.size() >= static_cast<size_t>(kMinGoodPoints)) {
+                        cv::Mat inlier_mask;
+                        cv::Mat affine = cv::estimateAffinePartial2D(good_prev,
+                                                                     good_curr,
+                                                                     inlier_mask,
+                                                                     cv::RANSAC,
+                                                                     3.0,
+                                                                     2000,
+                                                                     0.99,
+                                                                     10);
                         if (!affine.empty()) {
-                            lk_ok = true;
+                            inlier_count = static_cast<size_t>(cv::countNonZero(inlier_mask));
                             raw_dx = affine.at<double>(0, 2);
                             raw_dy = affine.at<double>(1, 2);
                             raw_da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
 
-                            const double cos_da = std::cos(raw_da);
-                            const double sx = std::abs(cos_da) > 1e-6 ? affine.at<double>(0, 0) / cos_da : 1.0;
-                            const double sy = std::abs(cos_da) > 1e-6 ? affine.at<double>(1, 1) / cos_da : 1.0;
+                            const double a = affine.at<double>(0, 0);
+                            const double b = affine.at<double>(0, 1);
+                            const double scale = std::sqrt(a * a + b * b);
+                            const bool affine_ok =
+                                std::isfinite(scale) &&
+                                std::isfinite(raw_dx) &&
+                                std::isfinite(raw_dy) &&
+                                std::isfinite(raw_da) &&
+                                inlier_count >= static_cast<size_t>(kMinInliers) &&
+                                std::abs(scale - 1.0) <= kMaxScaleDeviation &&
+                                std::abs(raw_dx) <= kMaxAbsRawDxPx &&
+                                std::abs(raw_dy) <= kMaxAbsRawDyPx &&
+                                std::abs(raw_da) <= kMaxAbsRawDaRad;
 
-                            kalman_update(kf_theta, raw_da);
-                            kalman_update(kf_tx, raw_dx);
-                            kalman_update(kf_ty, raw_dy);
+                            if (affine_ok) {
+                                lk_ok = true;
+                                kalman_update(kf_theta, raw_da);
+                                kalman_update(kf_tx, raw_dx);
+                                kalman_update(kf_ty, raw_dy);
 
-                            if (frame_count > 1) {
-                                corr_da = kalman_diff(kf_theta);
-                                corr_dx = kalman_diff(kf_tx);
-                                corr_dy = kalman_diff(kf_ty);
+                                if (frame_count > 1) {
+                                    corr_da = std::clamp(kalman_diff(kf_theta), -kMaxAbsCorrDaRad, kMaxAbsCorrDaRad);
+                                    corr_dx = std::clamp(kalman_diff(kf_tx), -kMaxAbsCorrDxPx, kMaxAbsCorrDxPx);
+                                    corr_dy = std::clamp(kalman_diff(kf_ty), -kMaxAbsCorrDyPx, kMaxAbsCorrDyPx);
+                                }
+
+                                const double out_da = raw_da + corr_da;
+                                const double out_dx = raw_dx + corr_dx;
+                                const double out_dy = raw_dy + corr_dy;
+
+                                cv::Mat smoothed = (cv::Mat_<double>(2, 3) <<
+                                    scale * std::cos(out_da), scale * -std::sin(out_da), out_dx,
+                                    scale * std::sin(out_da), scale *  std::cos(out_da), out_dy);
+
+                                cv::warpAffine(frame.image,
+                                               stabilized,
+                                               smoothed,
+                                               frame.image.size(),
+                                               cv::INTER_LINEAR,
+                                               cv::BORDER_REPLICATE);
+
+                                const int x0 = std::clamp(crop_x, 0, std::max(0, stabilized.cols - 1));
+                                const int y0 = std::clamp(crop_y, 0, std::max(0, stabilized.rows - 1));
+                                const int x1 = std::clamp(stabilized.cols - crop_x, x0 + 1, stabilized.cols);
+                                const int y1 = std::clamp(stabilized.rows - crop_y, y0 + 1, stabilized.rows);
+                                const cv::Rect roi(x0, y0, x1 - x0, y1 - y0);
+                                cv::resize(stabilized(roi), stabilized, frame.image.size(), 0.0, 0.0, cv::INTER_LINEAR);
                             }
-
-                            const double out_da = raw_da + corr_da;
-                            const double out_dx = raw_dx + corr_dx;
-                            const double out_dy = raw_dy + corr_dy;
-
-                            cv::Mat smoothed = (cv::Mat_<double>(2, 3) <<
-                                sx * std::cos(out_da), sx * -std::sin(out_da), out_dx,
-                                sy * std::sin(out_da), sy *  std::cos(out_da), out_dy);
-
-                            cv::warpAffine(prev_frame,
-                                           stabilized,
-                                           smoothed,
-                                           frame.image.size());
-
-                            const int x0 = std::clamp(crop_x, 0, std::max(0, stabilized.cols - 1));
-                            const int y0 = std::clamp(crop_y, 0, std::max(0, stabilized.rows - 1));
-                            const int x1 = std::clamp(stabilized.cols - crop_x, x0 + 1, stabilized.cols);
-                            const int y1 = std::clamp(stabilized.rows - crop_y, y0 + 1, stabilized.rows);
-                            const cv::Rect roi(x0, y0, x1 - x0, y1 - y0);
-                            cv::resize(stabilized(roi), stabilized, frame.image.size(), 0.0, 0.0, cv::INTER_LINEAR);
-
-                            draw_reference_overlay(stabilized, corr_dx, corr_dy, corr_da, good_prev.size());
                         }
                     }
                 }
 
                 prev_gray = curr_gray.clone();
-                prev_frame = frame.image.clone();
                 frame_count++;
             }
 

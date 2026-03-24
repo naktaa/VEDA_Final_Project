@@ -2,6 +2,7 @@ const statusEl = document.getElementById("status");
 const modeEl = document.getElementById("mode");
 const imuEl = document.getElementById("imu");
 const imuAckEl = document.getElementById("imuAck");
+const debugEl = document.getElementById("debugLog");
 const connectBtn = document.getElementById("connectBtn");
 const centerBtn = document.getElementById("centerBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
@@ -21,6 +22,7 @@ let uiCommandInterval = null;
 let sensorCheckTimer = null;
 let renderRaf = 0;
 let peerConnection = null;
+let lastVideoWaitLogAt = 0;
 
 let sessionActive = false;
 let connectInFlight = false;
@@ -35,8 +37,22 @@ let lastUiCommandSeq = {
   zeroCalibrate: 0,
 };
 
+const debugLines = [];
+
 function setStatus(msg) {
   statusEl.textContent = msg;
+}
+
+function appendDebug(msg) {
+  const line = `${new Date().toLocaleTimeString()} ${msg}`;
+  debugLines.push(line);
+  while (debugLines.length > 10) {
+    debugLines.shift();
+  }
+  if (debugEl) {
+    debugEl.textContent = debugLines.join("\n");
+  }
+  console.log(`[VRWEB] ${msg}`);
 }
 
 function setMode(mode) {
@@ -143,6 +159,13 @@ function startOrientationFeed() {
     const hasFiniteAngles =
       Number.isFinite(evt.alpha) || Number.isFinite(evt.beta) || Number.isFinite(evt.gamma);
     if (hasFiniteAngles) {
+      if (!hasSensorData) {
+        appendDebug(
+          `First IMU sample alpha=${Number(evt.alpha || 0).toFixed(1)} beta=${Number(
+            evt.beta || 0
+          ).toFixed(1)} gamma=${Number(evt.gamma || 0).toFixed(1)}`
+        );
+      }
       hasSensorData = true;
       sensorPermissionGranted = true;
     }
@@ -203,6 +226,7 @@ function stopOrientationFeed() {
 async function stopWebRtcStream() {
   const oldPc = peerConnection;
   peerConnection = null;
+  appendDebug("Stopping WebRTC stream");
 
   if (oldPc) {
     oldPc.ontrack = null;
@@ -253,6 +277,14 @@ function renderStereo() {
     return;
   }
 
+  if (!streamSource.videoWidth || !streamSource.videoHeight) {
+    const now = Date.now();
+    if (now - lastVideoWaitLogAt > 1000) {
+      appendDebug("Waiting for decoded video frames");
+      lastVideoWaitLogAt = now;
+    }
+  }
+
   resizeCanvasToDisplaySize(leftCanvas);
   resizeCanvasToDisplaySize(rightCanvas);
   drawCover(leftCtx, leftCanvas, streamSource);
@@ -298,6 +330,7 @@ function waitForIceGatheringComplete(pc) {
 }
 
 async function requestWebRtcAnswer(offer) {
+  appendDebug(`Sending WebRTC offer (${offer.sdp.length} bytes)`);
   const res = await fetch("/webrtc/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -312,6 +345,7 @@ async function requestWebRtcAnswer(offer) {
     throw new Error(text || `WebRTC session failed: ${res.status}`);
   }
 
+  appendDebug("Received WebRTC answer");
   return res.json();
 }
 
@@ -325,25 +359,39 @@ async function startWebRtcStream() {
     iceServers: [],
   });
   peerConnection = pc;
+  appendDebug("Created RTCPeerConnection");
 
   pc.addTransceiver("video", { direction: "recvonly" });
+  appendDebug("Added recvonly video transceiver");
 
   pc.ontrack = async (event) => {
     const [stream] = event.streams;
+    appendDebug(
+      `ontrack kind=${event.track?.kind ?? "unknown"} streams=${event.streams.length}`
+    );
     if (!stream) {
       return;
+    }
+    const [videoTrack] = stream.getVideoTracks();
+    if (videoTrack) {
+      appendDebug(`Video track id=${videoTrack.id} readyState=${videoTrack.readyState}`);
+      videoTrack.onmute = () => appendDebug("Video track muted");
+      videoTrack.onunmute = () => appendDebug("Video track unmuted");
+      videoTrack.onended = () => appendDebug("Video track ended");
     }
     streamSource.srcObject = stream;
     try {
       await streamSource.play();
+      appendDebug("Hidden video element play() resolved");
     } catch (_) {
-      // Ignore autoplay race.
+      appendDebug("Hidden video element play() deferred");
     }
     startRenderLoop();
     setStatus(currentMode === "vr" ? "WebRTC video connected" : "Video connected");
   };
 
   pc.onconnectionstatechange = () => {
+    appendDebug(`Peer connection state=${pc.connectionState}`);
     if (!sessionActive) {
       return;
     }
@@ -355,6 +403,7 @@ async function startWebRtcStream() {
   };
 
   pc.oniceconnectionstatechange = () => {
+    appendDebug(`ICE connection state=${pc.iceConnectionState}`);
     if (!sessionActive) {
       return;
     }
@@ -369,14 +418,17 @@ async function startWebRtcStream() {
     offerToReceiveAudio: false,
     offerToReceiveVideo: true,
   });
+  appendDebug("Created local WebRTC offer");
   await pc.setLocalDescription(offer);
   await waitForIceGatheringComplete(pc);
+  appendDebug("ICE gathering completed in browser");
 
   const answer = await requestWebRtcAnswer(pc.localDescription);
   await pc.setRemoteDescription({
     type: answer.type,
     sdp: answer.sdp,
   });
+  appendDebug("Applied remote WebRTC answer");
 }
 
 function startImuAckPolling() {
@@ -406,6 +458,7 @@ function startImuAckPolling() {
         `src:${body.source ?? "-"}`;
 
       if (previousMode === "vr" && body.mode !== "vr") {
+        appendDebug("PTZ mode fell back to manual");
         setStatus("VR input lost. Video continues in manual mode.");
       }
     } catch (_) {
@@ -417,6 +470,7 @@ function startImuAckPolling() {
 async function stopSession(statusMessage = "Idle") {
   connectInFlight = true;
   connectBtn.disabled = true;
+  appendDebug(`Stopping session: ${statusMessage}`);
 
   try {
     try {
@@ -447,6 +501,7 @@ async function startSession({ requestPermission = true } = {}) {
 
   connectInFlight = true;
   connectBtn.disabled = true;
+  appendDebug(`Starting session requestPermission=${requestPermission}`);
 
   try {
     if (requestPermission) {
@@ -462,6 +517,7 @@ async function startSession({ requestPermission = true } = {}) {
     if (!health.ok) {
       throw new Error(`Server not ready: ${health.status}`);
     }
+    appendDebug("Server health check passed");
 
     startOrientationFeed();
     startImuAckPolling();
@@ -472,10 +528,12 @@ async function startSession({ requestPermission = true } = {}) {
       sessionActive = true;
       renderConnectButton();
       await notifySessionState(true, false);
+      appendDebug("WebRTC session marked active");
     }
 
     await setPtzMode("vr");
     await notifySessionState(true, true);
+    appendDebug("PTZ mode switched to vr");
     setStatus("VR mode active");
 
     if (sensorCheckTimer) {
@@ -490,6 +548,7 @@ async function startSession({ requestPermission = true } = {}) {
     if (!sessionActive) {
       await notifySessionState(false, false);
     }
+    appendDebug(`Session start error: ${err.message}`);
     setStatus(`Error: ${err.message}`);
     throw err;
   } finally {
@@ -519,6 +578,7 @@ async function handleUiCommands() {
 
     if (sessionStartSeq > lastUiCommandSeq.sessionStart) {
       lastUiCommandSeq.sessionStart = sessionStartSeq;
+      appendDebug(`Controller session start command seq=${sessionStartSeq}`);
       try {
         await startSession({ requestPermission: false });
       } catch (_) {
@@ -528,6 +588,7 @@ async function handleUiCommands() {
 
     if (sessionStopSeq > lastUiCommandSeq.sessionStop) {
       lastUiCommandSeq.sessionStop = sessionStopSeq;
+      appendDebug(`Controller session stop command seq=${sessionStopSeq}`);
       if (sessionActive) {
         await stopSession("Manual mode active");
       }
@@ -535,6 +596,7 @@ async function handleUiCommands() {
 
     if (zeroCalibrateSeq > lastUiCommandSeq.zeroCalibrate) {
       lastUiCommandSeq.zeroCalibrate = zeroCalibrateSeq;
+      appendDebug(`Controller zero command seq=${zeroCalibrateSeq}`);
       if (sessionActive && hasSensorData) {
         await zeroCalibrate();
       } else {
@@ -557,6 +619,30 @@ function startUiCommandPolling() {
   uiCommandInterval = setInterval(() => {
     handleUiCommands().catch(() => {});
   }, 250);
+}
+
+function bindVideoDebugEvents() {
+  streamSource.addEventListener("loadedmetadata", () => {
+    appendDebug(`loadedmetadata ${streamSource.videoWidth}x${streamSource.videoHeight}`);
+  });
+  streamSource.addEventListener("loadeddata", () => {
+    appendDebug(`loadeddata ${streamSource.videoWidth}x${streamSource.videoHeight}`);
+  });
+  streamSource.addEventListener("playing", () => {
+    appendDebug(`playing ${streamSource.videoWidth}x${streamSource.videoHeight}`);
+  });
+  streamSource.addEventListener("waiting", () => {
+    appendDebug("video waiting");
+  });
+  streamSource.addEventListener("stalled", () => {
+    appendDebug("video stalled");
+  });
+  streamSource.addEventListener("resize", () => {
+    appendDebug(`video resize ${streamSource.videoWidth}x${streamSource.videoHeight}`);
+  });
+  streamSource.addEventListener("error", () => {
+    appendDebug("video element error");
+  });
 }
 
 async function initializeMode() {
@@ -620,6 +706,7 @@ function scrollToVideo() {
   vrStage.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+bindVideoDebugEvents();
 initializeMode();
 startUiCommandPolling();
 

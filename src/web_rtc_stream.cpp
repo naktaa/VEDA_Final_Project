@@ -23,6 +23,8 @@ struct SessionState {
     GstElement* pipeline = nullptr;
     GstAppSrc* appsrc = nullptr;
     GstElement* webrtc = nullptr;
+    bool first_frame_logged = false;
+    std::size_t pushed_frame_count = 0;
 };
 
 void cleanup_session(SessionState& session) {
@@ -370,7 +372,24 @@ bool WebRtcStreamServer::push_bgr_frame(const unsigned char* data,
     gst_buffer_unmap(buffer, &map);
 
     const GstFlowReturn ret = gst_app_src_push_buffer(appsrc, buffer);
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->session.appsrc == appsrc && ret == GST_FLOW_OK) {
+            impl_->session.pushed_frame_count += 1;
+            if (!impl_->session.first_frame_logged) {
+                impl_->session.first_frame_logged = true;
+                std::fprintf(stderr,
+                             "[WEBRTC] first frame pushed %dx%d bytes=%zu\n",
+                             width,
+                             height,
+                             bytes);
+            }
+        }
+    }
     g_object_unref(appsrc);
+    if (ret != GST_FLOW_OK) {
+        std::fprintf(stderr, "[WEBRTC] push frame failed ret=%d\n", static_cast<int>(ret));
+    }
     return ret == GST_FLOW_OK;
 }
 

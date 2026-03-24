@@ -245,6 +245,10 @@ struct PtzController::Impl {
     float last_raw_pitch = 0.0f;
     float last_raw_roll = 0.0f;
     bool pitch_roll_initialized = false;
+    float last_reject_pitch = 0.0f;
+    float last_reject_roll = 0.0f;
+    float last_reject_yaw = 0.0f;
+    bool reject_reference_initialized = false;
     float last_pitch = 0.0f;
     float last_roll = 0.0f;
     float last_yaw = 0.0f;
@@ -424,6 +428,10 @@ bool PtzController::set_mode(PtzMode mode) {
         impl_->last_raw_pitch = 0.0f;
         impl_->last_raw_roll = 0.0f;
         impl_->pitch_roll_initialized = false;
+        impl_->last_reject_pitch = 0.0f;
+        impl_->last_reject_roll = 0.0f;
+        impl_->last_reject_yaw = 0.0f;
+        impl_->reject_reference_initialized = false;
         impl_->imu_target_pan = impl_->current_pan;
         impl_->imu_target_tilt = impl_->current_tilt;
     } else {
@@ -437,6 +445,10 @@ bool PtzController::set_mode(PtzMode mode) {
         impl_->last_raw_pitch = 0.0f;
         impl_->last_raw_roll = 0.0f;
         impl_->pitch_roll_initialized = false;
+        impl_->last_reject_pitch = 0.0f;
+        impl_->last_reject_roll = 0.0f;
+        impl_->last_reject_yaw = 0.0f;
+        impl_->reject_reference_initialized = false;
     }
     std::fprintf(stderr, "[PTZ] mode -> %s\n", mode_to_cstr(mode));
     return true;
@@ -471,6 +483,10 @@ bool PtzController::zero_calibrate(float pitch, float roll, float yaw) {
     impl_->last_raw_pitch = 0.0f;
     impl_->last_raw_roll = 0.0f;
     impl_->pitch_roll_initialized = false;
+    impl_->last_reject_pitch = 0.0f;
+    impl_->last_reject_roll = 0.0f;
+    impl_->last_reject_yaw = 0.0f;
+    impl_->reject_reference_initialized = false;
     impl_->imu_target_pan = impl_->current_pan;
     impl_->imu_target_tilt = impl_->current_tilt;
     impl_->last_imu_arrival = std::chrono::steady_clock::now();
@@ -512,21 +528,6 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     if (impl_->mode != PtzMode::kVr) {
         return;
     }
-    if (impl_->pitch_roll_initialized && impl_->yaw_initialized) {
-        const float pitch_jump = std::fabs(wrap_angle_180(pitch - impl_->last_raw_pitch));
-        const float roll_jump = std::fabs(wrap_angle_180(roll - impl_->last_raw_roll));
-        const float yaw_jump = std::fabs(wrap_angle_180(yaw - impl_->last_raw_yaw));
-        if (pitch_jump > kRejectPitchDeltaDeg ||
-            roll_jump > kRejectRollDeltaDeg ||
-            yaw_jump > kRejectYawDeltaDeg) {
-            return;
-        }
-    }
-
-    impl_->last_pitch = pitch;
-    impl_->last_roll = roll;
-    impl_->last_yaw = yaw;
-    impl_->last_client_timestamp_ms = client_timestamp_ms;
 
     const float centered_pitch =
         impl_->zero_initialized ? wrap_angle_180(pitch - impl_->zero_pitch) : pitch;
@@ -534,6 +535,31 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
         impl_->zero_initialized ? wrap_angle_180(roll - impl_->zero_roll) : roll;
     const float centered_yaw =
         impl_->zero_initialized ? wrap_angle_180(yaw - impl_->zero_yaw) : yaw;
+
+    if (impl_->reject_reference_initialized) {
+        const float pitch_jump = std::fabs(wrap_angle_180(centered_pitch - impl_->last_reject_pitch));
+        const float roll_jump = std::fabs(wrap_angle_180(centered_roll - impl_->last_reject_roll));
+        const float yaw_jump = std::fabs(wrap_angle_180(centered_yaw - impl_->last_reject_yaw));
+        if (pitch_jump > kRejectPitchDeltaDeg ||
+            roll_jump > kRejectRollDeltaDeg ||
+            yaw_jump > kRejectYawDeltaDeg) {
+            std::fprintf(stderr,
+                         "[PTZ] IMU sample rejected pitch_jump=%.1f roll_jump=%.1f yaw_jump=%.1f\n",
+                         pitch_jump,
+                         roll_jump,
+                         yaw_jump);
+            return;
+        }
+    }
+    impl_->last_reject_pitch = centered_pitch;
+    impl_->last_reject_roll = centered_roll;
+    impl_->last_reject_yaw = centered_yaw;
+    impl_->reject_reference_initialized = true;
+
+    impl_->last_pitch = pitch;
+    impl_->last_roll = roll;
+    impl_->last_yaw = yaw;
+    impl_->last_client_timestamp_ms = client_timestamp_ms;
 
     const auto now = std::chrono::steady_clock::now();
     float imu_dt_sec = kDefaultImuDtSec;

@@ -52,8 +52,18 @@ const char* key_code_name(unsigned short code) {
     switch (code) {
     case BTN_LEFT:
         return "BTN_LEFT";
+    case BTN_RIGHT:
+        return "BTN_RIGHT";
+    case BTN_MIDDLE:
+        return "BTN_MIDDLE";
     case BTN_SIDE:
         return "BTN_SIDE";
+    case BTN_EXTRA:
+        return "BTN_EXTRA";
+    case BTN_FORWARD:
+        return "BTN_FORWARD";
+    case BTN_BACK:
+        return "BTN_BACK";
     case KEY_VOLUMEUP:
         return "KEY_VOLUMEUP";
     case KEY_VOLUMEDOWN:
@@ -61,6 +71,14 @@ const char* key_code_name(unsigned short code) {
     default:
         return "KEY_UNKNOWN";
     }
+}
+
+bool is_session_button(unsigned short code) {
+    return code == BTN_SIDE || code == BTN_FORWARD || code == BTN_BACK;
+}
+
+bool is_zero_button(unsigned short code) {
+    return code == BTN_LEFT || code == BTN_EXTRA || code == BTN_RIGHT || code == BTN_MIDDLE;
 }
 
 class VrTankDispatcher {
@@ -133,7 +151,12 @@ private:
     }
 
     void handle_key(const input_event& ev) {
-        if (ev.code == BTN_LEFT && ev.value == 1) {
+        if (ev.value == 0 || ev.value == 1) {
+            fprintf(stderr, "[VR] EV_KEY %s value=%d\n", key_code_name(ev.code), ev.value);
+            fflush(stderr);
+        }
+
+        if (is_zero_button(ev.code) && ev.value == 1) {
             update_last_input();
             if (!should_accept_ui_button(last_zero_button_at_)) {
                 return;
@@ -142,7 +165,7 @@ private:
             return;
         }
 
-        if (ev.code == BTN_SIDE && (ev.value == 0 || ev.value == 1)) {
+        if (is_session_button(ev.code) && (ev.value == 0 || ev.value == 1)) {
             update_last_input();
             if (ev.value == 1) {
                 if (!should_accept_ui_button(last_session_button_at_)) {
@@ -289,7 +312,7 @@ bool run_vr_remote_input_loop(const VrRemoteInputConfig& config, std::atomic<boo
     }
 
     fprintf(stderr,
-            "[VR] input=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s ui_buttons=BTN_SIDE(toggle),BTN_LEFT(zero)\n",
+            "[VR] input=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s ui_buttons=session(BTN_SIDE/BTN_FORWARD/BTN_BACK),zero(BTN_LEFT/BTN_EXTRA/BTN_RIGHT/BTN_MIDDLE)\n",
             config.input_device.c_str(),
             config.log_only ? "log-only" : "drive",
             config.idle_stop_ms,

@@ -2,10 +2,8 @@
 
 #include <cerrno>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -14,8 +12,6 @@
 #include <linux/i2c-dev.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
-
-#include <wiringPi.h>
 
 #include "timebase.hpp"
 
@@ -67,19 +63,45 @@ std::string i2c_device_path(int bus) {
     return "/dev/i2c-" + std::to_string(bus);
 }
 
-std::mutex g_irq_wait_mutex;
-std::condition_variable g_irq_wait_cv;
-std::atomic<uint64_t>* g_irq_seq_ptr = nullptr;
-std::atomic<int64_t>* g_irq_time_ns_ptr = nullptr;
+constexpr const char* kDefaultImuGpioChip = "/dev/gpiochip0";
 
-void imu_interrupt_handler() {
-    if (g_irq_time_ns_ptr) {
-        g_irq_time_ns_ptr->store(clock_ns(CLOCK_MONOTONIC_RAW), std::memory_order_relaxed);
+int wiringpi_to_gpio_offset(int wpi_pin) {
+    switch (wpi_pin) {
+    case 0: return 17;
+    case 1: return 18;
+    case 2: return 27;
+    case 3: return 22;
+    case 4: return 23;
+    case 5: return 24;
+    case 6: return 25;
+    case 7: return 4;
+    case 8: return 2;
+    case 9: return 3;
+    case 10: return 8;
+    case 11: return 7;
+    case 12: return 10;
+    case 13: return 9;
+    case 14: return 11;
+    case 15: return 14;
+    case 16: return 15;
+    case 21: return 5;
+    case 22: return 6;
+    case 23: return 13;
+    case 24: return 19;
+    case 25: return 26;
+    case 26: return 12;
+    case 27: return 16;
+    case 28: return 20;
+    case 29: return 21;
+    case 30: return 0;
+    case 31: return 1;
+    default: return -1;
     }
-    if (g_irq_seq_ptr) {
-        g_irq_seq_ptr->fetch_add(1, std::memory_order_relaxed);
-    }
-    g_irq_wait_cv.notify_one();
+}
+
+void disable_interrupt_registers(int fd) {
+    i2c_write_byte(fd, REG_INT_PIN_CFG, 0x00);
+    i2c_write_byte(fd, REG_INT_ENABLE, 0x00);
 }
 
 } // namespace
@@ -99,6 +121,24 @@ bool ImuReader::start(const ImuConfig& imu_config,
 
     config_ = imu_config;
     bias_counts_ = cv::Vec3d(calib_config.bias_x, calib_config.bias_y, calib_config.bias_z);
+    resolved_int_gpio_chip_ = config_.int_gpio_chip.empty() ? kDefaultImuGpioChip : config_.int_gpio_chip;
+    resolved_int_line_offset_ = config_.int_line_offset;
+    if (resolved_int_line_offset_ < 0 && config_.int_pin_wpi >= 0) {
+        resolved_int_line_offset_ = wiringpi_to_gpio_offset(config_.int_pin_wpi);
+        if (resolved_int_line_offset_ >= 0) {
+            std::fprintf(stderr,
+                         "[IMU] using legacy int_pin_wpi=%d -> gpio line offset=%d on %s\n",
+                         config_.int_pin_wpi,
+                         resolved_int_line_offset_,
+                         resolved_int_gpio_chip_.c_str());
+            std::fflush(stderr);
+        } else {
+            std::fprintf(stderr,
+                         "[IMU] unsupported legacy int_pin_wpi=%d; interrupt disabled\n",
+                         config_.int_pin_wpi);
+            std::fflush(stderr);
+        }
+    }
 
     if (!open_device(error)) {
         return false;
@@ -109,35 +149,30 @@ bool ImuReader::start(const ImuConfig& imu_config,
         return false;
     }
 
-    use_interrupt_ = config_.use_fifo && config_.int_pin_wpi >= 0;
+    use_interrupt_ = config_.use_fifo && resolved_int_line_offset_ >= 0;
     if (use_interrupt_) {
-        if (wiringPiSetup() == -1) {
-            if (error) *error = "wiringPiSetup failed for IMU interrupt";
-            close(fd_);
-            fd_ = -1;
-            return false;
-        }
-        pinMode(config_.int_pin_wpi, INPUT);
-        pullUpDnControl(config_.int_pin_wpi, PUD_DOWN);
-        irq_seq_.store(0);
-        irq_time_ns_.store(0);
-        g_irq_seq_ptr = &irq_seq_;
-        g_irq_time_ns_ptr = &irq_time_ns_;
-        if (wiringPiISR(config_.int_pin_wpi, INT_EDGE_RISING, &imu_interrupt_handler) < 0) {
-            const std::string isr_error = std::string("wiringPiISR failed: ") + std::strerror(errno);
+        std::string irq_error;
+        if (!irq_line_.open_rising_edge(
+                resolved_int_gpio_chip_,
+                static_cast<unsigned int>(resolved_int_line_offset_),
+                "tank_hybrid_eis_imu",
+                &irq_error)) {
+            disable_interrupt_registers(fd_);
             std::fprintf(stderr,
-                         "[IMU] %s; falling back to FIFO polling on wiringPi pin %d\n",
-                         isr_error.c_str(),
-                         config_.int_pin_wpi);
+                         "[IMU] %s; falling back to FIFO polling on %s line %d\n",
+                         irq_error.c_str(),
+                         resolved_int_gpio_chip_.c_str(),
+                         resolved_int_line_offset_);
             std::fflush(stderr);
-            g_irq_seq_ptr = nullptr;
-            g_irq_time_ns_ptr = nullptr;
             use_interrupt_ = false;
             if (error) {
-                *error = isr_error;
+                *error = irq_error;
             }
         } else {
-            std::fprintf(stderr, "[IMU] interrupt enabled on wiringPi pin %d\n", config_.int_pin_wpi);
+            std::fprintf(stderr,
+                         "[IMU] interrupt enabled on %s line %d\n",
+                         resolved_int_gpio_chip_.c_str(),
+                         resolved_int_line_offset_);
             std::fflush(stderr);
         }
     }
@@ -158,16 +193,10 @@ bool ImuReader::start(const ImuConfig& imu_config,
 void ImuReader::stop() {
     running_ = false;
     ready_ = false;
-    g_irq_wait_cv.notify_all();
     if (worker_.joinable()) {
         worker_.join();
     }
-    if (g_irq_seq_ptr == &irq_seq_) {
-        g_irq_seq_ptr = nullptr;
-    }
-    if (g_irq_time_ns_ptr == &irq_time_ns_) {
-        g_irq_time_ns_ptr = nullptr;
-    }
+    irq_line_.close();
     if (fd_ >= 0) {
         close(fd_);
         fd_ = -1;
@@ -273,8 +302,8 @@ bool ImuReader::configure_device(std::string* error) {
         if (!i2c_write_byte(fd_, REG_USER_CTRL, USERCTRL_FIFO_RESET) ||
             !i2c_write_byte(fd_, REG_USER_CTRL, USERCTRL_FIFO_EN) ||
             !i2c_write_byte(fd_, REG_FIFO_EN, 0x70) ||
-            !i2c_write_byte(fd_, REG_INT_PIN_CFG, config_.int_pin_wpi >= 0 ? INTPINCFG_LATCH_INT_EN : 0x00) ||
-            !i2c_write_byte(fd_, REG_INT_ENABLE, config_.int_pin_wpi >= 0 ? 0x01 : 0x00)) {
+            !i2c_write_byte(fd_, REG_INT_PIN_CFG, resolved_int_line_offset_ >= 0 ? INTPINCFG_LATCH_INT_EN : 0x00) ||
+            !i2c_write_byte(fd_, REG_INT_ENABLE, resolved_int_line_offset_ >= 0 ? 0x01 : 0x00)) {
             if (error) *error = "failed to configure FIFO/interrupt mode";
             return false;
         }
@@ -384,7 +413,6 @@ ImuSample ImuReader::make_sample(const cv::Vec3d& raw_counts, double sample_time
 void ImuReader::run() {
     const double period_ms = 1000.0 / std::max(1, config_.target_hz);
     int64_t last_time_ns = clock_ns(CLOCK_MONOTONIC_RAW);
-    uint64_t last_irq_seq = irq_seq_.load(std::memory_order_relaxed);
 
     while (running_) {
         std::vector<cv::Vec3d> fifo_samples;
@@ -392,25 +420,18 @@ void ImuReader::run() {
         int64_t event_ns = 0;
 
         if (use_interrupt_) {
-            uint64_t observed_irq_seq = irq_seq_.load(std::memory_order_relaxed);
-            if (observed_irq_seq == last_irq_seq) {
-                std::unique_lock<std::mutex> lock(g_irq_wait_mutex);
-                g_irq_wait_cv.wait_for(lock, std::chrono::milliseconds(200), [&]() {
-                    return !running_.load() ||
-                           irq_seq_.load(std::memory_order_relaxed) != last_irq_seq;
-                });
-                observed_irq_seq = irq_seq_.load(std::memory_order_relaxed);
-            }
-            if (!running_) {
-                break;
-            }
-            if (observed_irq_seq == last_irq_seq) {
+            std::string irq_error;
+            if (!irq_line_.wait_for_rising_edge(200, &event_ns, &irq_error)) {
+                if (!irq_error.empty()) {
+                    disable_interrupt_registers(fd_);
+                    std::fprintf(stderr,
+                                 "[IMU] interrupt wait failed: %s; switching to FIFO polling\n",
+                                 irq_error.c_str());
+                    std::fflush(stderr);
+                    irq_line_.close();
+                    use_interrupt_ = false;
+                }
                 continue;
-            }
-            last_irq_seq = observed_irq_seq;
-            event_ns = irq_time_ns_.load(std::memory_order_relaxed);
-            if (event_ns <= 0) {
-                event_ns = clock_ns(CLOCK_MONOTONIC_RAW);
             }
             uint8_t status = 0;
             i2c_read_bytes(fd_, REG_INT_STATUS, &status, 1);

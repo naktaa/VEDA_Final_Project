@@ -214,6 +214,8 @@ bool OffsetCalibrator::run(AppConfig& config, std::string* error) {
     calib_log << "# camera_fps=" << config.camera.fps << "\n";
     calib_log << "# imu_target_hz=" << config.imu.target_hz << "\n";
     calib_log << "# imu_use_fifo=" << (config.imu.use_fifo ? 1 : 0) << "\n";
+    calib_log << "# imu_int_gpio_chip=" << config.imu.int_gpio_chip << "\n";
+    calib_log << "# imu_int_line_offset=" << config.imu.int_line_offset << "\n";
     calib_log << "# imu_int_pin_wpi=" << config.imu.int_pin_wpi << "\n";
     calib_log << "# sweep_duration_ms=" << config.calib.sweep_duration_ms << "\n";
     calib_log << "# coarse_range_ms=" << config.calib.coarse_range_ms << "\n";

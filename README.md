@@ -14,6 +14,7 @@
 ## 의존성
 - `cmake`
 - `pkg-config`
+- `libgpiod-dev`
 - `wiringPi`
 - `libmosquitto-dev`
 - `libgstreamer1.0-dev`

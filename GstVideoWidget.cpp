@@ -36,13 +36,13 @@ QString buildStandardPipeline(const QString& url, int outWidth)
 QString buildRcTankPipeline(const QString& url, int outWidth)
 {
     const QString trimmed = url.trimmed();
-    if (trimmed.startsWith("udp://", Qt::CaseInsensitive)) {
+    if (trimmed.startsWith("udp://5000", Qt::CaseInsensitive)) {
         const QUrl parsed(trimmed);
         const int port = parsed.port(5000);
         return QString(
                    "udpsrc port=%1 caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000\" ! "
                    "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
-                   "rtpjitterbuffer latency=10 drop-on-latency=true ! "
+                   "rtpjitterbuffer la  tency=10 drop-on-latency=true ! "
                    "rtph264depay ! "
                    "h264parse ! "
                    "avdec_h264 ! "

@@ -282,10 +282,9 @@ void RobotStatusWindow::setRobotStatus(const MqttEvent& ev)
     if (m_poseYValue) m_poseYValue->setText(QString::number(ev.rcY, 'f', 1));
     if (m_poseHeadingValue) m_poseHeadingValue->setText(QString("%1 deg").arg(ev.rcHeading, 0, 'f', 0));
     if (m_targetValue) {
-        m_targetValue->setText(QString("%1, %2, %3")
-            .arg(ev.rcTargetX, 0, 'f', 1)
-            .arg(ev.rcTargetY, 0, 'f', 1)
-            .arg(ev.rcTargetZ, 0, 'f', 1));
+        m_targetValue->setText(QString("%1, %2")
+            .arg(ev.rcTargetX, 0, 'f', 2)
+            .arg(ev.rcTargetY, 0, 'f', 2));
     }
     if (m_speedValue) m_speedValue->setText(QString("%1 m/s").arg(ev.rcSpeed, 0, 'f', 2));
     if (m_batteryValue) m_batteryValue->setText(QString("%1 %").arg(ev.rcBattery, 0, 'f', 0));
@@ -301,7 +300,7 @@ void RobotStatusWindow::setRobotStatus(const MqttEvent& ev)
     if (m_motor1Value) m_motor1Value->setText(QString("%1 Nm").arg(torqueAt(0), 0, 'f', 0));
     if (m_motor2Value) m_motor2Value->setText(QString("%1 Nm").arg(torqueAt(1), 0, 'f', 0));
 
-    appendHistory(m_speedHistory, std::min(ev.rcSpeed * 25.0, 100.0));
+    appendHistory(m_speedHistory, (ev.rcSpeed / 250.0) * 100.0);
     appendHistory(m_batteryHistory, ev.rcBattery);
     appendHistory(m_taskHistory, std::min(static_cast<double>(ev.rcTaskDaily * 4), 100.0));
 
@@ -324,21 +323,24 @@ void RobotStatusWindow::changeEvent(QEvent* event)
 void RobotStatusWindow::updateSparkline(QFrame* host, const QVector<double>& values, const QColor& color)
 {
     if (!host) return;
-    if (host->layout()) {
-        QLayoutItem* child = nullptr;
-        while ((child = host->layout()->takeAt(0)) != nullptr) {
-            delete child->widget();
-            delete child;
-        }
-        delete host->layout();
+
+    auto* layout = qobject_cast<QVBoxLayout*>(host->layout());
+    if (!layout) {
+        layout = new QVBoxLayout(host);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
     }
 
-    auto* layout = new QVBoxLayout(host);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-    auto* chart = new SparklineWidget(color, host);
+    auto* chart = (layout->count() > 0)
+        ? static_cast<SparklineWidget*>(layout->itemAt(0)->widget())
+        : nullptr;
+
+    if (!chart) {
+        chart = new SparklineWidget(color, host);
+        layout->addWidget(chart);
+    }
+
     chart->setValues(values);
-    layout->addWidget(chart);
 }
 
 void RobotStatusWindow::appendHistory(QVector<double>& history, double value, int maxSize)

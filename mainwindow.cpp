@@ -3493,6 +3493,11 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
 {
     if (ev.hasRobotStatus) {
         m_lastRobotStatusEvent = ev;
+        if (m_hasTarget) {
+            m_lastRobotStatusEvent.rcTargetX = m_targetWorld.x();
+            m_lastRobotStatusEvent.rcTargetY = m_targetWorld.y();
+            m_lastRobotStatusEvent.rcTargetZ = 0.0;
+        }
         if (m_robotConnLabel) {
             m_robotConnLabel->setText(ev.rcConnected ? "ONLINE" : "OFFLINE");
             m_robotConnLabel->setProperty("robotConn", ev.rcConnected ? "online" : "offline");
@@ -3525,7 +3530,7 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
             m_robotLastSeenLabel->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
         }
         if (m_robotStatusWindow) {
-            m_robotStatusWindow->setRobotStatus(ev);
+            m_robotStatusWindow->setRobotStatus(m_lastRobotStatusEvent);
         }
         return;
     }
@@ -4243,6 +4248,9 @@ void MainWindow::onMiniMapWorldClicked(const QPointF& worldPos)
 
     m_targetWorld = worldPos;
     m_hasTarget = true;
+    m_lastRobotStatusEvent.rcTargetX = worldPos.x();
+    m_lastRobotStatusEvent.rcTargetY = worldPos.y();
+    m_lastRobotStatusEvent.rcTargetZ = 0.0;
     if (m_overlay) {
         m_overlay->setGoalMarkerVisible(m_patrolPointsEnabled);
         if (m_patrolPointsEnabled) m_overlay->setGoalMarker(worldPos);
@@ -4270,6 +4278,9 @@ void MainWindow::onMiniMapWorldClicked(const QPointF& worldPos)
         appendLog(QString("RC goal published: x=%1 y=%2")
                       .arg(worldPos.x(), 0, 'f', 3)
                       .arg(worldPos.y(), 0, 'f', 3));
+        if (m_robotStatusWindow) {
+            m_robotStatusWindow->setRobotStatus(m_lastRobotStatusEvent);
+        }
     } else {
         appendLog("RC goal publish failed");
     }

@@ -43,3 +43,4 @@ add_executable(auto_main
 )
 
 target_link_libraries(auto_main PRIVATE auto_core)
+set_target_properties(auto_main PROPERTIES OUTPUT_NAME main)

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <csignal>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 
 #include "rc_config.hpp"
@@ -19,30 +20,31 @@ void OnSignal(int) {
 } // namespace
 
 void PrintAutoUsage(const char* exe) {
-    std::cout
-        << "사용법: " << exe
-        << " [mqtt_host] [mqtt_port] [goal_topic] [pose_topic] [safety_topic] [status_topic] [ini_path]\n";
+    std::cout << "사용법: " << exe << "\n";
+    std::cout << "빌드 후 build 디렉터리에서 sudo ./main 으로 실행합니다.\n";
 }
 
 bool ParseAutoConfig(int argc, char** argv, RcAppConfig& config, std::string& error) {
-    try {
-        if (argc > 1) config.host = argv[1];
-        if (argc > 2) config.port = std::stoi(argv[2]);
-        if (argc > 3) config.topics.goal = argv[3];
-        if (argc > 4) config.topics.pose = argv[4];
-        if (argc > 5) config.topics.safety = argv[5];
-        if (argc > 6) config.topics.status = argv[6];
-        if (argc > 7) config.ini_path = argv[7];
-    } catch (const std::exception& ex) {
-        error = std::string("인자 파싱 실패: ") + ex.what();
-        return false;
-    }
-
-    if (config.port <= 0) {
-        error = "mqtt_port는 1 이상이어야 합니다.";
+    if (argc > 1) {
+        error = "CLI 인자는 사용하지 않습니다. config/rc_control.ini를 수정해서 실행하세요.";
         return false;
     }
     return true;
+}
+
+void ResolveAutoPaths(const char* exe, RcAppConfig& config) {
+    namespace fs = std::filesystem;
+
+    fs::path exe_path = fs::absolute(exe);
+    if (!exe_path.has_parent_path()) {
+        exe_path = fs::current_path() / exe_path;
+    }
+    const fs::path build_dir = exe_path.parent_path();
+    const fs::path repo_dir = build_dir.parent_path();
+
+    config.config_dir = repo_dir / "config";
+    config.ini_path = config.config_dir / "rc_control.ini";
+    config.template_ini_path = config.config_dir / "rc_control.template.ini";
 }
 
 int RunAutoApp(const RcAppConfig& config) {
@@ -50,7 +52,23 @@ int RunAutoApp(const RcAppConfig& config) {
     std::signal(SIGTERM, OnSignal);
 
     RcAppConfig runtime_config = config;
-    LoadRcParamsFromIni(runtime_config.ini_path, runtime_config);
+    bool created = false;
+    std::string ensure_error;
+    if (!EnsureRcLocalConfigExists(runtime_config.template_ini_path,
+                                   runtime_config.ini_path,
+                                   &created,
+                                   &ensure_error)) {
+        std::cerr << "[ERR] rc_control.ini 준비 실패: " << ensure_error << "\n";
+        return 1;
+    }
+
+    if (created) {
+        std::cout << "[INFO] 로컬 설정 파일 생성: " << runtime_config.ini_path << "\n";
+        std::cout << "[INFO] 값을 수정한 뒤 다시 sudo ./main 으로 실행하세요.\n";
+        return 0;
+    }
+
+    LoadRcParamsFromIni(runtime_config.ini_path.string(), runtime_config);
 
     RcControlNode node(runtime_config);
     if (!node.start()) {

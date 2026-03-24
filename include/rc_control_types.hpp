@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 
 struct RcGoal {
@@ -65,8 +66,10 @@ struct RcAppConfig {
     std::string host = "192.168.100.10";
     int port = 1883;
     RcTopics topics;
-    std::string ini_path = "config/rc_control.ini";
     int status_publish_interval_ms = 50;
+    std::filesystem::path config_dir = "config";
+    std::filesystem::path ini_path = "config/rc_control.ini";
+    std::filesystem::path template_ini_path = "config/rc_control.template.ini";
     RcControlParams control;
     RcMotorParams motor;
 };

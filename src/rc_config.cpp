@@ -1,5 +1,6 @@
 #include "rc_config.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -54,7 +55,21 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
         const std::string scoped_key = section.empty() ? key : section + "." + key;
 
         try {
-            if (scoped_key == "control.k_linear") {
+            if (scoped_key == "mqtt.host") {
+                config.host = value;
+            } else if (scoped_key == "mqtt.port") {
+                config.port = std::stoi(value);
+            } else if (scoped_key == "mqtt.goal_topic") {
+                config.topics.goal = value;
+            } else if (scoped_key == "mqtt.pose_topic") {
+                config.topics.pose = value;
+            } else if (scoped_key == "mqtt.safety_topic") {
+                config.topics.safety = value;
+            } else if (scoped_key == "mqtt.status_topic") {
+                config.topics.status = value;
+            } else if (scoped_key == "mqtt.status_publish_interval_ms") {
+                config.status_publish_interval_ms = std::stoi(value);
+            } else if (scoped_key == "control.k_linear") {
                 config.control.k_linear = std::stod(value);
             } else if (scoped_key == "control.k_yaw") {
                 config.control.k_yaw = std::stod(value);
@@ -103,6 +118,12 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
     }
 
     std::cout << "[OK] loaded ini params from " << ini_path
+              << " | mqtt=(" << config.host << ":" << config.port
+              << ", " << config.topics.goal
+              << ", " << config.topics.pose
+              << ", " << config.topics.safety
+              << ", " << config.topics.status
+              << ", " << config.status_publish_interval_ms << "ms)"
               << " | control=(" << config.control.k_linear << ", " << config.control.k_yaw << ", "
               << config.control.max_speed_mps << ", " << config.control.max_yaw_rate_rps << ", "
               << config.control.tolerance_m << ")"
@@ -110,4 +131,42 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
               << ", " << config.motor.speed_deadband_mps << ", " << config.motor.pwm_min_effective
               << ", " << config.motor.pwm_max << ")\n";
     return true;
+}
+
+bool EnsureRcLocalConfigExists(const std::filesystem::path& template_path,
+                               const std::filesystem::path& local_path,
+                               bool* created,
+                               std::string* error) {
+    if (created) {
+        *created = false;
+    }
+
+    try {
+        if (std::filesystem::exists(local_path)) {
+            return true;
+        }
+
+        std::filesystem::create_directories(local_path.parent_path());
+        if (std::filesystem::exists(template_path)) {
+            std::filesystem::copy_file(
+                template_path,
+                local_path,
+                std::filesystem::copy_options::overwrite_existing);
+        } else {
+            if (error) {
+                *error = "template ini not found: " + template_path.string();
+            }
+            return false;
+        }
+
+        if (created) {
+            *created = true;
+        }
+        return true;
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = ex.what();
+        }
+        return false;
+    }
 }

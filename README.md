@@ -4,24 +4,27 @@
 
 ## 실행 파일 구성
 
-- `auto_main`
+- `main`
   - MQTT 연결
   - goal / pose / safety 구독
   - 제어 루프 실행
   - `wiserisk/rc/status` 발행
+- `config/rc_control.template.ini`
+  - 추적되는 템플릿 설정 파일
 - `config/rc_control.ini`
-  - 제어 gain, 모터 파라미터 설정
+  - 첫 실행 때 템플릿에서 복사되어 생성되는 로컬 설정 파일
+  - git에는 올라가지 않음
 
 ## 내부 모듈 구조
 
 - `auto_main.cpp`
   - 얇은 엔트리 포인트
 - `src/auto_app.cpp`
-  - 인자 파싱, 시그널 처리, 실행 orchestration
+  - 고정 경로 설정, 시그널 처리, 실행 orchestration
 - `src/rc_control_node.cpp`
   - MQTT 콜백, 상태기, 제어 루프
 - `src/rc_config.cpp`
-  - `rc_control.ini` 파싱
+  - `rc_control.ini` 생성 보조 및 파싱
 - `src/rc_json_utils.cpp`
   - goal / pose / safety payload 파싱
 - `src/rc_motor_driver.cpp`
@@ -57,6 +60,13 @@
 
 meter 기반 키를 우선 사용합니다.
 
+- `mqtt.host`
+- `mqtt.port`
+- `mqtt.goal_topic`
+- `mqtt.pose_topic`
+- `mqtt.safety_topic`
+- `mqtt.status_topic`
+- `mqtt.status_publish_interval_ms`
 - `control.max_speed_mps`
 - `control.tolerance_m`
 - `motor.track_width_m`
@@ -75,32 +85,25 @@ meter 기반 키를 우선 사용합니다.
 - 선택: `wiringPi`
 
 ```bash
-cmake -S . -B build
-cmake --build build --target auto_main -j$(nproc)
+mkdir -p build
+cd build
+cmake ..
+make -j
 ```
 
 ## 실행
 
 ```bash
-./build/auto_main \
-  192.168.100.10 \
-  1883 \
-  wiserisk/rc/goal \
-  wiserisk/p1/pose \
-  wiserisk/rc/safety \
-  wiserisk/rc/status \
-  ./config/rc_control.ini
+sudo ./main
 ```
 
-인자 순서:
+동작 방식:
 
-1. `mqtt_host`
-2. `mqtt_port`
-3. `goal_topic`
-4. `pose_topic`
-5. `safety_topic`
-6. `status_topic`
-7. `ini_path`
+1. `build/main`은 자동으로 상위 디렉터리의 `config/rc_control.ini`를 찾습니다.
+2. 파일이 없으면 `config/rc_control.template.ini`를 복사해서 `config/rc_control.ini`를 만들고 종료합니다.
+3. 사용자는 `config/rc_control.ini`만 수정한 뒤 다시 `sudo ./main`으로 실행하면 됩니다.
+
+즉 실행 인자는 사용하지 않습니다.
 
 ## 빠른 확인
 

@@ -20,8 +20,6 @@
 #include "stream_config.hpp"
 #include "tank_drive.hpp"
 #include "vr_remote_input.hpp"
-#include "vr_ui_command_bridge.hpp"
-#include "web_rtc_stream.hpp"
 
 #ifndef TANK_SOURCE_DIR
 #define TANK_SOURCE_DIR "."
@@ -206,20 +204,8 @@ int main(int argc, char* argv[]) {
 
     bool vr_input_enabled = true;
     VrRemoteInputConfig vr_input_cfg;
-    VrUiCommandBridge vr_ui_command_bridge;
     bool status_publish_enabled = true;
     RcStatusPublisher::Config status_cfg;
-
-    vr_input_cfg.ui_action_callback = [&](VrUiAction action) {
-        switch (action) {
-        case VrUiAction::kSessionButton:
-            vr_ui_command_bridge.handle_session_button();
-            break;
-        case VrUiAction::kZeroCalibrate:
-            vr_ui_command_bridge.request_zero_calibrate();
-            break;
-        }
-    };
 
     const ParseResult parse_result = parse_args(argc, argv, mqtt_cfg, rtsp_cfg, http_cfg, ptz_cfg,
                                                 vr_input_enabled, vr_input_cfg,
@@ -243,23 +229,12 @@ int main(int argc, char* argv[]) {
     FrameJpegCache frame_cache;
     CameraCapture camera_capture;
     RtspStreamServer rtsp_server;
-    WebRtcStreamServer web_rtc_server;
     HttpVrServer http_server;
     std::thread vr_input_thread;
     bool vr_input_thread_started = false;
     std::unique_ptr<RcStatusPublisher> status_publisher;
     std::thread status_publish_thread;
     bool status_publish_thread_started = false;
-
-    WebRtcConfig web_rtc_cfg{
-        true,
-        stream_config::DEFAULT_WIDTH,
-        stream_config::DEFAULT_HEIGHT,
-        stream_config::DEFAULT_FPS,
-        1200000,
-    };
-
-    web_rtc_server.start(web_rtc_cfg);
 
     if (rtsp_cfg.enable) {
         if (!rtsp_server.start(rtsp_cfg)) {
@@ -273,8 +248,7 @@ int main(int argc, char* argv[]) {
     if (rtsp_cfg.enable || http_cfg.enable) {
         if (!camera_capture.start(g_running,
                                   rtsp_cfg.enable ? &rtsp_server : nullptr,
-                                  http_cfg.enable ? &frame_cache : nullptr,
-                                  http_cfg.enable ? &web_rtc_server : nullptr)) {
+                                  http_cfg.enable ? &frame_cache : nullptr)) {
             rtsp_server.stop();
             ptz_controller.stop();
             tank_drive::shutdown();
@@ -284,15 +258,9 @@ int main(int argc, char* argv[]) {
     }
 
     if (http_cfg.enable) {
-        if (!http_server.start(http_cfg,
-                               g_running,
-                               frame_cache,
-                               ptz_controller,
-                               web_rtc_server,
-                               vr_ui_command_bridge)) {
+        if (!http_server.start(http_cfg, g_running, frame_cache, ptz_controller)) {
             camera_capture.stop();
             rtsp_server.stop();
-            web_rtc_server.stop();
             ptz_controller.stop();
             tank_drive::shutdown();
             mosquitto_lib_cleanup();
@@ -369,7 +337,6 @@ int main(int argc, char* argv[]) {
         camera_capture.stop();
     }
     rtsp_server.stop();
-    web_rtc_server.stop();
     ptz_controller.stop();
     tank_drive::shutdown();
     mosquitto_lib_cleanup();

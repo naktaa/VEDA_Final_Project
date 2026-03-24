@@ -16,14 +16,12 @@
 #include "frame_jpeg_cache.hpp"
 #include "rtsp_stream.hpp"
 #include "stream_config.hpp"
-#include "web_rtc_stream.hpp"
 
 struct CameraCapture::Impl {
     std::atomic<bool>* app_running = nullptr;
     std::atomic<bool> running{false};
     RtspStreamServer* rtsp_server = nullptr;
     FrameJpegCache* frame_cache = nullptr;
-    WebRtcStreamServer* web_rtc_server = nullptr;
 
     GstElement* pipeline = nullptr;
     GstElement* sink = nullptr;
@@ -86,9 +84,6 @@ struct CameraCapture::Impl {
         if (rtsp_server) {
             rtsp_server->push_bgr_frame(data, bytes);
         }
-        if (web_rtc_server && web_rtc_server->has_active_session()) {
-            web_rtc_server->push_bgr_frame(data, bytes, width, height);
-        }
         if (frame_cache && frame_cache->has_consumers()) {
             frame_cache->update_bgr_frame(data, bytes, width, height);
         }
@@ -120,10 +115,9 @@ CameraCapture::~CameraCapture() {
 
 bool CameraCapture::start(std::atomic<bool>& app_running,
                           RtspStreamServer* rtsp_server,
-                          FrameJpegCache* frame_cache,
-                          WebRtcStreamServer* web_rtc_server) {
+                          FrameJpegCache* frame_cache) {
     if (impl_) return true;
-    if (!rtsp_server && !frame_cache && !web_rtc_server) return true;
+    if (!rtsp_server && !frame_cache) return true;
 
     if (!gst_is_initialized()) {
         gst_init(nullptr, nullptr);
@@ -133,7 +127,6 @@ bool CameraCapture::start(std::atomic<bool>& app_running,
     impl->app_running = &app_running;
     impl->rtsp_server = rtsp_server;
     impl->frame_cache = frame_cache;
-    impl->web_rtc_server = web_rtc_server;
 
     if (!impl->init_capture_pipeline()) {
         impl->use_synthetic = true;

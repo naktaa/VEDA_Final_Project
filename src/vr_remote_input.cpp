@@ -20,7 +20,6 @@ using Clock = std::chrono::steady_clock;
 
 constexpr int kDefaultSpeed = 200;
 constexpr int kPollTimeoutMs = 10;
-constexpr int kUiButtonDebounceMs = 350;
 
 int clamp_speed(int value) {
     return std::max(0, std::min(255, value));
@@ -52,18 +51,8 @@ const char* key_code_name(unsigned short code) {
     switch (code) {
     case BTN_LEFT:
         return "BTN_LEFT";
-    case BTN_RIGHT:
-        return "BTN_RIGHT";
-    case BTN_MIDDLE:
-        return "BTN_MIDDLE";
     case BTN_SIDE:
         return "BTN_SIDE";
-    case BTN_EXTRA:
-        return "BTN_EXTRA";
-    case BTN_FORWARD:
-        return "BTN_FORWARD";
-    case BTN_BACK:
-        return "BTN_BACK";
     case KEY_VOLUMEUP:
         return "KEY_VOLUMEUP";
     case KEY_VOLUMEDOWN:
@@ -71,14 +60,6 @@ const char* key_code_name(unsigned short code) {
     default:
         return "KEY_UNKNOWN";
     }
-}
-
-bool is_session_button(unsigned short code) {
-    return code == BTN_SIDE || code == BTN_FORWARD || code == BTN_BACK;
-}
-
-bool is_zero_button(unsigned short code) {
-    return code == BTN_LEFT || code == BTN_EXTRA || code == BTN_RIGHT || code == BTN_MIDDLE;
 }
 
 class VrTankDispatcher {
@@ -119,18 +100,6 @@ public:
     }
 
 private:
-    void dispatch_ui_action(VrUiAction action, const char* action_name) {
-        if (!config_.ui_action_callback) {
-            fprintf(stderr, "[VR] ui action ignored: %s (no callback)\n", action_name);
-            fflush(stderr);
-            return;
-        }
-
-        fprintf(stderr, "[VR] ui action -> %s\n", action_name);
-        fflush(stderr);
-        config_.ui_action_callback(action);
-    }
-
     void handle_rel(const input_event& ev) {
         if (ev.code == REL_Y && ev.value != 0) {
             if (ev.value < 0) {
@@ -151,28 +120,19 @@ private:
     }
 
     void handle_key(const input_event& ev) {
-        if (ev.value == 0 || ev.value == 1) {
-            fprintf(stderr, "[VR] EV_KEY %s value=%d\n", key_code_name(ev.code), ev.value);
-            fflush(stderr);
-        }
-
-        if (is_zero_button(ev.code) && ev.value == 1) {
+        if (ev.code == BTN_LEFT && ev.value == 1) {
             update_last_input();
-            if (!should_accept_ui_button(last_zero_button_at_)) {
-                return;
-            }
-            dispatch_ui_action(VrUiAction::kZeroCalibrate, "zero_calibrate");
+            fprintf(stderr, "[VR] EV_KEY %s value=%d -> stop\n", key_code_name(ev.code), ev.value);
+            fflush(stderr);
+            stop_drive("btn_left");
             return;
         }
 
-        if (is_session_button(ev.code) && (ev.value == 0 || ev.value == 1)) {
+        if (ev.code == BTN_SIDE && (ev.value == 0 || ev.value == 1)) {
             update_last_input();
-            if (ev.value == 1) {
-                if (!should_accept_ui_button(last_session_button_at_)) {
-                    return;
-                }
-                dispatch_ui_action(VrUiAction::kSessionButton, "session_button");
-            }
+            fprintf(stderr, "[VR] EV_KEY %s value=%d\n", key_code_name(ev.code), ev.value);
+            fflush(stderr);
+            handle_side_button(ev.value == 1);
             return;
         }
 
@@ -192,10 +152,39 @@ private:
         }
     }
 
+    void handle_side_button(bool pressed) {
+        switch (config_.side_button_action) {
+        case SideButtonAction::kEstop:
+            if (pressed) {
+                estop_active_ = true;
+                fprintf(stderr, "[VR] side button -> estop active\n");
+                fflush(stderr);
+                stop_drive("estop");
+            } else {
+                estop_active_ = false;
+                fprintf(stderr, "[VR] side button -> estop released\n");
+                fflush(stderr);
+            }
+            return;
+        case SideButtonAction::kModeToggle:
+            if (pressed) {
+                fprintf(stderr, "[VR] side button mode toggle is not enabled in this build\n");
+                fflush(stderr);
+            }
+            return;
+        }
+    }
+
     void drive_command(int left_cmd, int right_cmd, const input_event& ev, const char* action) {
         update_last_input();
         fprintf(stderr, "[VR] EV_REL %s value=%d -> %s\n", rel_code_name(ev.code), ev.value, action);
         fflush(stderr);
+
+        if (estop_active_) {
+            fprintf(stderr, "[VR] ignored while estop is active\n");
+            fflush(stderr);
+            return;
+        }
 
         left_cmd_ = normalize_cmd(left_cmd);
         right_cmd_ = normalize_cmd(right_cmd);
@@ -245,17 +234,6 @@ private:
         last_input_ = Clock::now();
     }
 
-    bool should_accept_ui_button(Clock::time_point& last_pressed_at) {
-        const auto now = Clock::now();
-        const auto elapsed_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_pressed_at).count();
-        if (last_pressed_at.time_since_epoch().count() != 0 && elapsed_ms < kUiButtonDebounceMs) {
-            return false;
-        }
-        last_pressed_at = now;
-        return true;
-    }
-
     static int normalize_cmd(int value) {
         return (value > 0) ? 1 : (value < 0 ? -1 : 0);
     }
@@ -264,9 +242,8 @@ private:
     int current_speed_ = kDefaultSpeed;
     int left_cmd_ = 0;
     int right_cmd_ = 0;
+    bool estop_active_ = false;
     Clock::time_point last_input_;
-    Clock::time_point last_session_button_at_{};
-    Clock::time_point last_zero_button_at_{};
 };
 
 bool read_events(int fd, VrTankDispatcher& dispatcher) {
@@ -312,7 +289,7 @@ bool run_vr_remote_input_loop(const VrRemoteInputConfig& config, std::atomic<boo
     }
 
     fprintf(stderr,
-            "[VR] input=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s ui_buttons=session(BTN_SIDE/BTN_FORWARD/BTN_BACK),zero(BTN_LEFT/BTN_EXTRA/BTN_RIGHT/BTN_MIDDLE)\n",
+            "[VR] input=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s\n",
             config.input_device.c_str(),
             config.log_only ? "log-only" : "drive",
             config.idle_stop_ms,

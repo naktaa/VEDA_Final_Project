@@ -16,8 +16,6 @@
 
 #include "frame_jpeg_cache.hpp"
 #include "ptz_control.hpp"
-#include "vr_ui_command_bridge.hpp"
-#include "web_rtc_stream.hpp"
 
 namespace {
 
@@ -73,8 +71,6 @@ struct HttpVrServer::Impl {
     std::atomic<bool>* app_running = nullptr;
     FrameJpegCache* frame_cache = nullptr;
     PtzController* ptz = nullptr;
-    WebRtcStreamServer* web_rtc = nullptr;
-    VrUiCommandBridge* vr_ui_command_bridge = nullptr;
     std::unique_ptr<httplib::Server> server;
     std::thread server_thread;
     std::atomic<bool> listen_finished{false};
@@ -88,9 +84,7 @@ HttpVrServer::~HttpVrServer() {
 bool HttpVrServer::start(const HttpVrConfig& cfg,
                          std::atomic<bool>& app_running,
                          FrameJpegCache& frame_cache,
-                         PtzController& ptz_controller,
-                         WebRtcStreamServer& web_rtc_server,
-                         VrUiCommandBridge& vr_ui_command_bridge) {
+                         PtzController& ptz_controller) {
     if (impl_) {
         return true;
     }
@@ -100,8 +94,6 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     impl->app_running = &app_running;
     impl->frame_cache = &frame_cache;
     impl->ptz = &ptz_controller;
-    impl->web_rtc = &web_rtc_server;
-    impl->vr_ui_command_bridge = &vr_ui_command_bridge;
     impl->server = std::make_unique<httplib::Server>();
 
     impl->server->Get("/health", [](const httplib::Request&, httplib::Response& res) {
@@ -173,114 +165,6 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
                                       payload.value("t", static_cast<uint64_t>(0)));
             }
             res.status = 204;
-        } catch (const std::exception& exc) {
-            res.status = 400;
-            res.set_content(std::string("bad json: ") + exc.what(),
-                            "text/plain; charset=utf-8");
-        }
-    });
-
-    impl->server->Post("/ptz/zero", [impl](const httplib::Request& req, httplib::Response& res) {
-        try {
-            const json payload = json::parse(req.body);
-            const float pitch = payload.value("pitch", 0.0f);
-            const float roll = payload.value("roll", 0.0f);
-            const float yaw = payload.value("yaw", 0.0f);
-            if (!impl->ptz->zero_calibrate(pitch, roll, yaw)) {
-                res.status = 500;
-                res.set_content("ptz zero calibration failed", "text/plain; charset=utf-8");
-                return;
-            }
-
-            json body = {
-                {"ok", true},
-                {"pitch", pitch},
-                {"roll", roll},
-                {"yaw", yaw},
-            };
-            res.set_content(body.dump(), "application/json");
-        } catch (const std::exception& exc) {
-            res.status = 400;
-            res.set_content(std::string("bad json: ") + exc.what(),
-                            "text/plain; charset=utf-8");
-        }
-    });
-
-    impl->server->Get("/webrtc/status", [impl](const httplib::Request&, httplib::Response& res) {
-        json body = {
-            {"ok", true},
-            {"active", impl->web_rtc->has_active_session()},
-        };
-        res.set_content(body.dump(), "application/json");
-    });
-
-    impl->server->Post("/webrtc/session", [impl](const httplib::Request& req, httplib::Response& res) {
-        try {
-            const json payload = json::parse(req.body);
-            const std::string type = payload.value("type", "");
-            const std::string sdp = payload.value("sdp", "");
-            if (type != "offer" || sdp.empty()) {
-                res.status = 400;
-                res.set_content("invalid offer payload", "text/plain; charset=utf-8");
-                return;
-            }
-
-            std::string answer_sdp;
-            std::string error;
-            if (!impl->web_rtc->create_session(sdp, answer_sdp, error)) {
-                res.status = 500;
-                res.set_content(error.empty() ? "webrtc session failed" : error,
-                                "text/plain; charset=utf-8");
-                return;
-            }
-
-            json body = {
-                {"ok", true},
-                {"type", "answer"},
-                {"sdp", answer_sdp},
-            };
-            res.set_content(body.dump(), "application/json");
-        } catch (const std::exception& exc) {
-            res.status = 400;
-            res.set_content(std::string("bad json: ") + exc.what(),
-                            "text/plain; charset=utf-8");
-        }
-    });
-
-    impl->server->Post("/webrtc/stop", [impl](const httplib::Request&, httplib::Response& res) {
-        impl->web_rtc->close_session();
-        json body = {
-            {"ok", true},
-            {"active", false},
-        };
-        res.set_content(body.dump(), "application/json");
-    });
-
-    impl->server->Get("/vr/ui-commands", [impl](const httplib::Request&, httplib::Response& res) {
-        const VrUiCommandSnapshot snapshot = impl->vr_ui_command_bridge->snapshot();
-        json body = {
-            {"ok", true},
-            {"session_start_seq", snapshot.session_start_seq},
-            {"session_stop_seq", snapshot.session_stop_seq},
-            {"zero_calibrate_seq", snapshot.zero_calibrate_seq},
-            {"session_active", snapshot.session_active},
-            {"vr_mode_active", snapshot.vr_mode_active},
-        };
-        res.set_content(body.dump(), "application/json");
-    });
-
-    impl->server->Post("/vr/session-state", [impl](const httplib::Request& req, httplib::Response& res) {
-        try {
-            const json payload = json::parse(req.body);
-            const bool active = payload.value("active", false);
-            const bool vr_mode_active = payload.value("vr_mode_active", false);
-            impl->vr_ui_command_bridge->set_state(active, vr_mode_active);
-            json body = {
-                {"ok", true},
-                {"active", active},
-                {"vr_mode_active", vr_mode_active},
-            };
-            res.set_content(body.dump(), "application/json");
         } catch (const std::exception& exc) {
             res.status = 400;
             res.set_content(std::string("bad json: ") + exc.what(),

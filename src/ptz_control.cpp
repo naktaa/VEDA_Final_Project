@@ -40,10 +40,6 @@ constexpr float kRollMaxDeltaPerSampleDeg = 20.0f;
 constexpr float kRejectPitchDeltaDeg = 85.0f;
 constexpr float kRejectRollDeltaDeg = 85.0f;
 constexpr float kRejectYawDeltaDeg = 120.0f;
-constexpr float kOrientationFlipPitchDeg = 150.0f;
-constexpr float kOrientationFlipRollDeg = 150.0f;
-constexpr float kOrientationFlipYawDeg = 150.0f;
-constexpr int kOrientationFreezeMs = 300;
 
 float clampf(float value, float lo, float hi) {
     return std::max(lo, std::min(value, hi));
@@ -249,18 +245,9 @@ struct PtzController::Impl {
     float last_raw_pitch = 0.0f;
     float last_raw_roll = 0.0f;
     bool pitch_roll_initialized = false;
-    float last_reject_pitch = 0.0f;
-    float last_reject_roll = 0.0f;
-    float last_reject_yaw = 0.0f;
-    bool reject_reference_initialized = false;
-    int imu_warmup_samples_remaining = 0;
     float last_pitch = 0.0f;
     float last_roll = 0.0f;
     float last_yaw = 0.0f;
-    float zero_pitch = 0.0f;
-    float zero_roll = 0.0f;
-    float zero_yaw = 0.0f;
-    bool zero_initialized = false;
     uint64_t last_client_timestamp_ms = 0;
     float current_pan = 90.0f;
     float current_tilt = 90.0f;
@@ -273,7 +260,6 @@ struct PtzController::Impl {
     PtzMode mode = PtzMode::kManual;
     std::string active_source = "hold";
     std::chrono::steady_clock::time_point last_imu_arrival{};
-    std::chrono::steady_clock::time_point imu_freeze_until{};
 
     void run() {
         float current_pan_local = config.pan_center_deg;
@@ -292,17 +278,11 @@ struct PtzController::Impl {
                     last_imu_arrival.time_since_epoch().count() != 0 &&
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - last_imu_arrival).count() <=
                         config.imu_timeout_ms;
-                const bool imu_frozen =
-                    imu_freeze_until.time_since_epoch().count() != 0 && now < imu_freeze_until;
 
-                if (mode == PtzMode::kVr && imu_recent && !imu_frozen) {
+                if (mode == PtzMode::kVr && imu_recent) {
                     desired_pan = imu_target_pan;
                     desired_tilt = imu_target_tilt;
                     source = "imu";
-                } else if (mode == PtzMode::kVr && imu_recent && imu_frozen) {
-                    desired_pan = current_pan_local;
-                    desired_tilt = current_tilt_local;
-                    source = "imu-freeze";
                 } else if (mode == PtzMode::kVr && !imu_recent) {
                     mode = PtzMode::kManual;
                     source = "manual";
@@ -440,14 +420,8 @@ bool PtzController::set_mode(PtzMode mode) {
         impl_->last_raw_pitch = 0.0f;
         impl_->last_raw_roll = 0.0f;
         impl_->pitch_roll_initialized = false;
-        impl_->last_reject_pitch = 0.0f;
-        impl_->last_reject_roll = 0.0f;
-        impl_->last_reject_yaw = 0.0f;
-        impl_->reject_reference_initialized = false;
-        impl_->imu_warmup_samples_remaining = 0;
         impl_->imu_target_pan = impl_->current_pan;
         impl_->imu_target_tilt = impl_->current_tilt;
-        impl_->imu_freeze_until = {};
     } else {
         impl_->last_imu_arrival = std::chrono::steady_clock::now();
         impl_->filtered_pitch = 0.0f;
@@ -459,12 +433,6 @@ bool PtzController::set_mode(PtzMode mode) {
         impl_->last_raw_pitch = 0.0f;
         impl_->last_raw_roll = 0.0f;
         impl_->pitch_roll_initialized = false;
-        impl_->last_reject_pitch = 0.0f;
-        impl_->last_reject_roll = 0.0f;
-        impl_->last_reject_yaw = 0.0f;
-        impl_->reject_reference_initialized = false;
-        impl_->imu_warmup_samples_remaining = 8;
-        impl_->imu_freeze_until = {};
     }
     std::fprintf(stderr, "[PTZ] mode -> %s\n", mode_to_cstr(mode));
     return true;
@@ -477,44 +445,6 @@ PtzMode PtzController::mode() const {
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->mode;
-}
-
-bool PtzController::zero_calibrate(float pitch, float roll, float yaw) {
-    if (!impl_) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->zero_pitch = pitch;
-    impl_->zero_roll = roll;
-    impl_->zero_yaw = yaw;
-    impl_->zero_initialized = true;
-
-    impl_->filtered_pitch = 0.0f;
-    impl_->filtered_roll = 0.0f;
-    impl_->filtered_yaw = 0.0f;
-    impl_->yaw_unwrapped = 0.0f;
-    impl_->last_raw_yaw = 0.0f;
-    impl_->yaw_initialized = false;
-    impl_->last_raw_pitch = 0.0f;
-    impl_->last_raw_roll = 0.0f;
-    impl_->pitch_roll_initialized = false;
-    impl_->last_reject_pitch = 0.0f;
-    impl_->last_reject_roll = 0.0f;
-    impl_->last_reject_yaw = 0.0f;
-    impl_->reject_reference_initialized = false;
-    impl_->imu_warmup_samples_remaining = 8;
-    impl_->imu_target_pan = impl_->current_pan;
-    impl_->imu_target_tilt = impl_->current_tilt;
-    impl_->last_imu_arrival = std::chrono::steady_clock::now();
-    impl_->imu_freeze_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(kOrientationFreezeMs);
-
-    std::fprintf(stderr,
-                 "[PTZ] zero calibrated pitch=%.2f roll=%.2f yaw=%.2f\n",
-                 pitch,
-                 roll,
-                 yaw);
-    return true;
 }
 
 void PtzController::handle_mqtt_command(const std::string& command, bool active) {
@@ -546,73 +476,23 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     if (impl_->mode != PtzMode::kVr) {
         return;
     }
-
-    const float centered_pitch =
-        impl_->zero_initialized ? wrap_angle_180(pitch - impl_->zero_pitch) : pitch;
-    const float centered_roll =
-        impl_->zero_initialized ? wrap_angle_180(roll - impl_->zero_roll) : roll;
-    const float centered_yaw =
-        impl_->zero_initialized ? wrap_angle_180(yaw - impl_->zero_yaw) : yaw;
-
-    const auto now = std::chrono::steady_clock::now();
-
-    if (impl_->imu_warmup_samples_remaining > 0) {
-        impl_->imu_warmup_samples_remaining -= 1;
-    } else if (impl_->reject_reference_initialized) {
-        const float pitch_jump = std::fabs(wrap_angle_180(centered_pitch - impl_->last_reject_pitch));
-        const float roll_jump = std::fabs(wrap_angle_180(centered_roll - impl_->last_reject_roll));
-        const float yaw_jump = std::fabs(wrap_angle_180(centered_yaw - impl_->last_reject_yaw));
+    if (impl_->pitch_roll_initialized && impl_->yaw_initialized) {
+        const float pitch_jump = std::fabs(wrap_angle_180(pitch - impl_->last_raw_pitch));
+        const float roll_jump = std::fabs(wrap_angle_180(roll - impl_->last_raw_roll));
+        const float yaw_jump = std::fabs(wrap_angle_180(yaw - impl_->last_raw_yaw));
         if (pitch_jump > kRejectPitchDeltaDeg ||
             roll_jump > kRejectRollDeltaDeg ||
             yaw_jump > kRejectYawDeltaDeg) {
-            impl_->last_imu_arrival = now;
-            const bool likely_orientation_flip =
-                pitch_jump >= kOrientationFlipPitchDeg &&
-                roll_jump >= kOrientationFlipRollDeg &&
-                yaw_jump >= kOrientationFlipYawDeg;
-            if (likely_orientation_flip) {
-                impl_->last_reject_pitch = centered_pitch;
-                impl_->last_reject_roll = centered_roll;
-                impl_->last_reject_yaw = centered_yaw;
-                impl_->last_raw_pitch = centered_pitch;
-                impl_->last_raw_roll = centered_roll;
-                impl_->last_raw_yaw = centered_yaw;
-                impl_->filtered_pitch = centered_roll;
-                impl_->filtered_roll = centered_pitch;
-                impl_->filtered_yaw = centered_yaw;
-                impl_->yaw_unwrapped = centered_yaw;
-                impl_->yaw_initialized = true;
-                impl_->pitch_roll_initialized = true;
-                impl_->imu_target_pan = impl_->current_pan;
-                impl_->imu_target_tilt = impl_->current_tilt;
-                impl_->imu_freeze_until = now + std::chrono::milliseconds(kOrientationFreezeMs);
-                std::fprintf(stderr,
-                             "[PTZ] IMU orientation frame reset pitch=%.1f roll=%.1f yaw=%.1f freeze=%dms\n",
-                             centered_pitch,
-                             centered_roll,
-                             centered_yaw,
-                             kOrientationFreezeMs);
-                return;
-            } else {
-                std::fprintf(stderr,
-                             "[PTZ] IMU sample rejected pitch_jump=%.1f roll_jump=%.1f yaw_jump=%.1f\n",
-                             pitch_jump,
-                             roll_jump,
-                             yaw_jump);
-                return;
-            }
+            return;
         }
     }
-    impl_->last_reject_pitch = centered_pitch;
-    impl_->last_reject_roll = centered_roll;
-    impl_->last_reject_yaw = centered_yaw;
-    impl_->reject_reference_initialized = true;
 
     impl_->last_pitch = pitch;
     impl_->last_roll = roll;
     impl_->last_yaw = yaw;
     impl_->last_client_timestamp_ms = client_timestamp_ms;
 
+    const auto now = std::chrono::steady_clock::now();
     float imu_dt_sec = kDefaultImuDtSec;
     if (impl_->last_imu_arrival.time_since_epoch().count() != 0) {
         imu_dt_sec =
@@ -622,28 +502,28 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     const float yaw_alpha = imu_dt_sec / (kYawFilterTauSec + imu_dt_sec);
 
     if (!impl_->yaw_initialized) {
-        impl_->last_raw_yaw = centered_yaw;
-        impl_->yaw_unwrapped = centered_yaw;
-        impl_->filtered_yaw = centered_yaw;
+        impl_->last_raw_yaw = yaw;
+        impl_->yaw_unwrapped = yaw;
+        impl_->filtered_yaw = yaw;
         impl_->yaw_initialized = true;
     } else {
-        const float raw_delta = wrap_angle_180(centered_yaw - impl_->last_raw_yaw);
+        const float raw_delta = wrap_angle_180(yaw - impl_->last_raw_yaw);
         const float guarded_delta =
             clampf(raw_delta, -kYawMaxDeltaPerSampleDeg, kYawMaxDeltaPerSampleDeg);
         impl_->yaw_unwrapped += guarded_delta;
-        impl_->last_raw_yaw = centered_yaw;
+        impl_->last_raw_yaw = yaw;
         impl_->filtered_yaw += yaw_alpha * (impl_->yaw_unwrapped - impl_->filtered_yaw);
     }
 
-    float guarded_pitch = centered_pitch;
-    float guarded_roll = centered_roll;
+    float guarded_pitch = pitch;
+    float guarded_roll = roll;
     if (!impl_->pitch_roll_initialized) {
-        impl_->last_raw_pitch = centered_pitch;
-        impl_->last_raw_roll = centered_roll;
+        impl_->last_raw_pitch = pitch;
+        impl_->last_raw_roll = roll;
         impl_->pitch_roll_initialized = true;
     } else {
-        guarded_pitch = guard_delta(centered_pitch, impl_->last_raw_pitch, kPitchMaxDeltaPerSampleDeg);
-        guarded_roll = guard_delta(centered_roll, impl_->last_raw_roll, kRollMaxDeltaPerSampleDeg);
+        guarded_pitch = guard_delta(pitch, impl_->last_raw_pitch, kPitchMaxDeltaPerSampleDeg);
+        guarded_roll = guard_delta(roll, impl_->last_raw_roll, kRollMaxDeltaPerSampleDeg);
         impl_->last_raw_pitch = guarded_pitch;
         impl_->last_raw_roll = guarded_roll;
     }

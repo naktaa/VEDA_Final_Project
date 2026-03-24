@@ -10,33 +10,32 @@ find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MOSQ REQUIRED libmosquitto)
 
-add_executable(p1_tracker
-    p1_tracker.cpp
+add_library(server_core
+    src/server_app.cpp
+    src/server_utils.cpp
+    src/homography_publisher.cpp
+    src/pose_tracker.cpp
 )
 
-target_include_directories(p1_tracker PRIVATE
+target_include_directories(server_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${OpenCV_INCLUDE_DIRS}
     ${MOSQ_INCLUDE_DIRS}
 )
 
-target_link_libraries(p1_tracker PRIVATE
+target_compile_options(server_core PRIVATE ${MOSQ_CFLAGS_OTHER})
+target_link_directories(server_core PRIVATE ${MOSQ_LIBRARY_DIRS})
+
+target_link_libraries(server_core PUBLIC
     ${OpenCV_LIBS}
     ${MOSQ_LIBRARIES}
 )
 
-add_executable(homography_mqtt_pub
-    calib_file/homography_mqtt_pub.cpp
+add_executable(server_main
+    server_main.cpp
 )
 
-target_include_directories(homography_mqtt_pub PRIVATE
-    ${OpenCV_INCLUDE_DIRS}
-    ${MOSQ_INCLUDE_DIRS}
-)
-
-target_link_libraries(homography_mqtt_pub PRIVATE
-    ${OpenCV_LIBS}
-    ${MOSQ_LIBRARIES}
-)
+target_link_libraries(server_main PRIVATE server_core)
 
 add_executable(calib_aruco_homography
     calib_file/calib_aruco_homography.cpp

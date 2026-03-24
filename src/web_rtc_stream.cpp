@@ -63,6 +63,7 @@ void set_appsrc_caps(GstAppSrc* appsrc, const WebRtcConfig& cfg) {
 std::string make_pipeline_launch(const WebRtcConfig& cfg) {
     std::ostringstream launch;
     launch
+        << "webrtcbin name=webrtc bundle-policy=max-bundle latency=0 "
         << "appsrc name=webrtcsrc is-live=true format=time do-timestamp=true block=false "
         << "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
         << "! videoconvert "
@@ -74,8 +75,9 @@ std::string make_pipeline_launch(const WebRtcConfig& cfg) {
         << "! video/x-h264,profile=baseline "
         << "! h264parse "
         << "! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency "
-        << "! application/x-rtp,media=video,encoding-name=H264,payload=96 "
-        << "! webrtcbin name=webrtc bundle-policy=max-bundle latency=0";
+        << "! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 "
+        << "! queue "
+        << "! webrtc.";
     return launch.str();
 }
 
@@ -266,6 +268,8 @@ bool WebRtcStreamServer::create_session(const std::string& offer_sdp,
         std::fprintf(stderr, "[WEBRTC] pipeline warning: %s\n", gst_error->message);
         g_error_free(gst_error);
     }
+
+    std::fprintf(stderr, "[WEBRTC] launch: %s\n", launch.c_str());
 
     GstElement* appsrc_element = gst_bin_get_by_name(GST_BIN(next_session.pipeline), "webrtcsrc");
     GstElement* webrtc_element = gst_bin_get_by_name(GST_BIN(next_session.pipeline), "webrtc");

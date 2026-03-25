@@ -9,7 +9,8 @@ enum class SideButtonAction {
 };
 
 struct VrRemoteInputConfig {
-    std::string input_device = "/dev/input/event4";
+    std::string input_device = "";
+    std::string device_name_hint = "VR-PARK";
     int idle_stop_ms = 180;
     int speed_step = 10;
     bool log_only = false;

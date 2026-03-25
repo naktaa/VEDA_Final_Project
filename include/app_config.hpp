@@ -21,7 +21,7 @@ struct ImuConfig {
     int bus = 1;
     int addr = 0x68;
     std::string int_gpio_chip = "/dev/gpiochip0";
-    int int_line_offset = -1;
+    int int_line_offset = 17;
     int int_pin_wpi = -1;
     int target_hz = 500;
     bool use_fifo = true;

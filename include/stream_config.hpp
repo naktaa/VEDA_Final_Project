@@ -29,6 +29,9 @@ namespace stream_config {
     inline constexpr int DEFAULT_WIDTH = 640;
     inline constexpr int DEFAULT_HEIGHT = 480;
     inline constexpr int DEFAULT_FPS = 20;
+    inline constexpr int DEFAULT_MJPEG_WIDTH = 480;
+    inline constexpr int DEFAULT_MJPEG_HEIGHT = 360;
+    inline constexpr int DEFAULT_MJPEG_QUALITY = 55;
     inline constexpr int DEFAULT_BITRATE = 4000000;
     inline constexpr int DEFAULT_IFRAME_PERIOD = 10;
     inline constexpr bool DEFAULT_FLIP_VERTICAL = true;

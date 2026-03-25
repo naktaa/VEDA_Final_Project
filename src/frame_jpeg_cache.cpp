@@ -1,8 +1,11 @@
 #include "frame_jpeg_cache.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 #include <opencv2/opencv.hpp>
+
+#include "stream_config.hpp"
 
 void FrameJpegCache::update_bgr_frame(const unsigned char* data,
                                       std::size_t bytes,
@@ -20,9 +23,29 @@ void FrameJpegCache::update_bgr_frame(const unsigned char* data,
 
     // OpenCV Mat expects a mutable pointer, but we only read from the capture buffer here.
     cv::Mat frame(height, width, CV_8UC3, const_cast<unsigned char*>(data));
-    const cv::Mat encoded_source = frame.isContinuous() ? frame : frame.clone();
+    const cv::Mat contiguous_source = frame.isContinuous() ? frame : frame.clone();
 
-    std::vector<int> encode_params = {cv::IMWRITE_JPEG_QUALITY, 70};
+    cv::Mat encoded_source = contiguous_source;
+    const float width_scale =
+        static_cast<float>(stream_config::DEFAULT_MJPEG_WIDTH) / static_cast<float>(width);
+    const float height_scale =
+        static_cast<float>(stream_config::DEFAULT_MJPEG_HEIGHT) / static_cast<float>(height);
+    const float scale = std::min(1.0f, std::min(width_scale, height_scale));
+    if (scale < 1.0f) {
+        const int target_width = std::max(1, static_cast<int>(std::lround(width * scale)));
+        const int target_height = std::max(1, static_cast<int>(std::lround(height * scale)));
+        cv::resize(contiguous_source,
+                   encoded_source,
+                   cv::Size(target_width, target_height),
+                   0.0,
+                   0.0,
+                   cv::INTER_AREA);
+    }
+
+    std::vector<int> encode_params = {
+        cv::IMWRITE_JPEG_QUALITY,
+        stream_config::DEFAULT_MJPEG_QUALITY,
+    };
     std::vector<unsigned char> encoded;
     if (!cv::imencode(".jpg", encoded_source, encoded, encode_params)) {
         return;

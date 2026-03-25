@@ -20,26 +20,26 @@
 
 namespace {
 
-constexpr float kImuAlpha = 0.2f;
+constexpr float kImuAlpha = 0.28f;
 constexpr float kImuMaxDeg = 45.0f;
 constexpr int kUpdateHz = 50;
 constexpr int kUpdateMs = 1000 / kUpdateHz;
-constexpr float kMaxStepPerTickDeg = 3.0f;
-constexpr float kYawPanGain = 1.35f;
+constexpr float kMaxStepPerTickDeg = 4.5f;
+constexpr float kYawPanGain = 1.1f;
 constexpr float kPanSensitivityScale = 0.8f;
-constexpr float kTiltSensitivityScale = 0.8f;
+constexpr float kTiltSensitivityScale = 0.9f;
 constexpr float kVrPanLimitDeg = 60.0f;
 constexpr float kVrTiltLimitDeg = 50.0f;
-constexpr float kYawFilterTauSec = 0.2f;
+constexpr float kYawFilterTauSec = 0.12f;
 constexpr float kDefaultImuDtSec = 0.02f;
 constexpr float kMinImuDtSec = 0.005f;
 constexpr float kMaxImuDtSec = 0.1f;
-constexpr float kYawMaxDeltaPerSampleDeg = 25.0f;
+constexpr float kYawMaxDeltaPerSampleDeg = 18.0f;
 constexpr float kPitchMaxDeltaPerSampleDeg = 20.0f;
 constexpr float kRollMaxDeltaPerSampleDeg = 20.0f;
 constexpr float kRejectPitchDeltaDeg = 85.0f;
 constexpr float kRejectRollDeltaDeg = 85.0f;
-constexpr float kRejectYawDeltaDeg = 120.0f;
+constexpr float kRejectYawDeltaDeg = 100.0f;
 
 float clampf(float value, float lo, float hi) {
     return std::max(lo, std::min(value, hi));
@@ -539,7 +539,7 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
                                             impl_->config.pan_center_deg,
                                             impl_->config.pan_right_deg,
                                             impl_->config.pan_left_deg);
-    const float blended_pan = (0.35f * pitch_pan) + (0.65f * yaw_pan);
+    const float blended_pan = (0.45f * pitch_pan) + (0.55f * yaw_pan);
     impl_->imu_target_pan = clamp_around_center(blended_pan,
                                                 impl_->config.pan_center_deg,
                                                 kVrPanLimitDeg);

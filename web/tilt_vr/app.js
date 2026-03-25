@@ -26,6 +26,14 @@ let reconnectTimer = null;
 let hasSensorData = false;
 let sensorCheckTimer = null;
 let orientationEventCount = 0;
+let imuSendInFlight = false;
+let initialSensorWaitResolve = null;
+let initialSensorWaitReject = null;
+let initialSensorWaitTimer = null;
+let pendingInitialZero = false;
+
+const imuSendIntervalMs = 16;
+const initialSensorWaitMs = 2000;
 
 function setStatus(msg) {
   statusEl.textContent = msg;
@@ -66,6 +74,48 @@ function recenteredValue(raw) {
 function zeroCalibrate() {
   baseline = { ...latestRaw };
   setStatus("Zero calibrated");
+}
+
+function clearInitialSensorWait() {
+  if (initialSensorWaitTimer) {
+    clearTimeout(initialSensorWaitTimer);
+    initialSensorWaitTimer = null;
+  }
+  initialSensorWaitResolve = null;
+  initialSensorWaitReject = null;
+}
+
+function resolveInitialSensorWait() {
+  if (!initialSensorWaitResolve) {
+    return;
+  }
+  const resolve = initialSensorWaitResolve;
+  clearInitialSensorWait();
+  resolve();
+}
+
+function rejectInitialSensorWait(message) {
+  if (!initialSensorWaitReject) {
+    return;
+  }
+  const reject = initialSensorWaitReject;
+  clearInitialSensorWait();
+  reject(new Error(message));
+}
+
+function waitForInitialSensorData(timeoutMs = initialSensorWaitMs) {
+  if (hasSensorData) {
+    return Promise.resolve();
+  }
+
+  clearInitialSensorWait();
+  return new Promise((resolve, reject) => {
+    initialSensorWaitResolve = resolve;
+    initialSensorWaitReject = reject;
+    initialSensorWaitTimer = setTimeout(() => {
+      rejectInitialSensorWait("No IMU sensor events detected");
+    }, timeoutMs);
+  });
 }
 
 async function ensureOrientationPermission() {
@@ -111,7 +161,14 @@ function startOrientationFeed() {
     const hasFiniteAngles =
       Number.isFinite(evt.alpha) || Number.isFinite(evt.beta) || Number.isFinite(evt.gamma);
     if (hasFiniteAngles) {
+      const firstSensorEvent = !hasSensorData;
       hasSensorData = true;
+      if (pendingInitialZero && firstSensorEvent) {
+        pendingInitialZero = false;
+        latestRaw = getPitchRollYaw(evt);
+        zeroCalibrate();
+        resolveInitialSensorWait();
+      }
     }
 
     latestRaw = getPitchRollYaw(evt);
@@ -129,11 +186,12 @@ function startOrientationFeed() {
   window.addEventListener("deviceorientation", orientationHandler, true);
 
   sendInterval = setInterval(() => {
-    if (!connected || currentMode !== "vr" || !hasSensorData) {
+    if (!connected || currentMode !== "vr" || !hasSensorData || imuSendInFlight) {
       return;
     }
 
     const value = recenteredValue(latestRaw);
+    imuSendInFlight = true;
     fetch("/imu", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -144,10 +202,14 @@ function startOrientationFeed() {
         roll: value.roll,
         yaw: value.yaw,
       }),
-    }).catch(() => {
-      setStatus("IMU send error");
-    });
-  }, 33);
+    })
+      .catch(() => {
+        setStatus("IMU send error");
+      })
+      .finally(() => {
+        imuSendInFlight = false;
+      });
+  }, imuSendIntervalMs);
 }
 
 async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
@@ -162,6 +224,9 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
   } catch (_) {
     setMode("manual");
   } finally {
+    clearInitialSensorWait();
+    pendingInitialZero = false;
+    imuSendInFlight = false;
     stopOrientationFeed();
     stopRenderLoop();
     connected = false;
@@ -328,6 +393,13 @@ async function connect() {
     }
     await ensureOrientationPermission();
 
+    hasSensorData = false;
+    orientationEventCount = 0;
+    pendingInitialZero = true;
+    startOrientationFeed();
+    setStatus("Waiting for phone IMU...");
+    await waitForInitialSensorData();
+
     const health = await fetch("/health");
     if (!health.ok) {
       throw new Error(`Server not ready: ${health.status}`);
@@ -337,10 +409,6 @@ async function connect() {
 
     connected = true;
     renderConnectButton();
-    hasSensorData = false;
-    orientationEventCount = 0;
-    zeroCalibrate();
-    startOrientationFeed();
     startImuAckPolling();
 
     sensorCheckTimer = setTimeout(() => {

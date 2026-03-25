@@ -19,8 +19,9 @@ let sendInterval = null;
 let imuAckInterval = null;
 let connected = false;
 let currentMode = "manual";
-let baseline = { pitch: 0, roll: 0, yaw: 0 };
 let latestRaw = { pitch: 0, roll: 0, yaw: 0 };
+let latestQuaternion = { x: 0, y: 0, z: 0, w: 1 };
+let baselineQuaternion = { x: 0, y: 0, z: 0, w: 1 };
 let renderRaf = 0;
 let reconnectTimer = null;
 let hasSensorData = false;
@@ -34,6 +35,8 @@ let pendingInitialZero = false;
 
 const imuSendIntervalMs = 16;
 const initialSensorWaitMs = 2000;
+const degToRad = Math.PI / 180;
+const radToDeg = 180 / Math.PI;
 
 function setStatus(msg) {
   statusEl.textContent = msg;
@@ -63,16 +66,113 @@ function normalizeAngle(value) {
   return v;
 }
 
-function recenteredValue(raw) {
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeQuaternion(q) {
+  const norm = Math.hypot(q.x, q.y, q.z, q.w);
+  if (!Number.isFinite(norm) || norm < 1e-9) {
+    return { x: 0, y: 0, z: 0, w: 1 };
+  }
+
   return {
-    pitch: normalizeAngle(raw.pitch - baseline.pitch),
-    roll: normalizeAngle(raw.roll - baseline.roll),
-    yaw: normalizeAngle(raw.yaw - baseline.yaw),
+    x: q.x / norm,
+    y: q.y / norm,
+    z: q.z / norm,
+    w: q.w / norm,
   };
 }
 
+function conjugateQuaternion(q) {
+  return { x: -q.x, y: -q.y, z: -q.z, w: q.w };
+}
+
+function multiplyQuaternion(a, b) {
+  return normalizeQuaternion({
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+  });
+}
+
+function quaternionFromAngles({ pitch, roll, yaw }) {
+  const x = (pitch || 0) * degToRad;
+  const y = (roll || 0) * degToRad;
+  const z = (yaw || 0) * degToRad;
+
+  const cosX = Math.cos(0.5 * x);
+  const sinX = Math.sin(0.5 * x);
+  const cosY = Math.cos(0.5 * y);
+  const sinY = Math.sin(0.5 * y);
+  const cosZ = Math.cos(0.5 * z);
+  const sinZ = Math.sin(0.5 * z);
+
+  return normalizeQuaternion({
+    x: sinX * cosY * cosZ - cosX * sinY * sinZ,
+    y: cosX * sinY * cosZ + sinX * cosY * sinZ,
+    z: cosX * cosY * sinZ + sinX * sinY * cosZ,
+    w: cosX * cosY * cosZ - sinX * sinY * sinZ,
+  });
+}
+
+function rotationMatrixFromQuaternion(q) {
+  const qq = normalizeQuaternion(q);
+  const xx = qq.x * qq.x;
+  const yy = qq.y * qq.y;
+  const zz = qq.z * qq.z;
+  const xy = qq.x * qq.y;
+  const xz = qq.x * qq.z;
+  const yz = qq.y * qq.z;
+  const wx = qq.w * qq.x;
+  const wy = qq.w * qq.y;
+  const wz = qq.w * qq.z;
+
+  return {
+    m11: 1 - 2 * (yy + zz),
+    m12: 2 * (xy - wz),
+    m13: 2 * (xz + wy),
+    m21: 2 * (xy + wz),
+    m22: 1 - 2 * (xx + zz),
+    m23: 2 * (yz - wx),
+    m31: 2 * (xz - wy),
+    m32: 2 * (yz + wx),
+    m33: 1 - 2 * (xx + yy),
+  };
+}
+
+function zxyAnglesFromQuaternion(q) {
+  const m = rotationMatrixFromQuaternion(q);
+  const beta = Math.asin(clamp(m.m32, -1, 1));
+  const cosBeta = Math.cos(beta);
+
+  let alpha = 0;
+  let gamma = 0;
+  if (Math.abs(cosBeta) > 1e-6) {
+    alpha = Math.atan2(-m.m12, m.m22);
+    gamma = Math.atan2(-m.m31, m.m33);
+  } else {
+    alpha = Math.atan2(m.m21, m.m11);
+  }
+
+  return {
+    pitch: normalizeAngle(beta * radToDeg),
+    roll: normalizeAngle(gamma * radToDeg),
+    yaw: normalizeAngle(alpha * radToDeg),
+  };
+}
+
+function recenteredValue() {
+  const relativeQuaternion = multiplyQuaternion(
+    conjugateQuaternion(baselineQuaternion),
+    latestQuaternion
+  );
+  return zxyAnglesFromQuaternion(relativeQuaternion);
+}
+
 function zeroCalibrate() {
-  baseline = { ...latestRaw };
+  baselineQuaternion = { ...latestQuaternion };
   setStatus("Zero calibrated");
 }
 
@@ -163,6 +263,7 @@ function startOrientationFeed() {
     if (hasFiniteAngles) {
       const firstSensorEvent = !hasSensorData;
       hasSensorData = true;
+      latestQuaternion = quaternionFromAngles(getPitchRollYaw(evt));
       if (pendingInitialZero && firstSensorEvent) {
         pendingInitialZero = false;
         latestRaw = getPitchRollYaw(evt);
@@ -172,7 +273,8 @@ function startOrientationFeed() {
     }
 
     latestRaw = getPitchRollYaw(evt);
-    const value = recenteredValue(latestRaw);
+    latestQuaternion = quaternionFromAngles(latestRaw);
+    const value = recenteredValue();
     if (!hasSensorData) {
       imuEl.textContent = "IMU: no sensor data";
       return;
@@ -190,7 +292,7 @@ function startOrientationFeed() {
       return;
     }
 
-    const value = recenteredValue(latestRaw);
+    const value = recenteredValue();
     imuSendInFlight = true;
     fetch("/imu", {
       method: "POST",

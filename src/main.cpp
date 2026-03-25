@@ -73,6 +73,7 @@ int main() {
     runtime_log << "# type=main_runtime\n";
     runtime_log << "# started_at=" << log_utils::human_timestamp() << "\n";
     runtime_log << "# rtsp_path=" << config.rtsp.port << config.rtsp.path << "\n";
+    runtime_log << "# rtsp_raw_path=" << config.rtsp.port << config.rtsp.raw_path << "\n";
     runtime_log << "# camera_fps=" << config.camera.fps << "\n";
     runtime_log << "# imu_target_hz=" << config.imu.target_hz << "\n";
     runtime_log << "# imu_use_fifo=" << (config.imu.use_fifo ? 1 : 0) << "\n";
@@ -102,7 +103,7 @@ int main() {
     tank_drive::set_idle_autostop(false);
 
     RtspServer rtsp_server;
-    if (!rtsp_server.start(config.camera, config.rtsp, false, &error)) {
+    if (!rtsp_server.start(config.camera, config.rtsp, true, &error)) {
         std::fprintf(stderr, "[MAIN] RTSP start failed: %s\n", error.c_str());
         tank_drive::shutdown();
         return 1;
@@ -231,6 +232,7 @@ int main() {
                 runtime_log.flush();
             }
 
+            rtsp_server.push_raw(frame, frame.image);
             if (!rtsp_server.push_stabilized(frame, stabilized)) {
                 // Same as above.
             }
@@ -239,9 +241,11 @@ int main() {
     });
 
     std::fprintf(stderr,
-                 "[MAIN] runtime ready: RTSP %s%s, MQTT %s:%d topic=%s\n",
+                 "[MAIN] runtime ready: RTSP %s%s (stab), %s%s (raw), MQTT %s:%d topic=%s\n",
                  config.rtsp.port.c_str(),
                  config.rtsp.path.c_str(),
+                 config.rtsp.port.c_str(),
+                 config.rtsp.raw_path.c_str(),
                  config.mqtt.host.c_str(),
                  config.mqtt.port,
                  config.mqtt.topic.c_str());

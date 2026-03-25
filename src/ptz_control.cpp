@@ -476,6 +476,13 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
     if (impl_->mode != PtzMode::kVr) {
         return;
     }
+    const auto now = std::chrono::steady_clock::now();
+
+    impl_->last_pitch = pitch;
+    impl_->last_roll = roll;
+    impl_->last_yaw = yaw;
+    impl_->last_client_timestamp_ms = client_timestamp_ms;
+
     if (impl_->pitch_roll_initialized && impl_->yaw_initialized) {
         const float pitch_jump = std::fabs(wrap_angle_180(pitch - impl_->last_raw_pitch));
         const float roll_jump = std::fabs(wrap_angle_180(roll - impl_->last_raw_roll));
@@ -483,16 +490,11 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
         if (pitch_jump > kRejectPitchDeltaDeg ||
             roll_jump > kRejectRollDeltaDeg ||
             yaw_jump > kRejectYawDeltaDeg) {
+            impl_->last_imu_arrival = now;
             return;
         }
     }
 
-    impl_->last_pitch = pitch;
-    impl_->last_roll = roll;
-    impl_->last_yaw = yaw;
-    impl_->last_client_timestamp_ms = client_timestamp_ms;
-
-    const auto now = std::chrono::steady_clock::now();
     float imu_dt_sec = kDefaultImuDtSec;
     if (impl_->last_imu_arrival.time_since_epoch().count() != 0) {
         imu_dt_sec =

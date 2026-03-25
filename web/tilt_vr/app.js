@@ -32,6 +32,7 @@ let initialSensorWaitResolve = null;
 let initialSensorWaitReject = null;
 let initialSensorWaitTimer = null;
 let pendingInitialZero = false;
+let vrModeRecoveryInFlight = false;
 
 const imuSendIntervalMs = 16;
 const initialSensorWaitMs = 2000;
@@ -255,6 +256,22 @@ async function setPtzMode(mode) {
   return body;
 }
 
+async function requestVrModeRecovery() {
+  if (!connected || vrModeRecoveryInFlight || !hasSensorData) {
+    return;
+  }
+
+  vrModeRecoveryInFlight = true;
+  try {
+    await setPtzMode("vr");
+    setStatus("VR mode recovered");
+  } catch (_) {
+    setStatus("VR mode recovery retrying...");
+  } finally {
+    vrModeRecoveryInFlight = false;
+  }
+}
+
 function startOrientationFeed() {
   orientationHandler = (evt) => {
     orientationEventCount += 1;
@@ -329,6 +346,7 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
     clearInitialSensorWait();
     pendingInitialZero = false;
     imuSendInFlight = false;
+    vrModeRecoveryInFlight = false;
     stopOrientationFeed();
     stopRenderLoop();
     connected = false;
@@ -366,10 +384,8 @@ function startImuAckPolling() {
         `src:${body.source ?? "-"}`;
 
       if (connected && body.mode !== "vr") {
-        await disconnect({
-          releaseMode: false,
-          statusMessage: "VR input lost. Back to manual mode.",
-        });
+        setStatus("VR input unstable. Re-entering VR mode...");
+        requestVrModeRecovery().catch(() => {});
       }
     } catch (_) {
       imuAckEl.textContent = "Server IMU: polling error";

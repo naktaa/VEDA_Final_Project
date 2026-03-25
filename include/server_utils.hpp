@@ -12,6 +12,10 @@ namespace veda_server {
 
 bool LoadHomography(const std::string& path, cv::Mat& H_img2world);
 bool LoadCameraModel(const std::string& path, CameraModel& out);
+bool EstimateWorldPoseFromHomography(const cv::Mat& H_img2world,
+                                     const cv::Mat& K,
+                                     cv::Matx33d& R_world_cam,
+                                     cv::Vec3d& t_cam_world);
 cv::Matx33d EstimateRworldCam(const cv::Mat& H_img2world, const cv::Mat& K);
 double NormalizeAngle(double angle);
 long long NowMs();

@@ -87,23 +87,33 @@ bool LoadCameraModel(const std::string& path, CameraModel& out) {
     return true;
 }
 
-cv::Matx33d EstimateRworldCam(const cv::Mat& H_img2world, const cv::Mat& K) {
+bool EstimateWorldPoseFromHomography(const cv::Mat& H_img2world,
+                                     const cv::Mat& K,
+                                     cv::Matx33d& R_world_cam,
+                                     cv::Vec3d& t_cam_world) {
     cv::Mat H_world2img = H_img2world.inv();
     cv::Mat K_inv = K.inv();
 
     cv::Mat h1 = H_world2img.col(0);
     cv::Mat h2 = H_world2img.col(1);
+    cv::Mat h3 = H_world2img.col(2);
 
     cv::Mat r1m = K_inv * h1;
     cv::Mat r2m = K_inv * h2;
+    cv::Mat tm = K_inv * h3;
 
     const double norm1 = cv::norm(r1m);
-    if (norm1 < 1e-9) {
-        return cv::Matx33d::eye();
+    const double norm2 = cv::norm(r2m);
+    if (norm1 < 1e-9 || norm2 < 1e-9) {
+        R_world_cam = cv::Matx33d::eye();
+        t_cam_world = cv::Vec3d(0.0, 0.0, 0.0);
+        return false;
     }
 
-    r1m /= norm1;
-    r2m /= norm1;
+    const double scale = 2.0 / (norm1 + norm2);
+    r1m *= scale;
+    r2m *= scale;
+    tm *= scale;
 
     cv::Vec3d r1(r1m.at<double>(0), r1m.at<double>(1), r1m.at<double>(2));
     cv::Vec3d r2(r2m.at<double>(0), r2m.at<double>(1), r2m.at<double>(2));
@@ -117,7 +127,7 @@ cv::Matx33d EstimateRworldCam(const cv::Mat& H_img2world, const cv::Mat& K) {
     cv::SVD svd(R_cam_world);
     cv::Mat R_ortho = svd.u * svd.vt;
     if (cv::determinant(R_ortho) < 0.0) {
-        R_ortho *= -1.0;
+        R_ortho.col(2) *= -1.0;
     }
 
     cv::Matx33d Rcw(
@@ -125,7 +135,16 @@ cv::Matx33d EstimateRworldCam(const cv::Mat& H_img2world, const cv::Mat& K) {
         R_ortho.at<double>(1, 0), R_ortho.at<double>(1, 1), R_ortho.at<double>(1, 2),
         R_ortho.at<double>(2, 0), R_ortho.at<double>(2, 1), R_ortho.at<double>(2, 2));
 
-    return Rcw.t();
+    R_world_cam = Rcw.t();
+    t_cam_world = cv::Vec3d(tm.at<double>(0), tm.at<double>(1), tm.at<double>(2));
+    return true;
+}
+
+cv::Matx33d EstimateRworldCam(const cv::Mat& H_img2world, const cv::Mat& K) {
+    cv::Matx33d R_world_cam = cv::Matx33d::eye();
+    cv::Vec3d t_cam_world;
+    EstimateWorldPoseFromHomography(H_img2world, K, R_world_cam, t_cam_world);
+    return R_world_cam;
 }
 
 double NormalizeAngle(double angle) {

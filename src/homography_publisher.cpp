@@ -17,11 +17,14 @@ bool HomographyPublisher::RefreshAndPublish(mosquitto* mosq) {
         return false;
     }
 
-    const cv::Matx33d R_world_cam = EstimateRworldCam(H, camera_model_.K);
+    cv::Matx33d R_world_cam = cv::Matx33d::eye();
+    cv::Vec3d t_cam_world;
+    EstimateWorldPoseFromHomography(H, camera_model_.K, R_world_cam, t_cam_world);
     {
         std::lock_guard<std::mutex> lk(shared_.mtx);
         shared_.H_img2world = H.clone();
         shared_.R_world_cam = R_world_cam;
+        shared_.t_cam_world = t_cam_world;
         shared_.update_count.fetch_add(1);
     }
 

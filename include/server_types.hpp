@@ -44,6 +44,7 @@ struct SharedHomography {
     std::mutex mtx;
     cv::Mat H_img2world;
     cv::Matx33d R_world_cam = cv::Matx33d::eye();
+    cv::Vec3d t_cam_world = cv::Vec3d(0.0, 0.0, 0.0);
     std::atomic<long long> update_count{0};
 };
 

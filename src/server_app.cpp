@@ -43,7 +43,8 @@ public:
         {
             std::lock_guard<std::mutex> lk(shared_.mtx);
             shared_.H_img2world = H_img2world.clone();
-            shared_.R_world_cam = EstimateRworldCam(H_img2world, camera_model_.K);
+            EstimateWorldPoseFromHomography(
+                H_img2world, camera_model_.K, shared_.R_world_cam, shared_.t_cam_world);
         }
 
         if (!OpenRtspCapture(config_.rtsp_url, cap_)) {

@@ -376,11 +376,17 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
         return cmd;
     }
 
-    const double heading_scale = std::max(0.2, std::cos(abs_err));
-    cmd.speed_mps = clamp(config_.control.k_linear * dist_m * heading_scale,
+    const double tracking_yaw_limit = config_.control.max_yaw_rate_rps * 0.6;
+    cmd.yaw_rate_rps = clamp(config_.control.k_yaw * err_yaw,
+                             -tracking_yaw_limit,
+                             tracking_yaw_limit);
+
+    const double heading_scale = std::max(0.05, std::cos(abs_err));
+    const double yaw_slowdown =
+        1.0 - std::min(0.7, std::fabs(cmd.yaw_rate_rps) / std::max(0.001, config_.control.max_yaw_rate_rps));
+    cmd.speed_mps = clamp(config_.control.k_linear * dist_m * heading_scale * yaw_slowdown,
                           0.0,
                           config_.control.max_speed_mps);
-    cmd.yaw_rate_rps = 0.0;
     return cmd;
 }
 

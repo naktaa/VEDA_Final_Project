@@ -33,6 +33,8 @@ constexpr uint8_t REG_FIFO_R_W = 0x74;
 constexpr uint8_t USERCTRL_FIFO_EN = 0x40;
 constexpr uint8_t USERCTRL_FIFO_RESET = 0x04;
 constexpr uint8_t INTPINCFG_LATCH_INT_EN = 0x20;
+constexpr int kInterruptTimeoutMs = 200;
+constexpr int kInterruptTimeoutFallbackCount = 5;
 
 int16_t to_i16(uint8_t high, uint8_t low) {
     return static_cast<int16_t>((high << 8) | low);
@@ -413,6 +415,7 @@ ImuSample ImuReader::make_sample(const cv::Vec3d& raw_counts, double sample_time
 void ImuReader::run() {
     const double period_ms = 1000.0 / std::max(1, config_.target_hz);
     int64_t last_time_ns = clock_ns(CLOCK_MONOTONIC_RAW);
+    int consecutive_irq_timeouts = 0;
 
     while (running_) {
         std::vector<cv::Vec3d> fifo_samples;
@@ -421,7 +424,7 @@ void ImuReader::run() {
 
         if (use_interrupt_) {
             std::string irq_error;
-            if (!irq_line_.wait_for_rising_edge(200, &event_ns, &irq_error)) {
+            if (!irq_line_.wait_for_rising_edge(kInterruptTimeoutMs, &event_ns, &irq_error)) {
                 if (!irq_error.empty()) {
                     disable_interrupt_registers(fd_);
                     std::fprintf(stderr,
@@ -430,9 +433,20 @@ void ImuReader::run() {
                     std::fflush(stderr);
                     irq_line_.close();
                     use_interrupt_ = false;
+                    consecutive_irq_timeouts = 0;
+                } else if (++consecutive_irq_timeouts >= kInterruptTimeoutFallbackCount) {
+                    disable_interrupt_registers(fd_);
+                    std::fprintf(stderr,
+                                 "[IMU] interrupt edge timeout x%d; switching to FIFO polling\n",
+                                 consecutive_irq_timeouts);
+                    std::fflush(stderr);
+                    irq_line_.close();
+                    use_interrupt_ = false;
+                    consecutive_irq_timeouts = 0;
                 }
                 continue;
             }
+            consecutive_irq_timeouts = 0;
             uint8_t status = 0;
             i2c_read_bytes(fd_, REG_INT_STATUS, &status, 1);
             have_samples = read_fifo_samples(fifo_samples);

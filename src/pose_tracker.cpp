@@ -27,12 +27,12 @@ PoseTracker::PoseTracker(const ServerConfig& config,
                 cv::aruco::DetectorParameters()) {}
 
 bool PoseTracker::ProcessFrame(const cv::Mat& frame, mosquitto* mosq, long long& publish_count) {
+    cv::Mat H;
     cv::Matx33d R_world_cam;
-    cv::Vec3d t_cam_world;
     {
         std::lock_guard<std::mutex> lk(shared_.mtx);
+        H = shared_.H_img2world.clone();
         R_world_cam = shared_.R_world_cam;
-        t_cam_world = shared_.t_cam_world;
     }
 
     std::vector<std::vector<cv::Point2f>> corners;
@@ -75,19 +75,26 @@ bool PoseTracker::ProcessFrame(const cv::Mat& frame, mosquitto* mosq, long long&
         return false;
     }
 
+    const auto& marker = corners[best_idx];
+    cv::Point2f center(0.0f, 0.0f);
+    for (const auto& point : marker) {
+        center += point;
+    }
+    center *= 0.25f;
+
+    cv::Mat pt_img = (cv::Mat_<double>(3, 1) << center.x, center.y, 1.0);
+    cv::Mat pt_world = H * pt_img;
+    const double x = pt_world.at<double>(0) / pt_world.at<double>(2);
+    const double y = pt_world.at<double>(1) / pt_world.at<double>(2);
+
     cv::Mat R_cam_marker_m;
     cv::Rodrigues(rvecs[best_idx], R_cam_marker_m);
     const cv::Matx33d R_cam_marker = ToMatx33d(R_cam_marker_m);
     const cv::Matx33d R_m_c = best_cfg.R_c_m.t();
     const cv::Matx33d R_cam_cube = R_cam_marker * R_m_c;
-    const cv::Vec3d t_cam_marker = tvecs[best_idx];
-    const cv::Vec3d t_cam_cube = t_cam_marker - (R_cam_cube * best_cfg.t_c_m);
     const cv::Matx33d R_world_cube = R_world_cam * R_cam_cube;
-    const cv::Vec3d cube_world = R_world_cam * (t_cam_cube - t_cam_world);
 
     const cv::Vec3d forward = R_world_cube * cv::Vec3d(0.0, 1.0, 0.0);
-    const double x = cube_world[0];
-    const double y = cube_world[1];
     const double yaw = NormalizeAngle(-std::atan2(forward[1], forward[0]));
     const long long ts = NowMs();
 

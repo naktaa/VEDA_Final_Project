@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "rc_defaults.hpp"
 
@@ -38,6 +39,12 @@ struct ControlStatus {
 struct RcCommand {
     double speed_mps = 0.0;
     double yaw_rate_rps = 0.0;
+};
+
+struct RcWaypoint {
+    double x = 0.0;
+    double y = 0.0;
+    bool is_final = false;
 };
 
 struct RcControlParams {

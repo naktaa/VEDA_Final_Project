@@ -18,6 +18,7 @@ add_library(auto_core
     src/rc_control_node.cpp
     src/rc_json_utils.cpp
     src/rc_motor_driver.cpp
+    src/rc_path_planner.cpp
     src/rc_status_types.cpp
 )
 

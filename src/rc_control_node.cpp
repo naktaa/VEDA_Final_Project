@@ -10,6 +10,7 @@
 
 #include "rc_json_utils.hpp"
 #include "rc_motor_driver.hpp"
+#include "rc_path_planner.hpp"
 
 namespace {
 
@@ -295,7 +296,9 @@ void RcControlNode::controlStep() {
         return;
     }
 
-    cmd = computeCommand(pose, goal, control_status);
+    updatePathPlan(pose, goal);
+    const RcGoal tracking_goal = resolveTrackingGoal(pose, goal);
+    cmd = computeCommand(pose, tracking_goal, control_status);
     if (motor_driver_ptr_) {
         motor_driver_ptr_->sendCommand(cmd);
     }
@@ -310,6 +313,56 @@ void RcControlNode::controlStep() {
     }
 
     publishStatus(buildStatus(goal, pose, cmd, control_status));
+}
+
+void RcControlNode::updatePathPlan(const RcPose& pose, const RcGoal& goal) {
+    const auto now = std::chrono::steady_clock::now();
+    const bool goal_changed = (goal.ts_ms != planned_goal_ts_ms_);
+    const bool replan_due =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_plan_at_).count() >= 250;
+
+    if (!goal_changed && !replan_due) {
+        return;
+    }
+
+    planned_path_ = BuildSmoothPath(pose, goal, config_.control.tolerance_m);
+    planned_path_index_ = 0;
+    tracking_goal_is_final_ = planned_path_.empty();
+    planned_goal_ts_ms_ = goal.ts_ms;
+    last_plan_at_ = now;
+
+    if (goal_changed && !planned_path_.empty()) {
+        std::cout << "[PATH] waypoints=" << planned_path_.size()
+                  << " goal=(" << goal.x << ", " << goal.y << ")\n";
+    }
+}
+
+RcGoal RcControlNode::resolveTrackingGoal(const RcPose& pose, const RcGoal& goal) {
+    RcGoal tracking_goal = goal;
+    tracking_goal_is_final_ = true;
+    while (planned_path_index_ < planned_path_.size()) {
+        const RcWaypoint& waypoint = planned_path_[planned_path_index_];
+        const double dx = waypoint.x - pose.x;
+        const double dy = waypoint.y - pose.y;
+        const double dist = std::sqrt(dx * dx + dy * dy);
+        if (dist <= waypointTolerance(waypoint.is_final)) {
+            ++planned_path_index_;
+            continue;
+        }
+
+        tracking_goal.x = waypoint.x;
+        tracking_goal.y = waypoint.y;
+        tracking_goal_is_final_ = waypoint.is_final;
+        return tracking_goal;
+    }
+    return tracking_goal;
+}
+
+double RcControlNode::waypointTolerance(bool is_final) const {
+    if (is_final) {
+        return std::max(config_.control.tolerance_m, 0.12);
+    }
+    return std::max(config_.control.tolerance_m * 1.5, 0.18);
 }
 
 RcCommand RcControlNode::computeCommand(const RcPose& pose,
@@ -343,7 +396,10 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
 
     out_status.robot_state = "TRACKING";
 
-    if (dist_m <= config_.control.tolerance_m) {
+    const double stop_deadzone = tracking_goal_is_final_
+                                     ? waypointTolerance(true)
+                                     : waypointTolerance(false);
+    if (dist_m <= stop_deadzone) {
         reached_ = true;
         rotating_ = false;
         out_status.robot_state = "REACHED";

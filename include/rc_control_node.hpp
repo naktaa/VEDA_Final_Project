@@ -3,8 +3,10 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <vector>
 
 #include "rc_control_types.hpp"
+#include "rc_path_planner.hpp"
 #include "rc_status_types.h"
 
 struct mosquitto;
@@ -29,6 +31,9 @@ private:
     void onDisconnect(int rc);
     void onMessage(const struct mosquitto_message* msg);
     void controlStep();
+    void updatePathPlan(const RcPose& pose, const RcGoal& goal);
+    RcGoal resolveTrackingGoal(const RcPose& pose, const RcGoal& goal);
+    double waypointTolerance(bool is_final) const;
 
     RcCommand computeCommand(const RcPose& pose, const RcGoal& goal, ControlStatus& out_status);
     RcStatus buildStatus(const RcGoal& goal,
@@ -56,6 +61,11 @@ private:
     mutable bool rotating_ = false;
     mutable bool reached_ = false;
     mutable RcGoal last_goal_;
+    std::vector<RcWaypoint> planned_path_;
+    size_t planned_path_index_ = 0;
+    bool tracking_goal_is_final_ = true;
+    long long planned_goal_ts_ms_ = -1;
+    std::chrono::steady_clock::time_point last_plan_at_ = std::chrono::steady_clock::time_point::min();
 
     RcMotorDriver* motor_driver_ptr_ = nullptr;
 };

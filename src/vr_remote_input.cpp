@@ -1,15 +1,19 @@
 #include "vr_remote_input.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include <fcntl.h>
 #include <linux/input.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #include "tank_drive.hpp"
@@ -20,6 +24,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr int kDefaultSpeed = 200;
 constexpr int kPollTimeoutMs = 10;
+constexpr std::size_t kInputNameBufferSize = 256;
 
 int clamp_speed(int value) {
     return std::max(0, std::min(255, value));
@@ -60,6 +65,112 @@ const char* key_code_name(unsigned short code) {
     default:
         return "KEY_UNKNOWN";
     }
+}
+
+std::string lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+bool read_input_device_name(int fd, std::string& out_name) {
+    char name[kInputNameBufferSize] {};
+    if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) {
+        return false;
+    }
+    out_name = name;
+    return true;
+}
+
+bool input_name_matches(const std::string& actual_name, const std::string& name_hint) {
+    if (name_hint.empty()) {
+        return false;
+    }
+
+    const std::string actual_lower = lower_copy(actual_name);
+    const std::string hint_lower = lower_copy(name_hint);
+    return actual_lower == hint_lower || actual_lower.find(hint_lower) != std::string::npos;
+}
+
+bool discover_input_device_by_name(const std::string& name_hint,
+                                   std::string& out_path,
+                                   std::string& out_name,
+                                   std::string* error) {
+    namespace fs = std::filesystem;
+
+    std::vector<fs::path> event_paths;
+    std::error_code ec;
+    for (const fs::directory_entry& entry : fs::directory_iterator("/dev/input", ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_character_file(ec) && !entry.is_other(ec)) {
+            continue;
+        }
+
+        const std::string filename = entry.path().filename().string();
+        if (filename.rfind("event", 0) == 0) {
+            event_paths.push_back(entry.path());
+        }
+    }
+
+    std::sort(event_paths.begin(), event_paths.end());
+    for (const fs::path& path : event_paths) {
+        const int fd = open(path.string().c_str(), O_RDONLY | O_NONBLOCK);
+        if (fd < 0) {
+            continue;
+        }
+
+        std::string actual_name;
+        const bool name_ok = read_input_device_name(fd, actual_name);
+        close(fd);
+        if (!name_ok) {
+            continue;
+        }
+        if (!input_name_matches(actual_name, name_hint)) {
+            continue;
+        }
+
+        out_path = path.string();
+        out_name = actual_name;
+        return true;
+    }
+
+    if (error) {
+        *error = "failed to find input device matching name hint '" + name_hint + "'";
+    }
+    return false;
+}
+
+bool resolve_input_device(const VrRemoteInputConfig& config,
+                          std::string& out_path,
+                          std::string& out_name,
+                          std::string* error) {
+    if (!config.device_name_hint.empty() &&
+        discover_input_device_by_name(config.device_name_hint, out_path, out_name, error)) {
+        return true;
+    }
+
+    if (config.input_device.empty()) {
+        if (error && error->empty()) {
+            *error = "no VR input device configured";
+        }
+        return false;
+    }
+
+    const int fd = open(config.input_device.c_str(), O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+        if (error) {
+            *error = std::string("failed to open ") + config.input_device + ": " + std::strerror(errno);
+        }
+        return false;
+    }
+
+    out_path = config.input_device;
+    read_input_device_name(fd, out_name);
+    close(fd);
+    return true;
 }
 
 class VrTankDispatcher {
@@ -281,16 +392,25 @@ bool read_events(int fd, VrTankDispatcher& dispatcher) {
 } // namespace
 
 bool run_vr_remote_input_loop(const VrRemoteInputConfig& config, std::atomic<bool>& running) {
-    const int fd = open(config.input_device.c_str(), O_RDONLY | O_NONBLOCK);
+    std::string resolved_path;
+    std::string resolved_name;
+    std::string resolve_error;
+    if (!resolve_input_device(config, resolved_path, resolved_name, &resolve_error)) {
+        fprintf(stderr, "[VR] %s\n", resolve_error.c_str());
+        return false;
+    }
+
+    const int fd = open(resolved_path.c_str(), O_RDONLY | O_NONBLOCK);
     if (fd < 0) {
         fprintf(stderr, "[VR] failed to open %s: %s\n",
-                config.input_device.c_str(), std::strerror(errno));
+                resolved_path.c_str(), std::strerror(errno));
         return false;
     }
 
     fprintf(stderr,
-            "[VR] input=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s\n",
-            config.input_device.c_str(),
+            "[VR] input=%s name=%s mode=%s idle_stop_ms=%d speed_step=%d side_button=%s\n",
+            resolved_path.c_str(),
+            resolved_name.empty() ? "unknown" : resolved_name.c_str(),
             config.log_only ? "log-only" : "drive",
             config.idle_stop_ms,
             config.speed_step,

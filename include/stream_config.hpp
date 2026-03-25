@@ -34,8 +34,8 @@ namespace stream_config {
     inline constexpr int DEFAULT_MJPEG_QUALITY = 55;
     inline constexpr int DEFAULT_BITRATE = 4000000;
     inline constexpr int DEFAULT_IFRAME_PERIOD = 10;
-    inline constexpr bool DEFAULT_FLIP_VERTICAL = true;
-    inline constexpr bool DEFAULT_FLIP_HORIZONTAL = true;
+    inline constexpr bool DEFAULT_FLIP_VERTICAL = false;
+    inline constexpr bool DEFAULT_FLIP_HORIZONTAL = false;
 
     inline std::string make_default_rtsp_launch() {
         std::string launch =

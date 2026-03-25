@@ -142,6 +142,15 @@ bool ImuReader::start(const ImuConfig& imu_config,
         }
     }
 
+    if (refine_bias && !warmup_refine_bias()) {
+        if (error) *error = "IMU warm-up bias refinement failed";
+        if (fd_ >= 0) {
+            close(fd_);
+            fd_ = -1;
+        }
+        return false;
+    }
+
     if (!open_device(error)) {
         return false;
     }
@@ -171,19 +180,19 @@ bool ImuReader::start(const ImuConfig& imu_config,
                 *error = irq_error;
             }
         } else {
+            uint8_t status = 0;
+            i2c_read_bytes(fd_, REG_INT_STATUS, &status, 1);
+            std::vector<cv::Vec3d> pending_samples;
+            const bool cleared_pending = read_fifo_samples(pending_samples);
             std::fprintf(stderr,
-                         "[IMU] interrupt enabled on %s line %d\n",
+                         cleared_pending
+                             ? "[IMU] interrupt enabled on %s line %d (cleared %zu pending FIFO samples)\n"
+                             : "[IMU] interrupt enabled on %s line %d\n",
                          resolved_int_gpio_chip_.c_str(),
-                         resolved_int_line_offset_);
+                         resolved_int_line_offset_,
+                         pending_samples.size());
             std::fflush(stderr);
         }
-    }
-
-    if (refine_bias && !warmup_refine_bias()) {
-        if (error) *error = "IMU warm-up bias refinement failed";
-        close(fd_);
-        fd_ = -1;
-        return false;
     }
 
     running_ = true;

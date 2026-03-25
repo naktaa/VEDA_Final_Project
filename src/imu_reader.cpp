@@ -61,6 +61,34 @@ bool i2c_read_bytes(int fd, uint8_t reg, uint8_t* data, int length) {
     return read(fd, data, length) == length;
 }
 
+bool read_fifo_count(int fd, int* fifo_count) {
+    uint8_t count_bytes[2];
+    if (!i2c_read_bytes(fd, REG_FIFO_COUNTH, count_bytes, 2)) {
+        return false;
+    }
+    if (fifo_count) {
+        *fifo_count = (static_cast<int>(count_bytes[0]) << 8) | static_cast<int>(count_bytes[1]);
+    }
+    return true;
+}
+
+void log_interrupt_diagnostics(int fd, const char* prefix) {
+    uint8_t status = 0;
+    int fifo_count = -1;
+    const bool have_status = i2c_read_bytes(fd, REG_INT_STATUS, &status, 1);
+    const bool have_fifo_count = read_fifo_count(fd, &fifo_count);
+    if (have_status || have_fifo_count) {
+        std::fprintf(stderr,
+                     "%s int_status=0x%02X fifo_count=%d\n",
+                     prefix,
+                     have_status ? status : 0,
+                     have_fifo_count ? fifo_count : -1);
+    } else {
+        std::fprintf(stderr, "%s int diagnostics unavailable\n", prefix);
+    }
+    std::fflush(stderr);
+}
+
 std::string i2c_device_path(int bus) {
     return "/dev/i2c-" + std::to_string(bus);
 }
@@ -436,6 +464,7 @@ void ImuReader::run() {
             if (!irq_line_.wait_for_rising_edge(kInterruptTimeoutMs, &event_ns, &irq_error)) {
                 if (!irq_error.empty()) {
                     disable_interrupt_registers(fd_);
+                    log_interrupt_diagnostics(fd_, "[IMU] interrupt wait failed diagnostics:");
                     std::fprintf(stderr,
                                  "[IMU] interrupt wait failed: %s; switching to FIFO polling\n",
                                  irq_error.c_str());
@@ -445,6 +474,7 @@ void ImuReader::run() {
                     consecutive_irq_timeouts = 0;
                 } else if (++consecutive_irq_timeouts >= kInterruptTimeoutFallbackCount) {
                     disable_interrupt_registers(fd_);
+                    log_interrupt_diagnostics(fd_, "[IMU] interrupt timeout diagnostics:");
                     std::fprintf(stderr,
                                  "[IMU] interrupt edge timeout x%d; switching to FIFO polling\n",
                                  consecutive_irq_timeouts);

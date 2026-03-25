@@ -25,16 +25,21 @@ void FrameJpegCache::update_bgr_frame(const unsigned char* data,
     cv::Mat frame(height, width, CV_8UC3, const_cast<unsigned char*>(data));
     const cv::Mat contiguous_source = frame.isContinuous() ? frame : frame.clone();
 
-    cv::Mat encoded_source = contiguous_source;
+    cv::Mat mjpeg_source;
+    cv::rotate(contiguous_source, mjpeg_source, cv::ROTATE_180);
+
+    cv::Mat encoded_source = mjpeg_source;
     const float width_scale =
-        static_cast<float>(stream_config::DEFAULT_MJPEG_WIDTH) / static_cast<float>(width);
+        static_cast<float>(stream_config::DEFAULT_MJPEG_WIDTH) /
+        static_cast<float>(encoded_source.cols);
     const float height_scale =
-        static_cast<float>(stream_config::DEFAULT_MJPEG_HEIGHT) / static_cast<float>(height);
+        static_cast<float>(stream_config::DEFAULT_MJPEG_HEIGHT) /
+        static_cast<float>(encoded_source.rows);
     const float scale = std::min(1.0f, std::min(width_scale, height_scale));
     if (scale < 1.0f) {
-        const int target_width = std::max(1, static_cast<int>(std::lround(width * scale)));
-        const int target_height = std::max(1, static_cast<int>(std::lround(height * scale)));
-        cv::resize(contiguous_source,
+        const int target_width = std::max(1, static_cast<int>(std::lround(encoded_source.cols * scale)));
+        const int target_height = std::max(1, static_cast<int>(std::lround(encoded_source.rows * scale)));
+        cv::resize(mjpeg_source,
                    encoded_source,
                    cv::Size(target_width, target_height),
                    0.0,

@@ -6,7 +6,7 @@ namespace veda_server::defaults {
 
 inline constexpr std::string_view kRtspUrl =
     "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp";
-inline constexpr std::string_view kMqttHost = "192.168.100.10";
+inline constexpr std::string_view kMqttHost = "192.168.100.7";
 inline constexpr int kMqttPort = 1883;
 
 inline constexpr std::string_view kPoseTopic = "wiserisk/p1/pose";

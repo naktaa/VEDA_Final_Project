@@ -1,6 +1,6 @@
 /*
-실행 :sudo /home/pi/VEDA_Final_Project/rc/rc_control_node 192.168.100.10 1883 wiserisk/rc/goal wiserisk/p1/pose wiserisk/rc/safety wiserisk/rc/status
-서버 : /home/pi/VEDA_Final_Project/build/p1_tracker "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" 192.168.100.10 1883 wiserisk/p1/pose /home/pi/VEDA_Final_Project/config/H_img2world.yaml /home/pi/VEDA_Final_Project/config/camera.yaml 0.17 0.17 0 0 0
+실행 :sudo /home/pi/VEDA_Final_Project/rc/rc_control_node 192.168.100.7 1883 wiserisk/rc/goal wiserisk/p1/pose wiserisk/rc/safety wiserisk/rc/status
+서버 : /home/pi/VEDA_Final_Project/build/p1_tracker "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" 192.168.100.7 1883 wiserisk/p1/pose /home/pi/VEDA_Final_Project/config/H_img2world.yaml /home/pi/VEDA_Final_Project/config/camera.yaml 0.17 0.17 0 0 0
 컴파일 : g++ -std=c++17 /home/pi/VEDA_Final_Project/rc/rc_control_node.cpp \
 -I/home/pi/VEDA_Final_Project/rc \
 -lmosquitto -lpthread -lwiringPi \
@@ -664,7 +664,7 @@ bool RcControlNode::parseSafetyJson(const std::string& payload, RcSafety& out_sa
 }
 
 int main(int argc, char** argv) {
-    const std::string host        = (argc > 1) ? argv[1] : "192.168.100.10";
+    const std::string host        = (argc > 1) ? argv[1] : "192.168.100.7";
     const int         port        = (argc > 2) ? std::stoi(argv[2]) : 1883;
     const std::string topic_goal  = (argc > 3) ? argv[3] : "wiserisk/rc/goal";
     const std::string topic_pose  = (argc > 4) ? argv[4] : "wiserisk/p1/pose";

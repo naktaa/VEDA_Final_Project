@@ -12,7 +12,7 @@ g++ -std=c++17 /home/pi/final_veda_test/map/rc/rc_mqtt_test_pub.cpp -lmosquitto 
 //g++ -std=c++17 /home/pi/final_veda_test/map/rc/rc_control_node.cpp -I/home/pi/final_veda_test/map/rc -lmosquitto -lwiringPi -lpthread -o /home/pi/final_veda_test/map/rc/rc_control_node
 
 //실행
-/home/pi/final_veda_test/map/rc/rc_control_node 192.168.100.10 1883 wiserisk/rc/goal wiserisk/p1/pose wiserisk/rc/safety wiserisk/rc/status
+/home/pi/final_veda_test/map/rc/rc_control_node 192.168.100.7 1883 wiserisk/rc/goal wiserisk/p1/pose wiserisk/rc/safety wiserisk/rc/status
 
 //테스트 퍼블리셔(Goal/Pose/Safety 모의 입력, C++)
-/home/pi/final_veda_test/map/rc/rc_mqtt_test_pub --broker 192.168.100.10 --mode move --dir left --dist 2.0
+/home/pi/final_veda_test/map/rc/rc_mqtt_test_pub --broker 192.168.100.7 --mode move --dir left --dist 2.0

@@ -8,7 +8,7 @@
 #include <thread>
 
 struct Options {
-    std::string broker = "192.168.100.10";
+    std::string broker = "192.168.100.7";
     int port = 1883;
     std::string topic_pose = "wiserisk/p1/pose";
     std::string topic_goal = "wiserisk/rc/goal";
@@ -31,7 +31,7 @@ static void printUsage() {
     std::cout
         << "RC MQTT test publisher (C++)\n"
         << "Options:\n"
-        << "  --broker <ip>            (default: 192.168.100.10)\n"
+        << "  --broker <ip>            (default: 192.168.100.7)\n"
         << "  --port <int>             (default: 1883)\n"
         << "  --topic-pose <topic>     (default: wiserisk/p1/pose)\n"
         << "  --topic-goal <topic>     (default: wiserisk/rc/goal)\n"

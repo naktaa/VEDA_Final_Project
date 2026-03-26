@@ -76,7 +76,7 @@ int main(int argc, char** argv)
 {
     // ---- 설정(필요하면 argv로 바꿔도 됨) ----
     const std::string rtsp_url   = "rtsp://admin:PASS@192.168.100.22/profile1/media.smp"; // 너 환경으로 교체
-    const std::string broker_ip  = "192.168.100.10"; // central server broker IP
+    const std::string broker_ip  = "192.168.100.7"; // central server broker IP
     const int broker_port        = 1883;
     const std::string topic_state= "wiserisk/rc/state";
 

@@ -144,7 +144,7 @@
 
   int main(int argc, char** argv) {
       const std::string yamlPath        = (argc > 1) ? argv[1] : "config/H_img2world.yaml";
-      const std::string mqttHost        = (argc > 2) ? argv[2] : "192.168.100.10";
+      const std::string mqttHost        = (argc > 2) ? argv[2] : "192.168.100.7";
       const int         mqttPort        = (argc > 3) ? std::stoi(argv[3]) : 1883;
       const std::string homographyTopic = (argc > 4) ? argv[4] : "wiserisk/map/H_img2world";
       const std::string mapTopic        = (argc > 5) ? argv[5] : "wiserisk/map/graph";

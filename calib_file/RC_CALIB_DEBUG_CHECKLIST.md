@@ -54,10 +54,10 @@ ps -ef | rg "homography_mqtt_pub|p1_tracker|rc_control_node|mosquitto"
 아래 4개 토픽을 각각 실시간 확인.
 
 ```bash
-mosquitto_sub -h 192.168.100.10 -t wiserisk/rc/goal -v
-mosquitto_sub -h 192.168.100.10 -t wiserisk/p1/pose -v
-mosquitto_sub -h 192.168.100.10 -t wiserisk/rc/safety -v
-mosquitto_sub -h 192.168.100.10 -t wiserisk/rc/status -v
+mosquitto_sub -h 192.168.100.7 -t wiserisk/rc/goal -v
+mosquitto_sub -h 192.168.100.7 -t wiserisk/p1/pose -v
+mosquitto_sub -h 192.168.100.7 -t wiserisk/rc/safety -v
+mosquitto_sub -h 192.168.100.7 -t wiserisk/rc/status -v
 ```
 
 통과 기준:
@@ -141,7 +141,7 @@ cd /home/pi/final_veda_test/map/build
 
 ```bash
 # rc status 모니터링
-mosquitto_sub -h 192.168.100.10 -t wiserisk/rc/status -v
+mosquitto_sub -h 192.168.100.7 -t wiserisk/rc/status -v
 ```
 
 통과 기준:

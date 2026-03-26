@@ -276,7 +276,7 @@ int main(int argc, char** argv)
         : "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp";
     const int targetMarkerMinId = 21;
     const int targetMarkerMaxId = 25;
-    const std::string mqttHost       = (argc > 2) ? argv[2] : "192.168.100.10";
+    const std::string mqttHost       = (argc > 2) ? argv[2] : "192.168.100.7";
     const int         mqttPort       = (argc > 3) ? std::stoi(argv[3]) : 1883;
     const std::string mqttTopic      = (argc > 4) ? argv[4] : "wiserisk/p1/pose";
     const std::string homographyYaml = (argc > 5) ? argv[5] : "config/H_img2world.yaml";

@@ -94,7 +94,7 @@ static void onMessage(struct mosquitto*, void*, const struct mosquitto_message* 
 }
 
 int main(int argc, char** argv) {
-    const std::string brokerHost = (argc > 1) ? argv[1] : "192.168.100.10";
+    const std::string brokerHost = (argc > 1) ? argv[1] : "192.168.100.7";
     const int brokerPort = (argc > 2) ? std::stoi(argv[2]) : 1883;
     const std::string goalTopic = (argc > 3) ? argv[3] : "wiserisk/rc/goal";
 

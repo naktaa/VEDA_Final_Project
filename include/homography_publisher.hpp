@@ -1,27 +1,36 @@
 #pragma once
 
+#include "server_types.hpp"
+#include "server_utils.hpp"
+
+#include <mosquitto.h>
+#include <opencv2/opencv.hpp>
+
 #include <string>
 
-#include "server_types.hpp"
+namespace veda_server
+{
 
-struct mosquitto;
+    class HomographyPublisher
+    {
+    public:
+        explicit HomographyPublisher(const ServerConfig &config,
+                                     const CameraModel &camera_model,
+                                     SharedHomography &shared);
 
-namespace veda_server {
+        bool RefreshAndPublish(mosquitto *mosq);
 
-class HomographyPublisher {
-public:
-    HomographyPublisher(const ServerConfig& config,
-                        const CameraModel& camera_model,
-                        SharedHomography& shared);
+    private:
+        const ServerConfig &config_;
+        const CameraModel &camera_model_;
+        SharedHomography &shared_;
 
-    bool RefreshAndPublish(mosquitto* mosq);
+        // yaml은 최초 1회만 읽고 이후엔 캐시 사용
+        bool h_loaded_ = false;
+        cv::Mat cached_H_;
 
-private:
-    const ServerConfig& config_;
-    const CameraModel& camera_model_;
-    SharedHomography& shared_;
-    std::string last_homography_payload_;
-    std::string last_map_payload_;
-};
+        std::string last_homography_payload_;
+        std::string last_map_payload_;
+    };
 
 } // namespace veda_server

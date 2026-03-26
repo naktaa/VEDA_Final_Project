@@ -26,8 +26,8 @@ cd /home/pi/final_veda_test/map/build
 ./p1_tracker \
 "rtsp://admin:team3%40%40%40@192.168.100.16/profile2/media.smp" \
 192.168.100.7 1883 wiserisk/p1/pose \
-/home/pi/final_veda_test/map/build/H_img2world.yaml \
-/home/pi/final_veda_test/map/build/camera.yaml \
+/home/pi/final_veda_test/map/config/H_img2world.yaml \
+/home/pi/final_veda_test/map/config/camera.yaml \
 13 13 0.0 0.0 0.0
 =====================================================================
 # 5) (Optional) rpi_aruco_tracker

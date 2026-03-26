@@ -8,6 +8,7 @@
   #include <mutex>
   #include <atomic>
   #include <sstream>
+  #include <filesystem>
 
   #include <opencv2/opencv.hpp>
   #include <opencv2/aruco.hpp>
@@ -19,6 +20,29 @@
       cv::Mat K;     // 3x3
       cv::Mat dist;  // 1x5 or 1x8
   };
+
+  static std::string resolveExistingPath(const std::string& path)
+  {
+      namespace fs = std::filesystem;
+
+      if (path.empty()) return path;
+
+      const fs::path input(path);
+      const std::vector<fs::path> candidates = {
+          input,
+          fs::current_path() / input,
+          fs::current_path().parent_path() / input
+      };
+
+      for (const auto& candidate : candidates) {
+          std::error_code ec;
+          if (fs::exists(candidate, ec)) {
+              return candidate.lexically_normal().string();
+          }
+      }
+
+      return path;
+  }
 
   static bool loadHomography(const std::string& path, cv::Mat& H_img2world)
   {
@@ -334,16 +358,27 @@
       const double rcOffsetX = (argc > 9) ? std::stod(argv[9]) : 0.0;
       const double rcOffsetY = (argc > 10) ? std::stod(argv[10]) : 0.0;
       const double rcOffsetZ = (argc > 11) ? std::stod(argv[11]) : 0.0;
+      const std::string resolvedHomographyYaml = resolveExistingPath(homographyYaml);
+      const std::string resolvedCameraYaml = resolveExistingPath(cameraYaml);
+
+      if (resolvedHomographyYaml != homographyYaml) {
+          std::cout << "[INFO] homography path resolved: "
+                    << homographyYaml << " -> " << resolvedHomographyYaml << "\n";
+      }
+      if (resolvedCameraYaml != cameraYaml) {
+          std::cout << "[INFO] camera path resolved: "
+                    << cameraYaml << " -> " << resolvedCameraYaml << "\n";
+      }
 
       CameraModel cam;
-      if (!loadCameraModel(cameraYaml, cam)) {
-          std::cerr << "[ERR] failed to load camera model: " << cameraYaml << "\n";
+      if (!loadCameraModel(resolvedCameraYaml, cam)) {
+          std::cerr << "[ERR] failed to load camera model: " << resolvedCameraYaml << "\n";
           return 1;
       }
 
       cv::Mat H_img2world;
-      if (!loadHomography(homographyYaml, H_img2world)) {
-          std::cerr << "[ERR] failed to load homography: " << homographyYaml << "\n";
+      if (!loadHomography(resolvedHomographyYaml, H_img2world)) {
+          std::cerr << "[ERR] failed to load homography: " << resolvedHomographyYaml << "\n";
           return 2;
       }
 

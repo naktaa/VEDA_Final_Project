@@ -214,6 +214,12 @@ void RcControlNode::onMessage(const struct mosquitto_message* msg) {
         if (ParsePoseJson(payload, pose) && pose.frame == "world") {
             pose_ = pose;
             last_pose_rx_ = std::chrono::steady_clock::now();
+            static int pose_rx_count = 0;
+            if (++pose_rx_count % 10 == 0) {
+                std::cout << "[POSE] x=" << pose.x << " y=" << pose.y
+                          << " yaw=" << pose.yaw
+                          << " ts_ms=" << pose.ts_ms << "\n";
+            }
         } else {
             std::cerr << "[WARN] pose parse failed or frame!=world. payload=" << payload << "\n";
         }

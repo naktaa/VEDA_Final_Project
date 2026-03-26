@@ -87,6 +87,12 @@ bool PoseTracker::ProcessFrame(const cv::Mat& frame, mosquitto* mosq, long long&
     const double x = pt_world.at<double>(0) / pt_world.at<double>(2);
     const double y = pt_world.at<double>(1) / pt_world.at<double>(2);
 
+    // 2D ArUco 기반 운용 보정: id=21 사용 시 y를 20(cm) 낮춰 publish
+    double y_publish = y;
+    if (ids[best_idx] == 21) {
+        y_publish -= 20.0;
+    }
+
     cv::Mat R_cam_marker_m;
     cv::Rodrigues(rvecs[best_idx], R_cam_marker_m);
     const cv::Matx33d R_cam_marker = ToMatx33d(R_cam_marker_m);
@@ -101,7 +107,7 @@ bool PoseTracker::ProcessFrame(const cv::Mat& frame, mosquitto* mosq, long long&
     char buf[256];
     std::snprintf(buf, sizeof(buf),
                   "{\"x\":%.3f,\"y\":%.3f,\"yaw\":%.6f,\"frame\":\"world\",\"ts_ms\":%lld}",
-                  x, y, yaw, ts);
+                  x, y_publish, yaw, ts);
 
     if (PublishJson(mosq, config_.pose_topic, buf, false)) {
         ++publish_count;

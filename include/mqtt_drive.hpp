@@ -3,6 +3,8 @@
 #include <atomic>
 #include <string>
 
+class PtzController;
+
 struct MqttConfig {
     std::string host;
     int port = 0;
@@ -15,5 +17,7 @@ struct MqttConfig {
     int status_publish_interval_ms = 50;
 };
 
-bool run_mqtt_drive_loop(const MqttConfig& cfg, std::atomic<bool>& running);
+bool run_mqtt_drive_loop(const MqttConfig& cfg,
+                         std::atomic<bool>& running,
+                         PtzController* ptz_controller = nullptr);
 

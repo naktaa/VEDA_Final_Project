@@ -18,10 +18,13 @@
 
 #include "auto_controller.hpp"
 #include "app_config.hpp"
+#include "frame_jpeg_cache.hpp"
 #include "gst_camera_capture.hpp"
+#include "http_vr_server.hpp"
 #include "libcamera_capture.hpp"
 #include "log_utils.hpp"
 #include "mqtt_drive.hpp"
+#include "ptz_control.hpp"
 #include "rc_status_publisher.h"
 #include "rtsp_server.hpp"
 #include "tank_drive.hpp"
@@ -251,6 +254,24 @@ int main() {
         return 1;
     }
 
+    PtzController ptz_controller;
+    ptz_controller.start(config.ptz);
+
+    FrameJpegCache frame_cache;
+    HttpVrServer http_server;
+    if (config.http.enable) {
+        if (!http_server.start(config.http, running, frame_cache, ptz_controller)) {
+            std::fprintf(stderr, "[LKONLY] HTTP tiltVR start failed on port %d\n", config.http.port);
+            ptz_controller.stop();
+            auto_controller.stop();
+            shutdown_capture();
+            rtsp_server.stop();
+            tank_drive::shutdown();
+            mosquitto_lib_cleanup();
+            return 1;
+        }
+    }
+
     std::thread auto_thread([&]() {
         auto_controller.run(&running);
     });
@@ -340,6 +361,14 @@ int main() {
 
             if (config.camera.flip) {
                 cv::flip(frame.image, frame.image, -1);
+            }
+
+            if (config.http.enable && frame_cache.has_consumers()) {
+                const cv::Mat mjpeg_source = frame.image.isContinuous() ? frame.image : frame.image.clone();
+                frame_cache.update_bgr_frame(mjpeg_source.data,
+                                             mjpeg_source.total() * mjpeg_source.elemSize(),
+                                             mjpeg_source.cols,
+                                             mjpeg_source.rows);
             }
 
             cv::Mat stabilized = frame.image.clone();
@@ -518,13 +547,15 @@ int main() {
                  config.mqtt.port,
                  config.mqtt.control_topic.c_str());
 
-    const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt, running);
+    const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt, running, &ptz_controller);
     if (!mqtt_ok) {
         std::fprintf(stderr, "[LKONLY] Qt control loop ended with error\n");
     }
     running = false;
 
     shutdown_capture();
+    http_server.stop();
+    ptz_controller.stop();
 
     if (frame_thread.joinable()) {
         frame_thread.join();

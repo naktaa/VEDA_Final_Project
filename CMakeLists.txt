@@ -6,9 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release)
 add_compile_options(-O3 -DNDEBUG)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc video)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc video imgcodecs calib3d)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+find_package(nlohmann_json QUIET)
+find_package(cpp-httplib QUIET CONFIG)
 
 pkg_check_modules(GST REQUIRED
   gstreamer-1.0
@@ -19,20 +21,47 @@ pkg_check_modules(GST REQUIRED
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 pkg_check_modules(LIBGPIOD REQUIRED libgpiod)
+pkg_check_modules(HTTPLIB QUIET cpp-httplib)
+
+if(NOT TARGET cpp-httplib::cpp-httplib)
+  find_path(HTTPLIB_INCLUDE_DIR
+    NAMES httplib.h
+    HINTS ${HTTPLIB_INCLUDE_DIRS}
+  )
+
+  if(NOT HTTPLIB_INCLUDE_DIR)
+    message(FATAL_ERROR "httplib.h not found. Install cpp-httplib development headers.")
+  endif()
+
+  find_library(HTTPLIB_LIBRARY
+    NAMES cpp-httplib httplib
+    HINTS ${HTTPLIB_LIBRARY_DIRS}
+  )
+endif()
+
+if(NOT nlohmann_json_FOUND)
+  find_path(NLOHMANN_JSON_INCLUDE_DIR NAMES nlohmann/json.hpp)
+  if(NOT NLOHMANN_JSON_INCLUDE_DIR)
+    message(FATAL_ERROR "nlohmann/json.hpp not found. Install nlohmann-json3-dev.")
+  endif()
+endif()
 
 set(COMMON_SOURCES
   src/auto_controller.cpp
   src/app_config.cpp
+  src/frame_jpeg_cache.cpp
   src/gyro_eis.cpp
   src/gpio_line.cpp
   src/gst_camera_capture.cpp
   src/hybrid_eis.cpp
+  src/http_vr_server.cpp
   src/image_utils.cpp
   src/imu_reader.cpp
   src/libcamera_capture.cpp
   src/lk_tracker.cpp
   src/mqtt_drive.cpp
   src/offset_calibrator.cpp
+  src/ptz_control.cpp
   src/rc_json_utils.cpp
   src/rc_path_planner.cpp
   src/rc_status_publisher.cpp
@@ -52,12 +81,24 @@ set(COMMON_INCLUDE_DIRS
   ${LIBGPIOD_INCLUDE_DIRS}
 )
 
+if(NOT TARGET cpp-httplib::cpp-httplib)
+  list(APPEND COMMON_INCLUDE_DIRS ${HTTPLIB_INCLUDE_DIR})
+endif()
+
+if(NOT nlohmann_json_FOUND)
+  list(APPEND COMMON_INCLUDE_DIRS ${NLOHMANN_JSON_INCLUDE_DIR})
+endif()
+
 set(COMMON_COMPILE_OPTIONS
   ${GST_CFLAGS_OTHER}
   ${LIBCAMERA_CFLAGS_OTHER}
   ${MOSQUITTO_CFLAGS_OTHER}
   ${LIBGPIOD_CFLAGS_OTHER}
 )
+
+if(HTTPLIB_CFLAGS_OTHER)
+  list(APPEND COMMON_COMPILE_OPTIONS ${HTTPLIB_CFLAGS_OTHER})
+endif()
 
 set(COMMON_LINK_LIBS
   ${OpenCV_LIBS}
@@ -68,6 +109,16 @@ set(COMMON_LINK_LIBS
   Threads::Threads
   wiringPi
 )
+
+if(TARGET cpp-httplib::cpp-httplib)
+  list(APPEND COMMON_LINK_LIBS cpp-httplib::cpp-httplib)
+elseif(HTTPLIB_LIBRARY)
+  list(APPEND COMMON_LINK_LIBS ${HTTPLIB_LIBRARY})
+endif()
+
+if(nlohmann_json_FOUND)
+  list(APPEND COMMON_LINK_LIBS nlohmann_json::nlohmann_json)
+endif()
 
 if(LIBGPIOD_VERSION VERSION_GREATER_EQUAL 2.0.0)
   add_compile_definitions(USE_LIBGPIOD_V2)
@@ -85,10 +136,13 @@ target_link_libraries(main PRIVATE ${COMMON_LINK_LIBS})
 add_executable(main_raw
   src/main_raw.cpp
   src/app_config.cpp
+  src/frame_jpeg_cache.cpp
   src/gst_camera_capture.cpp
+  src/http_vr_server.cpp
   src/image_utils.cpp
   src/libcamera_capture.cpp
   src/mqtt_drive.cpp
+  src/ptz_control.cpp
   src/rtsp_server.cpp
   src/tank_drive.cpp
   src/timebase.cpp

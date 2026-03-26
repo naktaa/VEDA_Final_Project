@@ -2,7 +2,9 @@
 
 #include <string>
 
+#include "http_vr_server.hpp"
 #include "mqtt_drive.hpp"
+#include "ptz_control.hpp"
 #include "rc_control_types.hpp"
 
 struct CameraConfig {
@@ -131,6 +133,12 @@ struct AppConfig {
     RcMotorParams motor;
     ManualDriveConfig manual_drive;
     ControllerConfig controller;
+    HttpVrConfig http{
+        true,
+        8000,
+        "../web/tilt_vr",
+    };
+    PtzConfig ptz;
     CalibrationConfig calib;
 };
 

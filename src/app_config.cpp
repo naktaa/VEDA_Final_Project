@@ -249,6 +249,29 @@ std::string make_default_config_text() {
     append_kv(oss, "log_only", cfg.controller.log_only ? 1 : 0);
     oss << "\n";
 
+    oss << "# [http] 폰에서 보는 tiltVR 웹/MJPEG 서버 설정\n";
+    append_section(oss, "http");
+    append_kv(oss, "enable", cfg.http.enable ? 1 : 0);
+    append_kv(oss, "port", cfg.http.port);
+    append_kv(oss, "web_root", cfg.http.web_root);
+    oss << "\n";
+
+    oss << "# [ptz] 팬틸트 SG90 + PCA9685 설정\n";
+    append_section(oss, "ptz");
+    append_kv(oss, "i2c_device", cfg.ptz.i2c_device);
+    append_kv(oss, "i2c_address", cfg.ptz.i2c_address);
+    append_kv(oss, "pwm_frequency_hz", cfg.ptz.pwm_frequency_hz);
+    append_kv(oss, "pan_channel", cfg.ptz.pan_channel);
+    append_kv(oss, "tilt_channel", cfg.ptz.tilt_channel);
+    append_kv(oss, "pan_center_deg", cfg.ptz.pan_center_deg);
+    append_kv(oss, "pan_left_deg", cfg.ptz.pan_left_deg);
+    append_kv(oss, "pan_right_deg", cfg.ptz.pan_right_deg);
+    append_kv(oss, "tilt_center_deg", cfg.ptz.tilt_center_deg);
+    append_kv(oss, "tilt_up_deg", cfg.ptz.tilt_up_deg);
+    append_kv(oss, "tilt_down_deg", cfg.ptz.tilt_down_deg);
+    append_kv(oss, "imu_timeout_ms", cfg.ptz.imu_timeout_ms);
+    oss << "\n";
+
     oss << "# [calib] calib_offset가 저장하는 bias/offset 결과\n";
     append_section(oss, "calib");
     append_kv(oss, "bias_x", cfg.calib.bias_x);
@@ -409,6 +432,29 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_int(map, "controller.speed_step", config.controller.speed_step);
         load_bool(map, "controller.log_only", config.controller.log_only);
 
+        load_bool(map, "http.enable", config.http.enable);
+        load_int(map, "http.port", config.http.port);
+        load_string(map, "http.web_root", config.http.web_root);
+
+        load_string(map, "ptz.i2c_device", config.ptz.i2c_device);
+        load_int(map, "ptz.i2c_address", config.ptz.i2c_address);
+        load_int(map, "ptz.pwm_frequency_hz", config.ptz.pwm_frequency_hz);
+        load_int(map, "ptz.pan_channel", config.ptz.pan_channel);
+        load_int(map, "ptz.tilt_channel", config.ptz.tilt_channel);
+        load_int(map, "ptz.imu_timeout_ms", config.ptz.imu_timeout_ms);
+        auto load_float = [&](const std::string& key, float& output) {
+            auto it = map.find(key);
+            if (it != map.end()) {
+                output = std::stof(it->second);
+            }
+        };
+        load_float("ptz.pan_center_deg", config.ptz.pan_center_deg);
+        load_float("ptz.pan_left_deg", config.ptz.pan_left_deg);
+        load_float("ptz.pan_right_deg", config.ptz.pan_right_deg);
+        load_float("ptz.tilt_center_deg", config.ptz.tilt_center_deg);
+        load_float("ptz.tilt_up_deg", config.ptz.tilt_up_deg);
+        load_float("ptz.tilt_down_deg", config.ptz.tilt_down_deg);
+
         load_double(map, "calib.bias_x", config.calib.bias_x);
         load_double(map, "calib.bias_y", config.calib.bias_y);
         load_double(map, "calib.bias_z", config.calib.bias_z);
@@ -556,6 +602,27 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "idle_stop_ms", copy.controller.idle_stop_ms);
         append_kv(oss, "speed_step", copy.controller.speed_step);
         append_kv(oss, "log_only", copy.controller.log_only ? 1 : 0);
+        oss << "\n";
+
+        append_section(oss, "http");
+        append_kv(oss, "enable", copy.http.enable ? 1 : 0);
+        append_kv(oss, "port", copy.http.port);
+        append_kv(oss, "web_root", copy.http.web_root);
+        oss << "\n";
+
+        append_section(oss, "ptz");
+        append_kv(oss, "i2c_device", copy.ptz.i2c_device);
+        append_kv(oss, "i2c_address", copy.ptz.i2c_address);
+        append_kv(oss, "pwm_frequency_hz", copy.ptz.pwm_frequency_hz);
+        append_kv(oss, "pan_channel", copy.ptz.pan_channel);
+        append_kv(oss, "tilt_channel", copy.ptz.tilt_channel);
+        append_kv(oss, "pan_center_deg", copy.ptz.pan_center_deg);
+        append_kv(oss, "pan_left_deg", copy.ptz.pan_left_deg);
+        append_kv(oss, "pan_right_deg", copy.ptz.pan_right_deg);
+        append_kv(oss, "tilt_center_deg", copy.ptz.tilt_center_deg);
+        append_kv(oss, "tilt_up_deg", copy.ptz.tilt_up_deg);
+        append_kv(oss, "tilt_down_deg", copy.ptz.tilt_down_deg);
+        append_kv(oss, "imu_timeout_ms", copy.ptz.imu_timeout_ms);
         oss << "\n";
 
         append_section(oss, "calib");

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Tank tiltVR</title>
+    <link rel="stylesheet" href="/web/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="controls">
+        <h1>Tank tiltVR</h1>
+        <div class="button-row">
+          <button id="connectBtn">Connect + Start VR</button>
+          <button id="centerBtn">0점 조정</button>
+          <button id="fullscreenBtn">Fullscreen</button>
+          <button id="scrollBtn">Scroll To Video</button>
+        </div>
+        <p id="status">Idle</p>
+        <p id="mode">PTZ Mode: manual</p>
+        <p id="imu">IMU: -</p>
+        <p id="imuAck">Server IMU: -</p>
+      </section>
+
+      <section class="vr-stage">
+        <div class="eye left-eye"><canvas id="leftCanvas"></canvas></div>
+        <div class="eye right-eye"><canvas id="rightCanvas"></canvas></div>
+      </section>
+    </main>
+
+    <img id="streamSource" class="stream-source" alt="stream source" />
+
+    <script src="/web/app.js" type="module"></script>
+  </body>
+</html>

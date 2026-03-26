@@ -9,6 +9,7 @@
 - IMU 기반 gyro 보조 + LK 기반 translation 중심의 hybrid EIS
 - `reference_tae.cpp` 방식 LK-only 보정 실행파일
 - RTSP 송출
+- 폰 tiltVR 페이지 + MJPEG 스트림 + PTZ 제어
 - `build` 내부 로컬 `ini` 기반 튜닝
 
 상세 설계와 알고리즘 설명은 [docs/HYBRID_EIS_FRAMEWORK.md](/mnt/e/VEDA/VEDA_Final_Project/docs/HYBRID_EIS_FRAMEWORK.md)에 정리되어 있습니다.
@@ -24,6 +25,8 @@
 - `libgstrtspserver-1.0-dev`
 - `libcamera-dev`
 - `OpenCV`
+- `nlohmann-json3-dev`
+- `cpp-httplib-dev` 또는 `httplib.h`
 
 ## 빌드
 예전처럼 직접 빌드해서 `build` 안의 실행파일을 실행하면 됩니다.
@@ -75,8 +78,16 @@ sudo ./main_raw
 
 ## 주요 RTSP 경로
 - active stream: `rtsp://<PI_IP>:8555/cam`
+- raw stream: `rtsp://<PI_IP>:8555/raw`
 
 기본 포트/경로는 `config_local.ini`의 `[rtsp]` 섹션에서 바꿀 수 있습니다.
+
+## 폰 tiltVR
+- 웹 페이지: `http://<PI_IP>:8000/web/`
+- MJPEG: `http://<PI_IP>:8000/stream.mjpg`
+- IMU/PTZ 상태: `http://<PI_IP>:8000/imu/latest`, `http://<PI_IP>:8000/ptz/mode`
+
+기본 포트와 웹 루트는 `config_local.ini`의 `[http]` 섹션에서 바꿀 수 있습니다.
 
 ## 제어 모드
 - Qt: `mqtt.control_topic`으로 들어오는 `tank_control` drive 명령
@@ -102,6 +113,8 @@ Git에 올라가지 않는 로컬 파일:
 - `[motor]`
 - `[manual]`
 - `[controller]`
+- `[http]`
+- `[ptz]`
 - `[calib]`
 
 런타임 CLI 옵션은 의도적으로 없앴습니다. 파라미터 조정은 `config_local.ini` 기준으로 합니다.

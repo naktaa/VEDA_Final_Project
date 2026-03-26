@@ -9,8 +9,10 @@
 #include <string>
 #include <thread>
 
+#include <mosquitto.h>
 #include <opencv2/imgproc.hpp>
 
+#include "auto_controller.hpp"
 #include "app_config.hpp"
 #include "gst_camera_capture.hpp"
 #include "hybrid_eis.hpp"
@@ -18,6 +20,7 @@
 #include "libcamera_capture.hpp"
 #include "log_utils.hpp"
 #include "mqtt_drive.hpp"
+#include "rc_status_publisher.h"
 #include "rtsp_server.hpp"
 #include "tank_drive.hpp"
 #include "vr_remote_input.hpp"
@@ -34,6 +37,7 @@ void handle_signal(int) {
 
 constexpr const char* kTemplateConfigPath = "config_template.ini";
 constexpr const char* kLocalConfigPath = "config_local.ini";
+constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
 
 bool use_gstreamer_capture(const CameraConfig& config) {
     std::string backend = config.capture_backend;
@@ -41,6 +45,69 @@ bool use_gstreamer_capture(const CameraConfig& config) {
         return static_cast<char>(std::tolower(c));
     });
     return backend == "gst" || backend == "gstreamer";
+}
+
+double average_pwm(const tank_drive::DriveStatusSnapshot& drive) {
+    return (static_cast<double>(drive.left_pwm) + static_cast<double>(drive.right_pwm)) * 0.5;
+}
+
+bool manual_override_active(const tank_drive::DriveStatusSnapshot& drive) {
+    return drive.active_source == tank_drive::DriveSource::kQt ||
+           drive.active_source == tank_drive::DriveSource::kController ||
+           (drive.active_source == tank_drive::DriveSource::kManualKey && drive.moving);
+}
+
+void fill_runtime_status(RcStatus& status,
+                         const tank_drive::DriveStatusSnapshot& drive,
+                         const AutoStatusSnapshot& auto_state,
+                         int publish_interval_ms) {
+    status.data_period = std::to_string(publish_interval_ms) + "ms";
+    status.speed = 0.0;
+    status.mode = "idle";
+    status.mission = "none";
+    status.robot_state = drive.motor_ready ? "IDLE" : "motor_unavailable";
+
+    if (auto_state.pose.valid) {
+        status.x = auto_state.pose.x;
+        status.y = auto_state.pose.y;
+        status.heading = auto_state.pose.yaw * kRadToDeg;
+    } else {
+        status.x = -1.0;
+        status.y = -1.0;
+        status.heading = -1.0;
+    }
+
+    if (auto_state.goal.valid) {
+        TargetInfo target;
+        target.x = auto_state.goal.x;
+        target.y = auto_state.goal.y;
+        status.target = target;
+    } else {
+        status.target.reset();
+    }
+
+    if (manual_override_active(drive)) {
+        status.mode = "manual";
+        status.speed = drive.moving ? average_pwm(drive) : 0.0;
+        if (drive.active_source == tank_drive::DriveSource::kQt) {
+            status.mission = "qt_drive";
+            status.robot_state = drive.moving ? "QT_OVERRIDE" : "QT_IDLE";
+        } else if (drive.active_source == tank_drive::DriveSource::kController) {
+            status.mission = "controller_drive";
+            status.robot_state = drive.moving ? "CONTROLLER_OVERRIDE" : "CONTROLLER_IDLE";
+        } else {
+            status.mission = "keyboard_drive";
+            status.robot_state = drive.moving ? "KEYBOARD_DRIVE" : "KEYBOARD_IDLE";
+        }
+        return;
+    }
+
+    if (auto_state.goal.valid || auto_state.pose.valid) {
+        status.mode = auto_state.goal.valid ? "auto" : "idle";
+        status.mission = auto_state.goal.valid ? "goal_tracking" : "none";
+        status.speed = std::max(0.0, auto_state.command.speed_cmps);
+        status.robot_state = auto_state.control_status.robot_state;
+    }
 }
 
 } // namespace
@@ -102,13 +169,20 @@ int main() {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
-    tank_drive::init();
+    mosquitto_lib_init();
+
+    if (!tank_drive::init()) {
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+    tank_drive::set_manual_speed(config.manual_drive.default_pwm);
     tank_drive::set_idle_autostop(false);
 
     RtspServer rtsp_server;
     if (!rtsp_server.start(config.camera, config.rtsp, true, &error)) {
         std::fprintf(stderr, "[MAIN] RTSP start failed: %s\n", error.c_str());
         tank_drive::shutdown();
+        mosquitto_lib_cleanup();
         return 1;
     }
 
@@ -117,6 +191,7 @@ int main() {
         std::fprintf(stderr, "[MAIN] IMU start failed: %s\n", error.c_str());
         rtsp_server.stop();
         tank_drive::shutdown();
+        mosquitto_lib_cleanup();
         return 1;
     }
 
@@ -146,19 +221,77 @@ int main() {
         imu_reader.stop();
         rtsp_server.stop();
         tank_drive::shutdown();
+        mosquitto_lib_cleanup();
         return 1;
     }
     std::fprintf(stderr, "[MAIN] capture backend: %s\n", gst_capture_enabled ? "gstreamer" : "libcamera");
 
     HybridEisProcessor processor(config, &imu_reader.buffer());
 
-    VrRemoteInputConfig vr_input_config;
-    std::thread vr_input_thread([&]() {
-        const bool ok = run_vr_remote_input_loop(vr_input_config, running);
-        if (!ok && running.load()) {
-            std::fprintf(stderr, "[VR] controller loop unavailable; MQTT control remains active\n");
-        }
+    AutoController auto_controller(config);
+    if (!auto_controller.start(&error)) {
+        std::fprintf(stderr, "[MAIN] auto controller start failed: %s\n", error.c_str());
+        shutdown_capture();
+        imu_reader.stop();
+        rtsp_server.stop();
+        tank_drive::shutdown();
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+
+    std::thread auto_thread([&]() {
+        auto_controller.run(&running);
     });
+
+    RcStatusPublisher::Config status_config;
+    status_config.broker_host = config.mqtt.host;
+    status_config.broker_port = config.mqtt.port;
+    status_config.topic = config.mqtt.status_topic;
+    status_config.client_id = "tank_merge_status";
+    status_config.publish_interval_ms = config.mqtt.status_publish_interval_ms;
+    status_config.keepalive_sec = config.mqtt.keepalive_sec;
+    status_config.qos = 1;
+    status_config.retain = true;
+    RcStatusPublisher status_publisher(status_config);
+    status_publisher.setStatusProvider([&](RcStatus& status) {
+        fill_runtime_status(
+            status,
+            tank_drive::get_status_snapshot(),
+            auto_controller.snapshot(),
+            config.mqtt.status_publish_interval_ms);
+    });
+
+    bool status_thread_started = false;
+    std::thread status_thread;
+    if (status_publisher.start()) {
+        status_thread = std::thread([&]() {
+            while (running.load()) {
+                status_publisher.spinOnce();
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        });
+        status_thread_started = true;
+    } else {
+        std::fprintf(stderr, "[MAIN] status publisher disabled due to startup failure\n");
+    }
+
+    std::thread vr_input_thread;
+    bool vr_input_thread_started = false;
+    if (config.controller.enabled) {
+        VrRemoteInputConfig vr_input_config;
+        vr_input_config.input_device = config.controller.input_device;
+        vr_input_config.device_name_hint = config.controller.device_name_hint;
+        vr_input_config.idle_stop_ms = config.controller.idle_stop_ms;
+        vr_input_config.speed_step = config.controller.speed_step;
+        vr_input_config.log_only = config.controller.log_only;
+        vr_input_thread = std::thread([&, vr_input_config]() {
+            const bool ok = run_vr_remote_input_loop(vr_input_config, running);
+            if (!ok && running.load()) {
+                std::fprintf(stderr, "[VR] controller loop unavailable; Qt/auto control remains active\n");
+            }
+        });
+        vr_input_thread_started = true;
+    }
 
     std::thread tick_thread([&]() {
         while (running.load()) {
@@ -259,11 +392,11 @@ int main() {
                  config.rtsp.raw_path.c_str(),
                  config.mqtt.host.c_str(),
                  config.mqtt.port,
-                 config.mqtt.topic.c_str());
+                 config.mqtt.control_topic.c_str());
 
     const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt, running);
     if (!mqtt_ok) {
-        std::fprintf(stderr, "[MAIN] MQTT loop ended with error\n");
+        std::fprintf(stderr, "[MAIN] Qt control loop ended with error\n");
     }
     running = false;
 
@@ -272,15 +405,24 @@ int main() {
     if (frame_thread.joinable()) {
         frame_thread.join();
     }
-    if (vr_input_thread.joinable()) {
+    if (vr_input_thread_started && vr_input_thread.joinable()) {
         vr_input_thread.join();
     }
     if (tick_thread.joinable()) {
         tick_thread.join();
     }
+    if (auto_thread.joinable()) {
+        auto_thread.join();
+    }
+    if (status_thread_started && status_thread.joinable()) {
+        status_thread.join();
+    }
 
+    status_publisher.stop();
+    auto_controller.stop();
     imu_reader.stop();
     rtsp_server.stop();
     tank_drive::shutdown();
+    mosquitto_lib_cleanup();
     return mqtt_ok ? 0 : 1;
 }

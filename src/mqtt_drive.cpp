@@ -76,14 +76,14 @@ bool decode_drive_command(const std::string& cmd, int& left_cmd, int& right_cmd)
 
 void on_connect(struct mosquitto* mosq, void* obj, int rc) {
     if (rc != 0) {
-        fprintf(stderr, "[MQTT] connect failed rc=%d\n", rc);
+        fprintf(stderr, "[QT] connect failed rc=%d\n", rc);
         return;
     }
 
     auto* rt = static_cast<MqttRuntime*>(obj);
     if (!rt) return;
 
-    fprintf(stderr, "[MQTT] connected\n");
+    fprintf(stderr, "[QT] connected\n");
     mosquitto_subscribe(mosq, nullptr, rt->topic.c_str(), 0);
 }
 
@@ -111,16 +111,16 @@ void on_message(struct mosquitto*, void* obj, const struct mosquitto_message* ms
     if (!decode_drive_command(command, left_cmd, right_cmd)) return;
 
     if (active) {
-        tank_drive::command_drive_from(tank_drive::DriveSource::kMqtt, left_cmd, right_cmd);
+        tank_drive::command_drive_from(tank_drive::DriveSource::kQt, left_cmd, right_cmd);
         rt->active_drive_cmd = command;
-        fprintf(stderr, "[MQTT] drive start: %s\n", command.c_str());
+        fprintf(stderr, "[QT] drive start: %s\n", command.c_str());
         return;
     }
 
     if (rt->active_drive_cmd == command) {
-        tank_drive::stop_from(tank_drive::DriveSource::kMqtt);
+        tank_drive::stop_from(tank_drive::DriveSource::kQt);
         rt->active_drive_cmd.clear();
-        fprintf(stderr, "[MQTT] drive stop: %s\n", command.c_str());
+        fprintf(stderr, "[QT] drive stop: %s\n", command.c_str());
     }
 }
 
@@ -128,25 +128,25 @@ void on_message(struct mosquitto*, void* obj, const struct mosquitto_message* ms
 
 bool run_mqtt_drive_loop(const MqttConfig& cfg, std::atomic<bool>& running) {
     MqttRuntime runtime;
-    runtime.topic = cfg.topic;
+    runtime.topic = cfg.control_topic;
 
-    mosquitto_lib_init();
-    mosquitto* mosq = mosquitto_new("tank_mqtt_drive", true, &runtime);
+    mosquitto* mosq = mosquitto_new("tank_qt_drive", true, &runtime);
     if (!mosq) {
-        fprintf(stderr, "[MQTT] mosquitto_new failed\n");
-        mosquitto_lib_cleanup();
+        fprintf(stderr, "[QT] mosquitto_new failed\n");
         return false;
     }
 
     mosquitto_connect_callback_set(mosq, on_connect);
     mosquitto_message_callback_set(mosq, on_message);
 
-    fprintf(stderr, "[MQTT] host=%s port=%d topic=%s\n", cfg.host.c_str(), cfg.port, cfg.topic.c_str());
+    fprintf(stderr, "[QT] host=%s port=%d topic=%s\n",
+            cfg.host.c_str(),
+            cfg.port,
+            cfg.control_topic.c_str());
     int rc = mosquitto_connect(mosq, cfg.host.c_str(), cfg.port, cfg.keepalive_sec);
     if (rc != MOSQ_ERR_SUCCESS) {
-        fprintf(stderr, "[MQTT] connect error: %s\n", mosquitto_strerror(rc));
+        fprintf(stderr, "[QT] connect error: %s\n", mosquitto_strerror(rc));
         mosquitto_destroy(mosq);
-        mosquitto_lib_cleanup();
         return false;
     }
 
@@ -154,24 +154,23 @@ bool run_mqtt_drive_loop(const MqttConfig& cfg, std::atomic<bool>& running) {
     while (running) {
         rc = mosquitto_loop(mosq, 100, 1);
         if (rc == MOSQ_ERR_CONN_LOST || rc == MOSQ_ERR_NO_CONN) {
-            fprintf(stderr, "[MQTT] reconnecting...\n");
+            fprintf(stderr, "[QT] reconnecting...\n");
             while (running && (rc = mosquitto_reconnect(mosq)) != MOSQ_ERR_SUCCESS) {
-                fprintf(stderr, "[MQTT] reconnect failed: %s\n", mosquitto_strerror(rc));
+                fprintf(stderr, "[QT] reconnect failed: %s\n", mosquitto_strerror(rc));
                 mosquitto_loop(mosq, 1000, 1);
             }
             continue;
         }
         if (rc != MOSQ_ERR_SUCCESS) {
-            fprintf(stderr, "[MQTT] loop error: %s\n", mosquitto_strerror(rc));
+            fprintf(stderr, "[QT] loop error: %s\n", mosquitto_strerror(rc));
             ok = false;
             break;
         }
     }
 
-    tank_drive::stop_from(tank_drive::DriveSource::kMqtt);
+    tank_drive::stop_from(tank_drive::DriveSource::kQt);
     mosquitto_disconnect(mosq);
     mosquitto_destroy(mosq);
-    mosquitto_lib_cleanup();
     return ok;
 }
 

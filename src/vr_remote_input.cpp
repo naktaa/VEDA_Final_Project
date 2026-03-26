@@ -305,7 +305,7 @@ private:
             return;
         }
 
-        tank_drive::command_drive_from(tank_drive::DriveSource::kVrRemote, left_cmd_, right_cmd_);
+        tank_drive::command_drive_from(tank_drive::DriveSource::kController, left_cmd_, right_cmd_);
     }
 
     void stop_drive(const char* reason) {
@@ -318,7 +318,7 @@ private:
             return;
         }
 
-        tank_drive::stop_from(tank_drive::DriveSource::kVrRemote);
+        tank_drive::stop_from(tank_drive::DriveSource::kController);
     }
 
     void adjust_speed(int delta) {

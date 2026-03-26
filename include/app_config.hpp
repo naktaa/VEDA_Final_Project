@@ -3,6 +3,7 @@
 #include <string>
 
 #include "mqtt_drive.hpp"
+#include "rc_control_types.hpp"
 
 struct CameraConfig {
     int width = 640;
@@ -97,6 +98,19 @@ struct CalibrationConfig {
     double fine_step_ms = 0.1;
 };
 
+struct ManualDriveConfig {
+    int default_pwm = 200;
+};
+
+struct ControllerConfig {
+    bool enabled = true;
+    std::string input_device;
+    std::string device_name_hint = "VR-PARK";
+    int idle_stop_ms = 180;
+    int speed_step = 10;
+    bool log_only = false;
+};
+
 struct AppConfig {
     CameraConfig camera;
     ImuConfig imu;
@@ -107,7 +121,16 @@ struct AppConfig {
         1883,
         30,
         "wiserisk/rc/control",
+        "wiserisk/rc/goal",
+        "wiserisk/p1/pose",
+        "wiserisk/rc/safety",
+        "wiserisk/rc/status",
+        50,
     };
+    RcControlParams auto_control;
+    RcMotorParams motor;
+    ManualDriveConfig manual_drive;
+    ControllerConfig controller;
     CalibrationConfig calib;
 };
 

@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 
+#include <mosquitto.h>
 #include <opencv2/imgproc.hpp>
 
 #include "app_config.hpp"
@@ -63,13 +64,20 @@ int main() {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
-    tank_drive::init();
+    mosquitto_lib_init();
+
+    if (!tank_drive::init()) {
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+    tank_drive::set_manual_speed(config.manual_drive.default_pwm);
     tank_drive::set_idle_autostop(false);
 
     RtspServer rtsp_server;
     if (!rtsp_server.start(config.camera, config.rtsp, false, &error)) {
         std::fprintf(stderr, "[RAW] RTSP start failed: %s\n", error.c_str());
         tank_drive::shutdown();
+        mosquitto_lib_cleanup();
         return 1;
     }
 
@@ -98,17 +106,28 @@ int main() {
         std::fprintf(stderr, "[RAW] camera start failed: %s\n", error.c_str());
         rtsp_server.stop();
         tank_drive::shutdown();
+        mosquitto_lib_cleanup();
         return 1;
     }
     std::fprintf(stderr, "[RAW] capture backend: %s\n", gst_capture_enabled ? "gstreamer" : "libcamera");
 
-    VrRemoteInputConfig vr_input_config;
-    std::thread vr_input_thread([&]() {
-        const bool ok = run_vr_remote_input_loop(vr_input_config, running);
-        if (!ok && running.load()) {
-            std::fprintf(stderr, "[VR] controller loop unavailable; MQTT control remains active\n");
-        }
-    });
+    std::thread vr_input_thread;
+    bool vr_input_thread_started = false;
+    if (config.controller.enabled) {
+        VrRemoteInputConfig vr_input_config;
+        vr_input_config.input_device = config.controller.input_device;
+        vr_input_config.device_name_hint = config.controller.device_name_hint;
+        vr_input_config.idle_stop_ms = config.controller.idle_stop_ms;
+        vr_input_config.speed_step = config.controller.speed_step;
+        vr_input_config.log_only = config.controller.log_only;
+        vr_input_thread = std::thread([&, vr_input_config]() {
+            const bool ok = run_vr_remote_input_loop(vr_input_config, running);
+            if (!ok && running.load()) {
+                std::fprintf(stderr, "[VR] controller loop unavailable; Qt control remains active\n");
+            }
+        });
+        vr_input_thread_started = true;
+    }
 
     std::thread tick_thread([&]() {
         while (running.load()) {
@@ -145,11 +164,11 @@ int main() {
                  config.rtsp.path.c_str(),
                  config.mqtt.host.c_str(),
                  config.mqtt.port,
-                 config.mqtt.topic.c_str());
+                 config.mqtt.control_topic.c_str());
 
     const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt, running);
     if (!mqtt_ok) {
-        std::fprintf(stderr, "[RAW] MQTT loop ended with error\n");
+        std::fprintf(stderr, "[RAW] Qt control loop ended with error\n");
     }
     running = false;
 
@@ -158,7 +177,7 @@ int main() {
     if (frame_thread.joinable()) {
         frame_thread.join();
     }
-    if (vr_input_thread.joinable()) {
+    if (vr_input_thread_started && vr_input_thread.joinable()) {
         vr_input_thread.join();
     }
     if (tick_thread.joinable()) {
@@ -167,5 +186,6 @@ int main() {
 
     rtsp_server.stop();
     tank_drive::shutdown();
+    mosquitto_lib_cleanup();
     return mqtt_ok ? 0 : 1;
 }

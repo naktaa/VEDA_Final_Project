@@ -21,6 +21,7 @@ pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 pkg_check_modules(LIBGPIOD REQUIRED libgpiod)
 
 set(COMMON_SOURCES
+  src/auto_controller.cpp
   src/app_config.cpp
   src/gyro_eis.cpp
   src/gpio_line.cpp
@@ -32,6 +33,10 @@ set(COMMON_SOURCES
   src/lk_tracker.cpp
   src/mqtt_drive.cpp
   src/offset_calibrator.cpp
+  src/rc_json_utils.cpp
+  src/rc_path_planner.cpp
+  src/rc_status_publisher.cpp
+  src/rc_status_types.cpp
   src/rtsp_server.cpp
   src/tank_drive.cpp
   src/timebase.cpp
@@ -94,25 +99,14 @@ target_include_directories(main_raw PRIVATE ${COMMON_INCLUDE_DIRS})
 target_compile_options(main_raw PRIVATE ${COMMON_COMPILE_OPTIONS})
 target_link_libraries(main_raw PRIVATE ${COMMON_LINK_LIBS})
 
-add_executable(main_lkonly
+add_executable(lkonly
   src/main_lkonly.cpp
-  src/app_config.cpp
-  src/gyro_eis.cpp
-  src/gst_camera_capture.cpp
-  src/hybrid_eis.cpp
-  src/image_utils.cpp
-  src/libcamera_capture.cpp
-  src/lk_tracker.cpp
-  src/mqtt_drive.cpp
-  src/rtsp_server.cpp
-  src/tank_drive.cpp
-  src/timebase.cpp
-  src/vr_remote_input.cpp
+  ${COMMON_SOURCES}
 )
 
-target_include_directories(main_lkonly PRIVATE ${COMMON_INCLUDE_DIRS})
-target_compile_options(main_lkonly PRIVATE ${COMMON_COMPILE_OPTIONS})
-target_link_libraries(main_lkonly PRIVATE ${COMMON_LINK_LIBS})
+target_include_directories(lkonly PRIVATE ${COMMON_INCLUDE_DIRS})
+target_compile_options(lkonly PRIVATE ${COMMON_COMPILE_OPTIONS})
+target_link_libraries(lkonly PRIVATE ${COMMON_LINK_LIBS})
 
 add_executable(calib
   src/calib_offset.cpp

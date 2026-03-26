@@ -13,6 +13,7 @@
 namespace {
 
 using ConfigMap = std::unordered_map<std::string, std::string>;
+constexpr double kPi = 3.14159265358979323846;
 
 std::string trim(const std::string& input) {
     const auto begin = input.find_first_not_of(" \t\r\n");
@@ -98,6 +99,10 @@ std::string now_string() {
     std::ostringstream oss;
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return oss.str();
+}
+
+double deg_to_rad(double deg) {
+    return deg * kPi / 180.0;
 }
 
 void append_section(std::ostringstream& oss, const std::string& section) {
@@ -197,12 +202,51 @@ std::string make_default_config_text() {
     append_kv(oss, "iframe_period", cfg.rtsp.iframe_period);
     oss << "\n";
 
-    oss << "# [mqtt] 탱크 주행 제어용 MQTT broker\n";
+    oss << "# [mqtt] 수동/자동 제어와 상태 송신에 쓰는 MQTT broker 및 topic\n";
     append_section(oss, "mqtt");
     append_kv(oss, "host", cfg.mqtt.host);
     append_kv(oss, "port", cfg.mqtt.port);
     append_kv(oss, "keepalive_sec", cfg.mqtt.keepalive_sec);
-    append_kv(oss, "topic", cfg.mqtt.topic);
+    append_kv(oss, "control_topic", cfg.mqtt.control_topic);
+    append_kv(oss, "goal_topic", cfg.mqtt.goal_topic);
+    append_kv(oss, "pose_topic", cfg.mqtt.pose_topic);
+    append_kv(oss, "safety_topic", cfg.mqtt.safety_topic);
+    append_kv(oss, "status_topic", cfg.mqtt.status_topic);
+    append_kv(oss, "status_publish_interval_ms", cfg.mqtt.status_publish_interval_ms);
+    oss << "\n";
+
+    oss << "# [auto] goal tracking 제어 파라미터\n";
+    append_section(oss, "auto");
+    append_kv(oss, "k_linear", cfg.auto_control.k_linear);
+    append_kv(oss, "k_yaw", cfg.auto_control.k_yaw);
+    append_kv(oss, "max_speed_cmps", cfg.auto_control.max_speed_cmps);
+    append_kv(oss, "max_yaw_rate_rps", cfg.auto_control.max_yaw_rate_rps);
+    append_kv(oss, "tolerance_cm", cfg.auto_control.tolerance_cm);
+    append_kv(oss, "rotate_yaw_offset_deg", cfg.auto_control.rotate_yaw_offset_rad * 180.0 / kPi);
+    oss << "\n";
+
+    oss << "# [motor] auto 제어용 wheel 모델 및 PWM 변환 값\n";
+    append_section(oss, "motor");
+    append_kv(oss, "track_width_cm", cfg.motor.track_width_cm);
+    append_kv(oss, "wheel_max_speed_cmps", cfg.motor.wheel_max_speed_cmps);
+    append_kv(oss, "speed_deadband_cmps", cfg.motor.speed_deadband_cmps);
+    append_kv(oss, "pwm_min_effective", cfg.motor.pwm_min_effective);
+    append_kv(oss, "pwm_max", cfg.motor.pwm_max);
+    oss << "\n";
+
+    oss << "# [manual] Qt/controller 수동 주행 기본 PWM\n";
+    append_section(oss, "manual");
+    append_kv(oss, "default_pwm", cfg.manual_drive.default_pwm);
+    oss << "\n";
+
+    oss << "# [controller] evdev 컨트롤러 입력 설정\n";
+    append_section(oss, "controller");
+    append_kv(oss, "enabled", cfg.controller.enabled ? 1 : 0);
+    append_kv(oss, "input_device", cfg.controller.input_device);
+    append_kv(oss, "device_name_hint", cfg.controller.device_name_hint);
+    append_kv(oss, "idle_stop_ms", cfg.controller.idle_stop_ms);
+    append_kv(oss, "speed_step", cfg.controller.speed_step);
+    append_kv(oss, "log_only", cfg.controller.log_only ? 1 : 0);
     oss << "\n";
 
     oss << "# [calib] calib_offset가 저장하는 bias/offset 결과\n";
@@ -328,7 +372,42 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_string(map, "mqtt.host", config.mqtt.host);
         load_int(map, "mqtt.port", config.mqtt.port);
         load_int(map, "mqtt.keepalive_sec", config.mqtt.keepalive_sec);
-        load_string(map, "mqtt.topic", config.mqtt.topic);
+        load_string(map, "mqtt.control_topic", config.mqtt.control_topic);
+        load_string(map, "mqtt.goal_topic", config.mqtt.goal_topic);
+        load_string(map, "mqtt.pose_topic", config.mqtt.pose_topic);
+        load_string(map, "mqtt.safety_topic", config.mqtt.safety_topic);
+        load_string(map, "mqtt.status_topic", config.mqtt.status_topic);
+        load_int(map, "mqtt.status_publish_interval_ms", config.mqtt.status_publish_interval_ms);
+        auto legacy_topic_it = map.find("mqtt.topic");
+        if (legacy_topic_it != map.end()) {
+            config.mqtt.control_topic = legacy_topic_it->second;
+        }
+
+        load_double(map, "auto.k_linear", config.auto_control.k_linear);
+        load_double(map, "auto.k_yaw", config.auto_control.k_yaw);
+        load_double(map, "auto.max_speed_cmps", config.auto_control.max_speed_cmps);
+        load_double(map, "auto.max_yaw_rate_rps", config.auto_control.max_yaw_rate_rps);
+        load_double(map, "auto.tolerance_cm", config.auto_control.tolerance_cm);
+        load_double(map, "auto.rotate_yaw_offset_rad", config.auto_control.rotate_yaw_offset_rad);
+        auto rotate_deg_it = map.find("auto.rotate_yaw_offset_deg");
+        if (rotate_deg_it != map.end()) {
+            config.auto_control.rotate_yaw_offset_rad = deg_to_rad(std::stod(rotate_deg_it->second));
+        }
+
+        load_double(map, "motor.track_width_cm", config.motor.track_width_cm);
+        load_double(map, "motor.wheel_max_speed_cmps", config.motor.wheel_max_speed_cmps);
+        load_double(map, "motor.speed_deadband_cmps", config.motor.speed_deadband_cmps);
+        load_int(map, "motor.pwm_min_effective", config.motor.pwm_min_effective);
+        load_int(map, "motor.pwm_max", config.motor.pwm_max);
+
+        load_int(map, "manual.default_pwm", config.manual_drive.default_pwm);
+
+        load_bool(map, "controller.enabled", config.controller.enabled);
+        load_string(map, "controller.input_device", config.controller.input_device);
+        load_string(map, "controller.device_name_hint", config.controller.device_name_hint);
+        load_int(map, "controller.idle_stop_ms", config.controller.idle_stop_ms);
+        load_int(map, "controller.speed_step", config.controller.speed_step);
+        load_bool(map, "controller.log_only", config.controller.log_only);
 
         load_double(map, "calib.bias_x", config.calib.bias_x);
         load_double(map, "calib.bias_y", config.calib.bias_y);
@@ -441,7 +520,42 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "host", copy.mqtt.host);
         append_kv(oss, "port", copy.mqtt.port);
         append_kv(oss, "keepalive_sec", copy.mqtt.keepalive_sec);
-        append_kv(oss, "topic", copy.mqtt.topic);
+        append_kv(oss, "control_topic", copy.mqtt.control_topic);
+        append_kv(oss, "goal_topic", copy.mqtt.goal_topic);
+        append_kv(oss, "pose_topic", copy.mqtt.pose_topic);
+        append_kv(oss, "safety_topic", copy.mqtt.safety_topic);
+        append_kv(oss, "status_topic", copy.mqtt.status_topic);
+        append_kv(oss, "status_publish_interval_ms", copy.mqtt.status_publish_interval_ms);
+        oss << "\n";
+
+        append_section(oss, "auto");
+        append_kv(oss, "k_linear", copy.auto_control.k_linear);
+        append_kv(oss, "k_yaw", copy.auto_control.k_yaw);
+        append_kv(oss, "max_speed_cmps", copy.auto_control.max_speed_cmps);
+        append_kv(oss, "max_yaw_rate_rps", copy.auto_control.max_yaw_rate_rps);
+        append_kv(oss, "tolerance_cm", copy.auto_control.tolerance_cm);
+        append_kv(oss, "rotate_yaw_offset_deg", copy.auto_control.rotate_yaw_offset_rad * 180.0 / kPi);
+        oss << "\n";
+
+        append_section(oss, "motor");
+        append_kv(oss, "track_width_cm", copy.motor.track_width_cm);
+        append_kv(oss, "wheel_max_speed_cmps", copy.motor.wheel_max_speed_cmps);
+        append_kv(oss, "speed_deadband_cmps", copy.motor.speed_deadband_cmps);
+        append_kv(oss, "pwm_min_effective", copy.motor.pwm_min_effective);
+        append_kv(oss, "pwm_max", copy.motor.pwm_max);
+        oss << "\n";
+
+        append_section(oss, "manual");
+        append_kv(oss, "default_pwm", copy.manual_drive.default_pwm);
+        oss << "\n";
+
+        append_section(oss, "controller");
+        append_kv(oss, "enabled", copy.controller.enabled ? 1 : 0);
+        append_kv(oss, "input_device", copy.controller.input_device);
+        append_kv(oss, "device_name_hint", copy.controller.device_name_hint);
+        append_kv(oss, "idle_stop_ms", copy.controller.idle_stop_ms);
+        append_kv(oss, "speed_step", copy.controller.speed_step);
+        append_kv(oss, "log_only", copy.controller.log_only ? 1 : 0);
         oss << "\n";
 
         append_section(oss, "calib");

@@ -49,7 +49,7 @@ Vec2 EvalBezier(const Vec2& p0, const Vec2& p1, const Vec2& p2, const Vec2& p3, 
 
 std::vector<RcWaypoint> BuildSmoothPath(const RcPose& pose,
                                         const RcGoal& goal,
-                                        double final_tolerance_m) {
+                                        double final_tolerance_cm) {
     std::vector<RcWaypoint> out;
     if (!pose.valid || !goal.valid) {
         return out;
@@ -58,7 +58,7 @@ std::vector<RcWaypoint> BuildSmoothPath(const RcPose& pose,
     const Vec2 start{pose.x, pose.y};
     const Vec2 target{goal.x, goal.y};
     const double dist = Distance(start, target);
-    const double deadzone = std::max(final_tolerance_m, 0.12);
+    const double deadzone = std::max(final_tolerance_cm, 12.0);
     if (dist <= deadzone * 2.0) {
         out.push_back({goal.x, goal.y, true});
         return out;
@@ -70,19 +70,19 @@ std::vector<RcWaypoint> BuildSmoothPath(const RcPose& pose,
     const double heading_err =
         NormalizeAngle(std::atan2(goal.y - pose.y, goal.x - pose.x) - pose.yaw);
 
-    double handle_start = Clamp(dist * 0.35, 0.20, 0.80);
+    double handle_start = Clamp(dist * 0.35, 20.0, 80.0);
     if (std::cos(heading_err) < 0.0) {
-        handle_start = 0.12;
+        handle_start = 12.0;
     }
-    const double handle_end = Clamp(dist * 0.25, 0.15, 0.60);
+    const double handle_end = Clamp(dist * 0.25, 15.0, 60.0);
 
     const Vec2 p0 = start;
     const Vec2 p1{start.x + (heading.x * handle_start), start.y + (heading.y * handle_start)};
     const Vec2 p2{target.x - (goal_dir.x * handle_end), target.y - (goal_dir.y * handle_end)};
     const Vec2 p3 = target;
 
-    const int sample_count = static_cast<int>(Clamp(std::ceil(dist / 0.20), 4.0, 12.0));
-    const double min_spacing = std::max(deadzone, 0.18);
+    const int sample_count = static_cast<int>(Clamp(std::ceil(dist / 20.0), 4.0, 12.0));
+    const double min_spacing = std::max(deadzone, 18.0);
 
     Vec2 last_added = start;
     for (int i = 1; i <= sample_count; ++i) {

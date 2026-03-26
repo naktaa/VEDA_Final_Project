@@ -89,13 +89,13 @@ void RcMotorDriver::sendCommand(const RcCommand& cmd) const {
         return;
     }
 
-    double v_left = cmd.speed_mps - (cmd.yaw_rate_rps * params_.track_width_m * 0.5);
-    double v_right = cmd.speed_mps + (cmd.yaw_rate_rps * params_.track_width_m * 0.5);
+    double v_left = cmd.speed_cmps - (cmd.yaw_rate_rps * params_.track_width_cm * 0.5);
+    double v_right = cmd.speed_cmps + (cmd.yaw_rate_rps * params_.track_width_cm * 0.5);
 
-    if (std::fabs(v_left) < params_.speed_deadband_mps) {
+    if (std::fabs(v_left) < params_.speed_deadband_cmps) {
         v_left = 0.0;
     }
-    if (std::fabs(v_right) < params_.speed_deadband_mps) {
+    if (std::fabs(v_right) < params_.speed_deadband_cmps) {
         v_right = 0.0;
     }
 
@@ -139,13 +139,13 @@ void RcMotorDriver::setMotorControl(int en, int in1, int in2, int speed_pwm, int
 #endif
 }
 
-int RcMotorDriver::speedToPwm(double speed_mps) const {
-    const double abs_speed = std::fabs(speed_mps);
-    if (abs_speed < params_.speed_deadband_mps) {
+int RcMotorDriver::speedToPwm(double speed_cmps) const {
+    const double abs_speed = std::fabs(speed_cmps);
+    if (abs_speed < params_.speed_deadband_cmps) {
         return 0;
     }
 
-    const double ratio = std::min(1.0, abs_speed / std::max(0.001, params_.wheel_max_speed_mps));
+    const double ratio = std::min(1.0, abs_speed / std::max(0.1, params_.wheel_max_speed_cmps));
     int pwm = static_cast<int>(std::lround(ratio * params_.pwm_max));
     if (pwm > 0) {
         pwm = std::max(pwm, params_.pwm_min_effective);

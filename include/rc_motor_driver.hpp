@@ -14,7 +14,7 @@ public:
 
 private:
     void setMotorControl(int en, int in1, int in2, int speed_pwm, int dir) const;
-    int speedToPwm(double speed_mps) const;
+    int speedToPwm(double speed_cmps) const;
 
 private:
     bool ready_ = false;

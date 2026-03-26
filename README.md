@@ -46,8 +46,8 @@
 - `connected`: MQTT 연결 상태
 - `mode`: goal이 있으면 `auto`, 없으면 `idle`
 - `mission`: goal이 있으면 `goal_tracking`, 없으면 `none`
-- `speed`: 현재 명령 선속도 `m/s`
-- `x`, `y`: 최신 pose 좌표 `m`
+- `speed`: 현재 명령 선속도 `cm/s`
+- `x`, `y`: 최신 pose 좌표 `cm`
 - `heading`: 최신 pose yaw를 `deg`로 변환
 - `comm_state`: `connected` / `disconnected`
 - `robot_state`: `WAIT_INPUT`, `TRACKING`, `ROTATE`, `REACHED`, `SAFE_STOP`, `POSE_TIMEOUT`, `offline`
@@ -70,16 +70,16 @@
 
 - `control.k_linear`
 - `control.k_yaw`
-- `control.max_speed_mps`
+- `control.max_speed_cmps`
 - `control.max_yaw_rate_rps`
-- `control.tolerance_m`
-- `motor.track_width_m`
-- `motor.wheel_max_speed_mps`
-- `motor.speed_deadband_mps`
+- `control.tolerance_cm`
+- `motor.track_width_cm`
+- `motor.wheel_max_speed_cmps`
+- `motor.speed_deadband_cmps`
 - `motor.pwm_min_effective`
 - `motor.pwm_max`
 
-기존 `*_cm*` 키도 한 번은 읽어서 meter로 변환하고 warning을 출력합니다.
+기존 `*_m*`, `*_mps*` 키도 한 번은 읽어서 centimeter 기반 값으로 변환하고 warning을 출력합니다.
 
 ## 빌드
 

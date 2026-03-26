@@ -6,4 +6,4 @@
 
 std::vector<RcWaypoint> BuildSmoothPath(const RcPose& pose,
                                         const RcGoal& goal,
-                                        double final_tolerance_m);
+                                        double final_tolerance_cm);

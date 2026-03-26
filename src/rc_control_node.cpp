@@ -326,9 +326,9 @@ void RcControlNode::controlStep() {
     if (do_log) {
         std::cout << "[POSE] x=" << pose.x << " y=" << pose.y << " yaw=" << pose.yaw << "\n";
         std::cout << "[CMD] robot_state=" << control_status.robot_state
-                  << " v_mps=" << cmd.speed_mps
+                  << " v_cmps=" << cmd.speed_cmps
                   << " yaw_rate_rps=" << cmd.yaw_rate_rps
-                  << " err_dist_m=" << control_status.err_dist_m
+                  << " err_dist_cm=" << control_status.err_dist_cm
                   << " err_yaw_rad=" << control_status.err_yaw_rad << "\n";
     }
 
@@ -345,7 +345,7 @@ void RcControlNode::updatePathPlan(const RcPose& pose, const RcGoal& goal) {
         return;
     }
 
-    planned_path_ = BuildSmoothPath(pose, goal, config_.control.tolerance_m);
+    planned_path_ = BuildSmoothPath(pose, goal, config_.control.tolerance_cm);
     planned_path_index_ = 0;
     tracking_goal_is_final_ = planned_path_.empty();
     planned_goal_ts_ms_ = goal.ts_ms;
@@ -380,9 +380,9 @@ RcGoal RcControlNode::resolveTrackingGoal(const RcPose& pose, const RcGoal& goal
 
 double RcControlNode::waypointTolerance(bool is_final) const {
     if (is_final) {
-        return std::max(config_.control.tolerance_m, 0.12);
+        return std::max(config_.control.tolerance_cm, 12.0);
     }
-    return std::max(config_.control.tolerance_m * 1.5, 0.18);
+    return std::max(config_.control.tolerance_cm * 1.5, 18.0);
 }
 
 RcCommand RcControlNode::computeCommand(const RcPose& pose,
@@ -393,12 +393,12 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
 
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
-    const double dist_m = std::sqrt(dx * dx + dy * dy);
+    const double dist_cm = std::sqrt(dx * dx + dy * dy);
     const double target_heading = std::atan2(dy, dx);
     const double err_yaw = normalizeAngle(target_heading - pose.yaw);
 
     RcCommand cmd;
-    out_status.err_dist_m = dist_m;
+    out_status.err_dist_cm = dist_cm;
     out_status.err_yaw_rad = err_yaw;
 
     if (goal.ts_ms != last_goal_.ts_ms) {
@@ -419,12 +419,12 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
     const double stop_deadzone = tracking_goal_is_final_
                                      ? waypointTolerance(true)
                                      : waypointTolerance(false);
-    if (dist_m <= stop_deadzone) {
+    if (dist_cm <= stop_deadzone) {
         reached_ = true;
         rotating_ = false;
         out_status.robot_state = "REACHED";
         out_status.reached = true;
-        std::cout << "[SM] REACHED dist_m=" << dist_m << "\n";
+        std::cout << "[SM] REACHED dist_cm=" << dist_cm << "\n";
         return cmd;
     }
 
@@ -438,7 +438,7 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
 
     if (rotating_) {
         out_status.robot_state = "ROTATE";
-        cmd.speed_mps = 0.0;
+        cmd.speed_cmps = 0.0;
         double rotate_err = err_yaw;
         if (std::fabs(rotate_err) > config_.control.rotate_yaw_offset_rad) {
             rotate_err -= (rotate_err > 0.0 ? config_.control.rotate_yaw_offset_rad
@@ -460,9 +460,9 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
     const double heading_scale = std::max(0.05, std::cos(abs_err));
     const double yaw_slowdown =
         1.0 - std::min(0.7, std::fabs(cmd.yaw_rate_rps) / std::max(0.001, config_.control.max_yaw_rate_rps));
-    cmd.speed_mps = clamp(config_.control.k_linear * dist_m * heading_scale * yaw_slowdown,
+    cmd.speed_cmps = clamp(config_.control.k_linear * dist_cm * heading_scale * yaw_slowdown,
                           0.0,
-                          config_.control.max_speed_mps);
+                          config_.control.max_speed_cmps);
     return cmd;
 }
 
@@ -476,7 +476,7 @@ RcStatus RcControlNode::buildStatus(const RcGoal& goal,
     status.mode = goal.valid ? "auto" : "idle";
     status.mission = goal.valid ? "goal_tracking" : "none";
     status.battery = -1.0;
-    status.speed = std::max(0.0, cmd.speed_mps);
+    status.speed = std::max(0.0, cmd.speed_cmps);
     status.robot_state = control_status.robot_state;
     status.data_period = std::to_string(config_.status_publish_interval_ms) + "ms";
 

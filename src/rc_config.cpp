@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr double kCmToM = 0.01;
+constexpr double kMToCm = 100.0;
 
 std::string TrimCopy(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
@@ -27,7 +27,7 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
         return false;
     }
 
-    bool used_legacy_cm_keys = false;
+    bool used_legacy_meter_keys = false;
     std::string line;
     std::string section;
     int line_no = 0;
@@ -59,33 +59,33 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
                 config.control.k_linear = std::stod(value);
             } else if (scoped_key == "control.k_yaw") {
                 config.control.k_yaw = std::stod(value);
-            } else if (scoped_key == "control.max_speed_mps") {
-                config.control.max_speed_mps = std::stod(value);
             } else if (scoped_key == "control.max_speed_cmps") {
-                config.control.max_speed_mps = std::stod(value) * kCmToM;
-                used_legacy_cm_keys = true;
+                config.control.max_speed_cmps = std::stod(value);
+            } else if (scoped_key == "control.max_speed_mps") {
+                config.control.max_speed_cmps = std::stod(value) * kMToCm;
+                used_legacy_meter_keys = true;
             } else if (scoped_key == "control.max_yaw_rate_rps") {
                 config.control.max_yaw_rate_rps = std::stod(value);
-            } else if (scoped_key == "control.tolerance_m") {
-                config.control.tolerance_m = std::stod(value);
             } else if (scoped_key == "control.tolerance_cm") {
-                config.control.tolerance_m = std::stod(value) * kCmToM;
-                used_legacy_cm_keys = true;
-            } else if (scoped_key == "motor.track_width_m") {
-                config.motor.track_width_m = std::stod(value);
+                config.control.tolerance_cm = std::stod(value);
+            } else if (scoped_key == "control.tolerance_m") {
+                config.control.tolerance_cm = std::stod(value) * kMToCm;
+                used_legacy_meter_keys = true;
             } else if (scoped_key == "motor.track_width_cm") {
-                config.motor.track_width_m = std::stod(value) * kCmToM;
-                used_legacy_cm_keys = true;
-            } else if (scoped_key == "motor.wheel_max_speed_mps") {
-                config.motor.wheel_max_speed_mps = std::stod(value);
+                config.motor.track_width_cm = std::stod(value);
+            } else if (scoped_key == "motor.track_width_m") {
+                config.motor.track_width_cm = std::stod(value) * kMToCm;
+                used_legacy_meter_keys = true;
             } else if (scoped_key == "motor.wheel_max_speed_cmps") {
-                config.motor.wheel_max_speed_mps = std::stod(value) * kCmToM;
-                used_legacy_cm_keys = true;
-            } else if (scoped_key == "motor.speed_deadband_mps") {
-                config.motor.speed_deadband_mps = std::stod(value);
+                config.motor.wheel_max_speed_cmps = std::stod(value);
+            } else if (scoped_key == "motor.wheel_max_speed_mps") {
+                config.motor.wheel_max_speed_cmps = std::stod(value) * kMToCm;
+                used_legacy_meter_keys = true;
             } else if (scoped_key == "motor.speed_deadband_cmps") {
-                config.motor.speed_deadband_mps = std::stod(value) * kCmToM;
-                used_legacy_cm_keys = true;
+                config.motor.speed_deadband_cmps = std::stod(value);
+            } else if (scoped_key == "motor.speed_deadband_mps") {
+                config.motor.speed_deadband_cmps = std::stod(value) * kMToCm;
+                used_legacy_meter_keys = true;
             } else if (scoped_key == "motor.pwm_min_effective") {
                 config.motor.pwm_min_effective = std::stoi(value);
             } else if (scoped_key == "motor.pwm_max") {
@@ -99,16 +99,16 @@ bool LoadRcParamsFromIni(const std::string& ini_path, RcAppConfig& config) {
         }
     }
 
-    if (used_legacy_cm_keys) {
-        std::cerr << "[WARN] legacy *_cm* RC config keys detected; converted to meter-based values\n";
+    if (used_legacy_meter_keys) {
+        std::cerr << "[WARN] legacy *_m*/*_mps* RC config keys detected; converted to centimeter-based values\n";
     }
 
     std::cout << "[OK] loaded tuning params from " << ini_path
               << " | control=(" << config.control.k_linear << ", " << config.control.k_yaw << ", "
-              << config.control.max_speed_mps << ", " << config.control.max_yaw_rate_rps << ", "
-              << config.control.tolerance_m << ")"
-              << " motor=(" << config.motor.track_width_m << ", " << config.motor.wheel_max_speed_mps
-              << ", " << config.motor.speed_deadband_mps << ", " << config.motor.pwm_min_effective
+              << config.control.max_speed_cmps << ", " << config.control.max_yaw_rate_rps << ", "
+              << config.control.tolerance_cm << ")"
+              << " motor=(" << config.motor.track_width_cm << ", " << config.motor.wheel_max_speed_cmps
+              << ", " << config.motor.speed_deadband_cmps << ", " << config.motor.pwm_min_effective
               << ", " << config.motor.pwm_max << ")\n";
     return true;
 }

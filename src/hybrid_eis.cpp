@@ -155,6 +155,8 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     if (debug) {
         debug->state = state_;
         debug->yaw_rate_dps = yaw_rate_dps;
+        debug->gyro_latest_sample_time_ms = have_latest_imu ? latest_imu.sample_time_ms : 0.0;
+        debug->gyro_latest_lag_ms = have_latest_imu ? (frame.frame_time_ms - latest_imu.sample_time_ms) : 0.0;
     }
 
     LkMotionEstimate lk;
@@ -165,13 +167,19 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     cv::Vec3d gyro_delta_raw(0.0, 0.0, 0.0);
     cv::Vec3d gyro_delta_hp(0.0, 0.0, 0.0);
     cv::Vec3d gyro_corr(0.0, 0.0, 0.0);
+    GyroRangeInfo gyro_info{};
     bool gyro_valid = false;
     if (gyro_buffer_) {
         const double target_time_ms = frame.frame_time_ms + config_.calib.imu_offset_ms;
+        if (debug) {
+            debug->gyro_target_time_ms = target_time_ms;
+            if (have_latest_imu) {
+                debug->gyro_latest_lag_ms = target_time_ms - latest_imu.sample_time_ms;
+            }
+        }
         if (!prev_target_ok_ || target_time_ms > prev_target_ms_) {
             Quaternion current_phys;
-            GyroRangeInfo info;
-            if (integrator_.integrate_to(target_time_ms, *gyro_buffer_, current_phys, &info)) {
+            if (integrator_.integrate_to(target_time_ms, *gyro_buffer_, current_phys, &gyro_info)) {
                 if (prev_phys_ok_) {
                     Quaternion delta = prev_phys_.conjugate() * current_phys;
                     delta.normalize();
@@ -333,6 +341,11 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
         debug->lk_valid_points = lk.valid_points;
         debug->lk_inliers = lk.inliers;
         debug->gyro_valid = gyro_valid;
+        debug->gyro_range_used = gyro_info.used;
+        debug->gyro_range_min_ms = gyro_info.min_ts;
+        debug->gyro_range_max_ms = gyro_info.max_ts;
+        debug->gyro_covers_start = gyro_info.covers_start;
+        debug->gyro_covers_end = gyro_info.covers_end;
         debug->crop_required_percent = compute_required_crop_percent(H, current.cols, current.rows);
         debug->clamp_scale = clamp_scale;
         debug->visual_anchor_rad = visual_anchor;

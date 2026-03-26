@@ -83,6 +83,9 @@ int main() {
     runtime_log << "# calib_imu_offset_ms=" << config.calib.imu_offset_ms << "\n";
     runtime_log << "frame_index\tframe_time_ms\tsensor_ts_ns\texposure_us\tframe_duration_us\t"
                    "imu_offset_ms\timu_actual_hz\timu_sample_time_ms\t"
+                   "gyro_target_time_ms\tgyro_latest_sample_time_ms\tgyro_latest_lag_ms\t"
+                   "gyro_range_used\tgyro_range_min_ms\tgyro_range_max_ms\t"
+                   "gyro_covers_start\tgyro_covers_end\t"
                    "imu_raw_x\timu_raw_y\timu_raw_z\t"
                    "imu_roll_rad_s\timu_pitch_rad_s\timu_yaw_rad_s\t"
                    "state\tlk_valid\tlk_confidence\tlk_features\tlk_valid_points\tlk_inliers\t"
@@ -199,6 +202,14 @@ int main() {
                 << config.calib.imu_offset_ms << '\t'
                 << imu_reader.actual_hz() << '\t'
                 << (have_imu ? latest_imu.sample_time_ms : -1.0) << '\t'
+                << debug.gyro_target_time_ms << '\t'
+                << debug.gyro_latest_sample_time_ms << '\t'
+                << debug.gyro_latest_lag_ms << '\t'
+                << debug.gyro_range_used << '\t'
+                << debug.gyro_range_min_ms << '\t'
+                << debug.gyro_range_max_ms << '\t'
+                << (debug.gyro_covers_start ? 1 : 0) << '\t'
+                << (debug.gyro_covers_end ? 1 : 0) << '\t'
                 << (have_imu ? latest_imu.raw_counts[0] : 0.0) << '\t'
                 << (have_imu ? latest_imu.raw_counts[1] : 0.0) << '\t'
                 << (have_imu ? latest_imu.raw_counts[2] : 0.0) << '\t'

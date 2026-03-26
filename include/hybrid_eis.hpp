@@ -16,6 +16,14 @@ struct HybridEisDebugInfo {
     int lk_inliers = 0;
     bool gyro_valid = false;
     double yaw_rate_dps = 0.0;
+    double gyro_target_time_ms = 0.0;
+    double gyro_latest_sample_time_ms = 0.0;
+    double gyro_latest_lag_ms = 0.0;
+    int gyro_range_used = 0;
+    double gyro_range_min_ms = 0.0;
+    double gyro_range_max_ms = 0.0;
+    bool gyro_covers_start = false;
+    bool gyro_covers_end = false;
     double crop_required_percent = 0.0;
     double clamp_scale = 1.0;
     double visual_anchor_rad = 0.0;

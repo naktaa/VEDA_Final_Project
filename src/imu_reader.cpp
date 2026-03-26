@@ -515,10 +515,12 @@ void ImuReader::run() {
         }
 
         const double end_time_ms = static_cast<double>(event_ns - monotonic_raw_origin_ns()) / 1e6;
+        // FIFO returns oldest -> newest, so timestamps must increase in the same order.
+        const double start_time_ms =
+            end_time_ms - (static_cast<double>(fifo_samples.size() - 1U) * period_ms);
         for (size_t i = 0; i < fifo_samples.size(); ++i) {
-            const size_t reverse_index = fifo_samples.size() - 1 - i;
-            const double sample_time_ms = end_time_ms - (static_cast<double>(i) * period_ms);
-            ImuSample sample = make_sample(fifo_samples[reverse_index], sample_time_ms);
+            const double sample_time_ms = start_time_ms + (static_cast<double>(i) * period_ms);
+            ImuSample sample = make_sample(fifo_samples[i], sample_time_ms);
             buffer_.push(sample);
             {
                 std::lock_guard<std::mutex> lock(sample_mutex_);

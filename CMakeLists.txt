@@ -12,8 +12,8 @@ pkg_check_modules(MOSQ REQUIRED libmosquitto)
 add_executable(p1_tracker p1_tracker.cpp)
 add_executable(calib_aruco_homography calib_file/calib_aruco_homography.cpp)
 add_executable(calib_camera calib_file/calib_camera.cpp)
-add_executable(homography_mqtt_pub homography_mqtt_pub.cpp)
-add_executable(rc_goal_subscriber rc_goal_subscriber.cpp)
+add_executable(homography_mqtt_pub calib_file/homography_mqtt_pub.cpp)
+add_executable(rc_goal_subscriber calib_file/rc_goal_subscriber.cpp)
 
 target_include_directories(p1_tracker PRIVATE
     ${OpenCV_INCLUDE_DIRS}

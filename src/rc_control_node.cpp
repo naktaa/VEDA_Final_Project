@@ -255,13 +255,27 @@ void RcControlNode::controlStep() {
     ControlStatus control_status;
     RcCommand cmd;
 
-    if (!goal.valid || !pose.valid) {
+    if (!pose.valid) {
         control_status.robot_state = "WAIT_INPUT";
         if (motor_driver_ptr_) {
             motor_driver_ptr_->sendCommand(cmd);
         }
         if (do_log) {
             std::cout << "[STATUS] WAIT_INPUT goal_valid=" << goal.valid
+                      << " pose_valid=" << pose.valid << "\n";
+        }
+        publishStatus(buildStatus(goal, pose, cmd, control_status));
+        return;
+    }
+
+    if (!goal.valid) {
+        control_status.robot_state = "WAIT_GOAL";
+        if (motor_driver_ptr_) {
+            motor_driver_ptr_->sendCommand(cmd);
+        }
+        if (do_log) {
+            std::cout << "[POSE] x=" << pose.x << " y=" << pose.y << " yaw=" << pose.yaw << "\n";
+            std::cout << "[STATUS] WAIT_GOAL goal_valid=" << goal.valid
                       << " pose_valid=" << pose.valid << "\n";
         }
         publishStatus(buildStatus(goal, pose, cmd, control_status));

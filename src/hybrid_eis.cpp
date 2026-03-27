@@ -10,6 +10,8 @@ namespace {
 
 constexpr double kKalmanQ = 0.004;
 constexpr double kKalmanR = 0.5;
+constexpr int kReferenceMinFeatureCount = 10;
+constexpr int kReferenceMinAffinePoints = 6;
 
 cv::Mat apply_fixed_crop(const cv::Mat& frame, double crop_percent) {
     if (frame.empty() || crop_percent <= 0.0) {
@@ -38,6 +40,84 @@ cv::Mat apply_fixed_crop(const cv::Mat& frame, double crop_percent) {
 double recover_progress(const AppConfig& config, int frames_left) {
     const int total = std::max(1, config.eis.recover_frames);
     return 1.0 - static_cast<double>(std::clamp(frames_left, 0, total)) / static_cast<double>(total);
+}
+
+LkMotionEstimate estimate_reference_style_lk(const cv::Mat& prev_bgr,
+                                             const cv::Mat& curr_bgr,
+                                             const EisRuntimeConfig& config) {
+    LkMotionEstimate result;
+    if (prev_bgr.empty() || curr_bgr.empty()) {
+        return result;
+    }
+
+    cv::Mat prev_gray;
+    cv::Mat curr_gray;
+    if (prev_bgr.channels() == 3) {
+        cv::cvtColor(prev_bgr, prev_gray, cv::COLOR_BGR2GRAY);
+    } else {
+        prev_gray = prev_bgr;
+    }
+    if (curr_bgr.channels() == 3) {
+        cv::cvtColor(curr_bgr, curr_gray, cv::COLOR_BGR2GRAY);
+    } else {
+        curr_gray = curr_bgr;
+    }
+
+    std::vector<cv::Point2f> features_prev;
+    cv::goodFeaturesToTrack(prev_gray,
+                            features_prev,
+                            config.lk_max_features,
+                            config.lk_quality,
+                            config.lk_min_dist);
+    result.features = static_cast<int>(features_prev.size());
+    if (result.features < kReferenceMinFeatureCount) {
+        return result;
+    }
+
+    std::vector<cv::Point2f> features_curr;
+    std::vector<uchar> status;
+    std::vector<float> errors;
+    cv::calcOpticalFlowPyrLK(prev_gray,
+                             curr_gray,
+                             features_prev,
+                             features_curr,
+                             status,
+                             errors);
+
+    std::vector<cv::Point2f> good_prev;
+    std::vector<cv::Point2f> good_curr;
+    good_prev.reserve(features_prev.size());
+    good_curr.reserve(features_prev.size());
+    for (size_t i = 0; i < status.size(); ++i) {
+        if (status[i]) {
+            good_prev.push_back(features_prev[i]);
+            good_curr.push_back(features_curr[i]);
+        }
+    }
+
+    result.valid_points = static_cast<int>(good_prev.size());
+    result.inliers = result.valid_points;
+    result.confidence = result.valid_points > 0 ? 1.0 : 0.0;
+    if (result.valid_points < kReferenceMinAffinePoints) {
+        return result;
+    }
+
+    const cv::Mat affine = cv::estimateAffinePartial2D(good_prev, good_curr);
+    if (affine.empty()) {
+        return result;
+    }
+
+    result.dx = affine.at<double>(0, 2);
+    result.dy = affine.at<double>(1, 2);
+    result.da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+    const double cos_da = std::cos(result.da);
+    if (std::abs(cos_da) <= 1e-6) {
+        return result;
+    }
+    result.sx = affine.at<double>(0, 0) / cos_da;
+    result.sy = affine.at<double>(1, 1) / cos_da;
+    result.valid = true;
+    return result;
 }
 
 } // namespace
@@ -162,10 +242,10 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
 
     LkMotionEstimate lk;
     if (prev_frame_ok_) {
-        lk = lk_tracker_.estimate(prev_frame_, current);
+        lk = estimate_reference_style_lk(prev_frame_, current, config_.eis);
     }
 
-    const bool lk_usable = lk.valid && lk.confidence >= config_.eis.lk_confidence_gate;
+    const bool lk_usable = lk.valid;
     const double correction_scale = state_ == HybridState::RECOVER
         ? recover_progress(config_, recover_frames_left_)
         : (state_ == HybridState::TURN_FOLLOW ? 0.0 : 1.0);

@@ -101,13 +101,31 @@ bool PoseTracker::ProcessFrame(const cv::Mat& frame, mosquitto* mosq, long long&
     const cv::Matx33d R_world_cube = R_world_cam * R_cam_cube;
 
     const cv::Vec3d forward = R_world_cube * cv::Vec3d(0.0, 1.0, 0.0);
-    const double yaw = NormalizeAngle(-std::atan2(forward[1], forward[0]));
+    const double raw_yaw = NormalizeAngle(-std::atan2(forward[1], forward[0]));
+    double yaw_publish = raw_yaw;
+
+    const int best_id = ids[best_idx];
+    if (best_id == kYawAnchorId) {
+        // Anchor ID(21) observed: refresh absolute yaw reference.
+        anchor_yaw_ = raw_yaw;
+        has_anchor_yaw_ = true;
+    } else if (has_anchor_yaw_) {
+        // Non-anchor ID observed: only accumulate frame-to-frame yaw delta.
+        if (has_prev_raw_yaw_) {
+            const double delta_yaw = NormalizeAngle(raw_yaw - prev_raw_yaw_);
+            anchor_yaw_ = NormalizeAngle(anchor_yaw_ + delta_yaw);
+        }
+        yaw_publish = anchor_yaw_;
+    }
+
+    prev_raw_yaw_ = raw_yaw;
+    has_prev_raw_yaw_ = true;
     const long long ts = NowMs();
 
     char buf[256];
     std::snprintf(buf, sizeof(buf),
                   "{\"x\":%.3f,\"y\":%.3f,\"yaw\":%.6f,\"frame\":\"world\",\"ts_ms\":%lld}",
-                  x, y_publish, yaw, ts);
+                  x, y_publish, yaw_publish, ts);
 
     if (PublishJson(mosq, config_.pose_topic, buf, false)) {
         ++publish_count;

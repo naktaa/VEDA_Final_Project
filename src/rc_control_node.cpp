@@ -439,12 +439,15 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
     if (rotating_) {
         out_status.robot_state = "ROTATE";
         cmd.speed_cmps = 0.0;
+        cmd.turn_effort =
+            clamp((abs_err - kRotateExitTh) / std::max(0.001, kPi - kRotateExitTh), 0.0, 1.0);
         double rotate_err = err_yaw;
         if (std::fabs(rotate_err) > config_.control.rotate_yaw_offset_rad) {
             rotate_err -= (rotate_err > 0.0 ? config_.control.rotate_yaw_offset_rad
                                             : -config_.control.rotate_yaw_offset_rad);
         } else {
             rotate_err = 0.0;
+            cmd.turn_effort = 0.0;
         }
         cmd.yaw_rate_rps = clamp(config_.control.k_yaw * rotate_err,
                                  -config_.control.max_yaw_rate_rps,
@@ -452,6 +455,7 @@ RcCommand RcControlNode::computeCommand(const RcPose& pose,
         return cmd;
     }
 
+    cmd.turn_effort = 0.0;
     const double tracking_yaw_limit = config_.control.max_yaw_rate_rps * 0.6;
     cmd.yaw_rate_rps = clamp(config_.control.k_yaw * err_yaw,
                              -tracking_yaw_limit,

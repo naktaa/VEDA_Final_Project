@@ -309,6 +309,8 @@ RcCommand AutoController::computeCommand(const RcPose& pose,
                                          ControlStatus& out_status) {
     constexpr double kRotateEnterTh = 35.0 * kPi / 180.0;
     constexpr double kRotateExitTh = 20.0 * kPi / 180.0;
+    constexpr double kRotateMinRateFracNear = 0.45;
+    constexpr double kRotateMinRateFracFar = 0.85;
 
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
@@ -355,19 +357,34 @@ RcCommand AutoController::computeCommand(const RcPose& pose,
     if (rotating_) {
         out_status.robot_state = "ROTATE";
         cmd.speed_cmps = 0.0;
+        cmd.turn_effort =
+            clamp((abs_err - kRotateExitTh) / std::max(0.001, kPi - kRotateExitTh), 0.0, 1.0);
         double rotate_err = err_yaw;
         if (std::fabs(rotate_err) > config_.auto_control.rotate_yaw_offset_rad) {
             rotate_err -= (rotate_err > 0.0 ? config_.auto_control.rotate_yaw_offset_rad
                                             : -config_.auto_control.rotate_yaw_offset_rad);
         } else {
             rotate_err = 0.0;
+            cmd.turn_effort = 0.0;
         }
         cmd.yaw_rate_rps = clamp(config_.auto_control.k_yaw * rotate_err,
                                  -config_.auto_control.max_yaw_rate_rps,
                                  config_.auto_control.max_yaw_rate_rps);
+        if (rotate_err != 0.0) {
+            const double rotate_blend =
+                clamp((abs_err - kRotateExitTh) / std::max(0.001, kPi - kRotateExitTh), 0.0, 1.0);
+            const double min_rotate_rate =
+                config_.auto_control.max_yaw_rate_rps *
+                (kRotateMinRateFracNear +
+                 ((kRotateMinRateFracFar - kRotateMinRateFracNear) * rotate_blend));
+            if (std::fabs(cmd.yaw_rate_rps) < min_rotate_rate) {
+                cmd.yaw_rate_rps = (rotate_err > 0.0 ? min_rotate_rate : -min_rotate_rate);
+            }
+        }
         return cmd;
     }
 
+    cmd.turn_effort = 0.0;
     const double tracking_yaw_limit = config_.auto_control.max_yaw_rate_rps * 0.6;
     cmd.yaw_rate_rps = clamp(config_.auto_control.k_yaw * err_yaw,
                              -tracking_yaw_limit,

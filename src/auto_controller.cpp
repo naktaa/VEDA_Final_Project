@@ -17,6 +17,12 @@ constexpr int kPoseTimeoutMs = 800;
 constexpr int kControlStepMs = 50;
 constexpr double kPi = 3.14159265358979323846;
 
+RcPose pose_for_control(const RcPose& pose) {
+    RcPose corrected = pose;
+    corrected.yaw = -corrected.yaw;
+    return corrected;
+}
+
 } // namespace
 
 AutoController::AutoController(const AppConfig& config)
@@ -226,6 +232,7 @@ void AutoController::controlStep() {
 
     ControlStatus control_status;
     RcCommand cmd;
+    const RcPose control_pose = pose_for_control(pose);
 
     if (!pose.valid) {
         control_status.robot_state = "WAIT_INPUT";
@@ -245,9 +252,9 @@ void AutoController::controlStep() {
             control_status.robot_state = "SAFE_STOP";
             tank_drive::stop_from(tank_drive::DriveSource::kAuto);
         } else {
-            updatePathPlan(pose, goal);
-            const RcGoal tracking_goal = resolveTrackingGoal(pose, goal);
-            cmd = computeCommand(pose, tracking_goal, control_status);
+            updatePathPlan(control_pose, goal);
+            const RcGoal tracking_goal = resolveTrackingGoal(control_pose, goal);
+            cmd = computeCommand(control_pose, tracking_goal, control_status);
             tank_drive::command_auto(cmd, config_.motor);
         }
     }

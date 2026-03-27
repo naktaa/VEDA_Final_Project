@@ -25,6 +25,12 @@ double RadToDeg(double rad) {
     return rad * kRadToDeg;
 }
 
+RcPose pose_for_control(const RcPose& pose) {
+    RcPose corrected = pose;
+    corrected.yaw = -corrected.yaw;
+    return corrected;
+}
+
 } // namespace
 
 RcControlNode::RcControlNode(const RcAppConfig& config)
@@ -260,6 +266,7 @@ void RcControlNode::controlStep() {
 
     ControlStatus control_status;
     RcCommand cmd;
+    const RcPose control_pose = pose_for_control(pose);
 
     if (!pose.valid) {
         control_status.robot_state = "WAIT_INPUT";
@@ -316,9 +323,9 @@ void RcControlNode::controlStep() {
         return;
     }
 
-    updatePathPlan(pose, goal);
-    const RcGoal tracking_goal = resolveTrackingGoal(pose, goal);
-    cmd = computeCommand(pose, tracking_goal, control_status);
+    updatePathPlan(control_pose, goal);
+    const RcGoal tracking_goal = resolveTrackingGoal(control_pose, goal);
+    cmd = computeCommand(control_pose, tracking_goal, control_status);
     if (motor_driver_ptr_) {
         motor_driver_ptr_->sendCommand(cmd);
     }

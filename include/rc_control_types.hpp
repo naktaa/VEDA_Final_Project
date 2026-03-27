@@ -53,7 +53,7 @@ struct RcControlParams {
     double k_yaw = 0.8;
     double max_speed_cmps = 50.0;
     double max_yaw_rate_rps = 0.5;
-    double tolerance_cm = 10.0;
+    double tolerance_cm = 15.0;
     double rotate_yaw_offset_rad = 5.0 * 3.14159265358979323846 / 180.0;
 };
 

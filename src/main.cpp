@@ -151,6 +151,10 @@ int main() {
     runtime_log << "# imu_int_line_offset=" << config.imu.int_line_offset << "\n";
     runtime_log << "# imu_int_pin_wpi=" << config.imu.int_pin_wpi << "\n";
     runtime_log << "# calib_imu_offset_ms=" << config.calib.imu_offset_ms << "\n";
+    runtime_log << "# rs_mode=" << config.eis.rs_mode << "\n";
+    runtime_log << "# rs_readout_time_ms=" << config.eis.rs_readout_time_ms << "\n";
+    runtime_log << "# rs_band_count=" << config.eis.rs_band_count << "\n";
+    runtime_log << "# debug_log=" << (config.eis.debug_log ? 1 : 0) << "\n";
     runtime_log << "frame_index\tframe_time_ms\tsensor_ts_ns\texposure_us\tframe_duration_us\t"
                    "imu_offset_ms\timu_actual_hz\timu_sample_time_ms\t"
                    "gyro_target_time_ms\tgyro_latest_sample_time_ms\tgyro_latest_lag_ms\t"
@@ -159,7 +163,9 @@ int main() {
                    "imu_raw_x\timu_raw_y\timu_raw_z\t"
                    "imu_roll_rad_s\timu_pitch_rad_s\timu_yaw_rad_s\t"
                    "state\tlk_valid\tlk_confidence\tlk_features\tlk_valid_points\tlk_inliers\t"
-                   "gyro_valid\tyaw_rate_dps\tcrop_required_percent\tclamp_scale\tvisual_anchor_rad\t"
+                   "gyro_valid\tgyro_gate_valid\tgyro_gate_samples\tyaw_gate_dps\t"
+                   "crop_required_percent\trs_crop_required_percent\trs_band_used\trs_band_total\trs_mode\t"
+                   "clamp_scale\tvisual_anchor_rad\t"
                    "gyro_delta_raw_roll\tgyro_delta_raw_pitch\tgyro_delta_raw_yaw\t"
                    "gyro_delta_hp_roll\tgyro_delta_hp_pitch\tgyro_delta_hp_yaw\t"
                    "applied_rot_roll\tapplied_rot_pitch\tapplied_rot_yaw\t"
@@ -356,54 +362,62 @@ int main() {
 
             ImuSample latest_imu;
             const bool have_imu = imu_reader.latest_sample(latest_imu);
-            runtime_log
-                << frame.frame_index << '\t'
-                << frame.frame_time_ms << '\t'
-                << frame.sensor_ts_ns << '\t'
-                << frame.exposure_us << '\t'
-                << frame.frame_duration_us << '\t'
-                << config.calib.imu_offset_ms << '\t'
-                << imu_reader.actual_hz() << '\t'
-                << (have_imu ? latest_imu.sample_time_ms : -1.0) << '\t'
-                << debug.gyro_target_time_ms << '\t'
-                << debug.gyro_latest_sample_time_ms << '\t'
-                << debug.gyro_latest_lag_ms << '\t'
-                << debug.gyro_range_used << '\t'
-                << debug.gyro_range_min_ms << '\t'
-                << debug.gyro_range_max_ms << '\t'
-                << (debug.gyro_covers_start ? 1 : 0) << '\t'
-                << (debug.gyro_covers_end ? 1 : 0) << '\t'
-                << (have_imu ? latest_imu.raw_counts[0] : 0.0) << '\t'
-                << (have_imu ? latest_imu.raw_counts[1] : 0.0) << '\t'
-                << (have_imu ? latest_imu.raw_counts[2] : 0.0) << '\t'
-                << (have_imu ? latest_imu.gyro_rad_s[0] : 0.0) << '\t'
-                << (have_imu ? latest_imu.gyro_rad_s[1] : 0.0) << '\t'
-                << (have_imu ? latest_imu.gyro_rad_s[2] : 0.0) << '\t'
-                << hybrid_state_str(debug.state) << '\t'
-                << (debug.lk_valid ? 1 : 0) << '\t'
-                << debug.lk_confidence << '\t'
-                << debug.lk_features << '\t'
-                << debug.lk_valid_points << '\t'
-                << debug.lk_inliers << '\t'
-                << (debug.gyro_valid ? 1 : 0) << '\t'
-                << debug.yaw_rate_dps << '\t'
-                << debug.crop_required_percent << '\t'
-                << debug.clamp_scale << '\t'
-                << debug.visual_anchor_rad << '\t'
-                << debug.gyro_delta_raw_rad[0] << '\t'
-                << debug.gyro_delta_raw_rad[1] << '\t'
-                << debug.gyro_delta_raw_rad[2] << '\t'
-                << debug.gyro_delta_hp_rad[0] << '\t'
-                << debug.gyro_delta_hp_rad[1] << '\t'
-                << debug.gyro_delta_hp_rad[2] << '\t'
-                << debug.applied_rotation_rad[0] << '\t'
-                << debug.applied_rotation_rad[1] << '\t'
-                << debug.applied_rotation_rad[2] << '\t'
-                << debug.applied_tx << '\t'
-                << debug.applied_ty << '\n';
-            ++logged_frames;
-            if ((logged_frames % 30U) == 0U) {
-                runtime_log.flush();
+            if (config.eis.debug_log) {
+                runtime_log
+                    << frame.frame_index << '\t'
+                    << frame.frame_time_ms << '\t'
+                    << frame.sensor_ts_ns << '\t'
+                    << frame.exposure_us << '\t'
+                    << frame.frame_duration_us << '\t'
+                    << config.calib.imu_offset_ms << '\t'
+                    << imu_reader.actual_hz() << '\t'
+                    << (have_imu ? latest_imu.sample_time_ms : -1.0) << '\t'
+                    << debug.gyro_target_time_ms << '\t'
+                    << debug.gyro_latest_sample_time_ms << '\t'
+                    << debug.gyro_latest_lag_ms << '\t'
+                    << debug.gyro_range_used << '\t'
+                    << debug.gyro_range_min_ms << '\t'
+                    << debug.gyro_range_max_ms << '\t'
+                    << (debug.gyro_covers_start ? 1 : 0) << '\t'
+                    << (debug.gyro_covers_end ? 1 : 0) << '\t'
+                    << (have_imu ? latest_imu.raw_counts[0] : 0.0) << '\t'
+                    << (have_imu ? latest_imu.raw_counts[1] : 0.0) << '\t'
+                    << (have_imu ? latest_imu.raw_counts[2] : 0.0) << '\t'
+                    << (have_imu ? latest_imu.gyro_rad_s[0] : 0.0) << '\t'
+                    << (have_imu ? latest_imu.gyro_rad_s[1] : 0.0) << '\t'
+                    << (have_imu ? latest_imu.gyro_rad_s[2] : 0.0) << '\t'
+                    << hybrid_state_str(debug.state) << '\t'
+                    << (debug.lk_valid ? 1 : 0) << '\t'
+                    << debug.lk_confidence << '\t'
+                    << debug.lk_features << '\t'
+                    << debug.lk_valid_points << '\t'
+                    << debug.lk_inliers << '\t'
+                    << (debug.gyro_valid ? 1 : 0) << '\t'
+                    << (debug.gyro_gate_valid ? 1 : 0) << '\t'
+                    << debug.gyro_gate_samples << '\t'
+                    << debug.yaw_gate_dps << '\t'
+                    << debug.crop_required_percent << '\t'
+                    << debug.rs_crop_required_percent << '\t'
+                    << debug.rs_band_used << '\t'
+                    << debug.rs_band_total << '\t'
+                    << (debug.rs_active ? "bands" : config.eis.rs_mode.c_str()) << '\t'
+                    << debug.clamp_scale << '\t'
+                    << debug.visual_anchor_rad << '\t'
+                    << debug.gyro_delta_raw_rad[0] << '\t'
+                    << debug.gyro_delta_raw_rad[1] << '\t'
+                    << debug.gyro_delta_raw_rad[2] << '\t'
+                    << debug.gyro_delta_hp_rad[0] << '\t'
+                    << debug.gyro_delta_hp_rad[1] << '\t'
+                    << debug.gyro_delta_hp_rad[2] << '\t'
+                    << debug.applied_rotation_rad[0] << '\t'
+                    << debug.applied_rotation_rad[1] << '\t'
+                    << debug.applied_rotation_rad[2] << '\t'
+                    << debug.applied_tx << '\t'
+                    << debug.applied_ty << '\n';
+                ++logged_frames;
+                if ((logged_frames % 30U) == 0U) {
+                    runtime_log.flush();
+                }
             }
 
             rtsp_server.push_raw(frame, frame.image);

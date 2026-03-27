@@ -192,7 +192,11 @@ std::string make_default_config_text() {
     append_kv(oss, "turn_hold_frames", cfg.eis.turn_hold_frames);
     append_kv(oss, "recover_frames", cfg.eis.recover_frames);
     append_kv(oss, "turn_follow_correction_scale", cfg.eis.turn_follow_correction_scale);
+    append_kv(oss, "rs_mode", cfg.eis.rs_mode);
+    append_kv(oss, "rs_readout_time_ms", cfg.eis.rs_readout_time_ms);
+    append_kv(oss, "rs_band_count", cfg.eis.rs_band_count);
     append_kv(oss, "debug_overlay", cfg.eis.debug_overlay ? 1 : 0);
+    append_kv(oss, "debug_log", cfg.eis.debug_log ? 1 : 0);
     oss << "\n";
 
     oss << "# [rtsp] 스트림 경로와 인코더 튜닝\n";
@@ -388,7 +392,11 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_int(map, "eis.turn_hold_frames", config.eis.turn_hold_frames);
         load_int(map, "eis.recover_frames", config.eis.recover_frames);
         load_double(map, "eis.turn_follow_correction_scale", config.eis.turn_follow_correction_scale);
+        load_string(map, "eis.rs_mode", config.eis.rs_mode);
+        load_double(map, "eis.rs_readout_time_ms", config.eis.rs_readout_time_ms);
+        load_int(map, "eis.rs_band_count", config.eis.rs_band_count);
         load_bool(map, "eis.debug_overlay", config.eis.debug_overlay);
+        load_bool(map, "eis.debug_log", config.eis.debug_log);
 
         load_string(map, "rtsp.port", config.rtsp.port);
         load_string(map, "rtsp.path", config.rtsp.path);
@@ -557,7 +565,11 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "turn_hold_frames", copy.eis.turn_hold_frames);
         append_kv(oss, "recover_frames", copy.eis.recover_frames);
         append_kv(oss, "turn_follow_correction_scale", copy.eis.turn_follow_correction_scale);
+        append_kv(oss, "rs_mode", copy.eis.rs_mode);
+        append_kv(oss, "rs_readout_time_ms", copy.eis.rs_readout_time_ms);
+        append_kv(oss, "rs_band_count", copy.eis.rs_band_count);
         append_kv(oss, "debug_overlay", copy.eis.debug_overlay ? 1 : 0);
+        append_kv(oss, "debug_log", copy.eis.debug_log ? 1 : 0);
         oss << "\n";
 
         append_section(oss, "rtsp");

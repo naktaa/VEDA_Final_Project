@@ -16,6 +16,9 @@ struct HybridEisDebugInfo {
     int lk_inliers = 0;
     bool gyro_valid = false;
     double yaw_rate_dps = 0.0;
+    bool gyro_gate_valid = false;
+    double yaw_gate_dps = 0.0;
+    int gyro_gate_samples = 0;
     double gyro_target_time_ms = 0.0;
     double gyro_latest_sample_time_ms = 0.0;
     double gyro_latest_lag_ms = 0.0;
@@ -32,6 +35,10 @@ struct HybridEisDebugInfo {
     cv::Vec3d applied_rotation_rad = {0.0, 0.0, 0.0};
     double applied_tx = 0.0;
     double applied_ty = 0.0;
+    bool rs_active = false;
+    int rs_band_used = 0;
+    int rs_band_total = 0;
+    double rs_crop_required_percent = 0.0;
 };
 
 class HybridEisProcessor {
@@ -81,6 +88,9 @@ private:
 
     cv::Mat prev_frame_;
     bool prev_frame_ok_ = false;
+    double prev_frame_time_ms_ = 0.0;
+    int64_t prev_sensor_ts_ns_ = 0;
+    int prev_exposure_us_ = 0;
 
     Quaternion prev_phys_;
     bool prev_phys_ok_ = false;
@@ -99,7 +109,8 @@ private:
     int turn_enter_count_ = 0;
     int turn_exit_count_ = 0;
     int recover_frames_left_ = 0;
+    int gate_invalid_frames_ = 0;
 
-    void update_state(double yaw_rate_dps);
+    void update_state(bool gate_valid, double yaw_gate_dps);
     void reset_lk_stabilization();
 };

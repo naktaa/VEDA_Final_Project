@@ -8,8 +8,6 @@
 
 namespace {
 
-constexpr double kKalmanQ = 0.004;
-constexpr double kKalmanR = 0.5;
 constexpr int kReferenceMinFeatureCount = 10;
 constexpr int kReferenceMinAffinePoints = 6;
 
@@ -146,9 +144,9 @@ void HybridEisProcessor::update_config(const AppConfig& config) {
 }
 
 void HybridEisProcessor::reset_lk_stabilization() {
-    kf_theta_.init(kKalmanQ, kKalmanR);
-    kf_tx_.init(kKalmanQ, kKalmanR);
-    kf_ty_.init(kKalmanQ, kKalmanR);
+    kf_theta_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
+    kf_tx_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
+    kf_ty_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
     lk_frame_count_ = 0;
 }
 

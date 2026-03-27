@@ -167,6 +167,8 @@ std::string make_default_config_text() {
     append_kv(oss, "lk_min_dist", cfg.eis.lk_min_dist);
     append_kv(oss, "lk_ransac_thresh", cfg.eis.lk_ransac_thresh);
     append_kv(oss, "lk_confidence_gate", cfg.eis.lk_confidence_gate);
+    append_kv(oss, "lk_kalman_q", cfg.eis.lk_kalman_q);
+    append_kv(oss, "lk_kalman_r", cfg.eis.lk_kalman_r);
     append_kv(oss, "lk_translation_alpha", cfg.eis.lk_translation_alpha);
     append_kv(oss, "lk_translation_max_corr_px", cfg.eis.lk_translation_max_corr_px);
     append_kv(oss, "lk_translation_turn_scale", cfg.eis.lk_translation_turn_scale);
@@ -361,6 +363,8 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_double(map, "eis.lk_min_dist", config.eis.lk_min_dist);
         load_double(map, "eis.lk_ransac_thresh", config.eis.lk_ransac_thresh);
         load_double(map, "eis.lk_confidence_gate", config.eis.lk_confidence_gate);
+        load_double(map, "eis.lk_kalman_q", config.eis.lk_kalman_q);
+        load_double(map, "eis.lk_kalman_r", config.eis.lk_kalman_r);
         load_double(map, "eis.lk_translation_alpha", config.eis.lk_translation_alpha);
         load_double(map, "eis.lk_translation_max_corr_px", config.eis.lk_translation_max_corr_px);
         load_double(map, "eis.lk_translation_turn_scale", config.eis.lk_translation_turn_scale);
@@ -528,6 +532,8 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "lk_min_dist", copy.eis.lk_min_dist);
         append_kv(oss, "lk_ransac_thresh", copy.eis.lk_ransac_thresh);
         append_kv(oss, "lk_confidence_gate", copy.eis.lk_confidence_gate);
+        append_kv(oss, "lk_kalman_q", copy.eis.lk_kalman_q);
+        append_kv(oss, "lk_kalman_r", copy.eis.lk_kalman_r);
         append_kv(oss, "lk_translation_alpha", copy.eis.lk_translation_alpha);
         append_kv(oss, "lk_translation_max_corr_px", copy.eis.lk_translation_max_corr_px);
         append_kv(oss, "lk_translation_turn_scale", copy.eis.lk_translation_turn_scale);

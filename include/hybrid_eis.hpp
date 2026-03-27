@@ -43,6 +43,35 @@ public:
     bool process(const CapturedFrame& frame, cv::Mat& stabilized, HybridEisDebugInfo* debug = nullptr);
 
 private:
+    struct KalmanState {
+        double x = 0.0;
+        double P = 1.0;
+        double Q = 0.004;
+        double R = 0.5;
+        double sum = 0.0;
+
+        void init(double q, double r) {
+            x = 0.0;
+            P = 1.0;
+            Q = q;
+            R = r;
+            sum = 0.0;
+        }
+
+        void update(double measurement) {
+            sum += measurement;
+            const double x_pred = x;
+            const double P_pred = P + Q;
+            const double K = P_pred / (P_pred + R);
+            x = x_pred + K * (sum - x_pred);
+            P = (1.0 - K) * P_pred;
+        }
+
+        double diff() const {
+            return x - sum;
+        }
+    };
+
     AppConfig config_;
     const GyroBuffer* gyro_buffer_ = nullptr;
     LkTracker lk_tracker_;
@@ -61,11 +90,10 @@ private:
     cv::Vec3d hp_lp_delta_rad_ = {0.0, 0.0, 0.0};
     bool hp_initialized_ = false;
 
-    double visual_anchor_rad_ = 0.0;
-    bool visual_anchor_ok_ = false;
-    double smooth_tx_ = 0.0;
-    double smooth_ty_ = 0.0;
-    bool smooth_translation_ok_ = false;
+    KalmanState kf_theta_;
+    KalmanState kf_tx_;
+    KalmanState kf_ty_;
+    int lk_frame_count_ = 0;
 
     HybridState state_ = HybridState::STABILIZE;
     int turn_enter_count_ = 0;
@@ -73,4 +101,5 @@ private:
     int recover_frames_left_ = 0;
 
     void update_state(double yaw_rate_dps);
+    void reset_lk_stabilization();
 };

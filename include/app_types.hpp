@@ -24,6 +24,8 @@ struct LkMotionEstimate {
     double dx = 0.0;
     double dy = 0.0;
     double da = 0.0;
+    double sx = 1.0;
+    double sy = 1.0;
     int features = 0;
     int valid_points = 0;
     int inliers = 0;

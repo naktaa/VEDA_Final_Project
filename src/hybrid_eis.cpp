@@ -8,11 +8,8 @@
 
 namespace {
 
-cv::Mat center_rotation_homography(int width, int height, double angle_rad) {
-    const cv::Point2f center(width * 0.5F, height * 0.5F);
-    const cv::Mat affine = cv::getRotationMatrix2D(center, angle_rad * 180.0 / CV_PI, 1.0);
-    return to_homography3x3(affine);
-}
+constexpr double kKalmanQ = 0.004;
+constexpr double kKalmanR = 0.5;
 
 cv::Mat apply_fixed_crop(const cv::Mat& frame, double crop_percent) {
     if (frame.empty() || crop_percent <= 0.0) {
@@ -53,7 +50,9 @@ HybridEisProcessor::HybridEisProcessor(const AppConfig& config, const GyroBuffer
                                              config.camera.height,
                                              config.camera.hfov_deg,
                                              config.camera.vfov_deg)),
-      warp_(intrinsics_) {}
+      warp_(intrinsics_) {
+    reset_lk_stabilization();
+}
 
 void HybridEisProcessor::update_config(const AppConfig& config) {
     config_ = config;
@@ -63,6 +62,14 @@ void HybridEisProcessor::update_config(const AppConfig& config) {
                                              config.camera.hfov_deg,
                                              config.camera.vfov_deg);
     warp_ = EISWarpCalculator(intrinsics_);
+    reset_lk_stabilization();
+}
+
+void HybridEisProcessor::reset_lk_stabilization() {
+    kf_theta_.init(kKalmanQ, kKalmanR);
+    kf_tx_.init(kKalmanQ, kKalmanR);
+    kf_ty_.init(kKalmanQ, kKalmanR);
+    lk_frame_count_ = 0;
 }
 
 void HybridEisProcessor::reset() {
@@ -74,16 +81,12 @@ void HybridEisProcessor::reset() {
     prev_target_ok_ = false;
     hp_lp_delta_rad_ = cv::Vec3d(0.0, 0.0, 0.0);
     hp_initialized_ = false;
-    visual_anchor_rad_ = 0.0;
-    visual_anchor_ok_ = false;
-    smooth_tx_ = 0.0;
-    smooth_ty_ = 0.0;
-    smooth_translation_ok_ = false;
     state_ = HybridState::STABILIZE;
     turn_enter_count_ = 0;
     turn_exit_count_ = 0;
     recover_frames_left_ = 0;
     integrator_.reset();
+    reset_lk_stabilization();
 }
 
 void HybridEisProcessor::update_state(double yaw_rate_dps) {
@@ -150,13 +153,11 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     const double yaw_rate_dps = have_latest_imu
         ? latest_imu.gyro_rad_s[2] * 180.0 / CV_PI
         : 0.0;
-    update_state(yaw_rate_dps);
 
-    if (debug) {
-        debug->state = state_;
-        debug->yaw_rate_dps = yaw_rate_dps;
-        debug->gyro_latest_sample_time_ms = have_latest_imu ? latest_imu.sample_time_ms : 0.0;
-        debug->gyro_latest_lag_ms = have_latest_imu ? (frame.frame_time_ms - latest_imu.sample_time_ms) : 0.0;
+    const HybridState prev_state = state_;
+    update_state(yaw_rate_dps);
+    if (state_ == HybridState::TURN_FOLLOW && prev_state != HybridState::TURN_FOLLOW) {
+        reset_lk_stabilization();
     }
 
     LkMotionEstimate lk;
@@ -164,163 +165,76 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
         lk = lk_tracker_.estimate(prev_frame_, current);
     }
 
-    cv::Vec3d gyro_delta_raw(0.0, 0.0, 0.0);
-    cv::Vec3d gyro_delta_hp(0.0, 0.0, 0.0);
-    cv::Vec3d gyro_corr(0.0, 0.0, 0.0);
-    GyroRangeInfo gyro_info{};
-    bool gyro_valid = false;
-    if (gyro_buffer_) {
-        const double target_time_ms = frame.frame_time_ms + config_.calib.imu_offset_ms;
-        if (debug) {
-            debug->gyro_target_time_ms = target_time_ms;
-            if (have_latest_imu) {
-                debug->gyro_latest_lag_ms = target_time_ms - latest_imu.sample_time_ms;
-            }
+    const bool lk_usable = lk.valid && lk.confidence >= config_.eis.lk_confidence_gate;
+    const double correction_scale = state_ == HybridState::RECOVER
+        ? recover_progress(config_, recover_frames_left_)
+        : (state_ == HybridState::TURN_FOLLOW ? 0.0 : 1.0);
+
+    double target_time_ms = frame.frame_time_ms + config_.calib.imu_offset_ms;
+    if (debug) {
+        debug->state = state_;
+        debug->yaw_rate_dps = yaw_rate_dps;
+        debug->gyro_valid = have_latest_imu;
+        debug->gyro_target_time_ms = target_time_ms;
+        debug->gyro_latest_sample_time_ms = have_latest_imu ? latest_imu.sample_time_ms : 0.0;
+        debug->gyro_latest_lag_ms = have_latest_imu ? (target_time_ms - latest_imu.sample_time_ms) : 0.0;
+    }
+
+    double corr_dx = 0.0;
+    double corr_dy = 0.0;
+    double corr_da = 0.0;
+    double required_crop = 0.0;
+
+    if (!prev_frame_ok_ || state_ == HybridState::TURN_FOLLOW) {
+        stabilized = apply_fixed_crop(current, config_.eis.crop_budget_percent);
+    } else if (!lk_usable) {
+        reset_lk_stabilization();
+        stabilized = apply_fixed_crop(current, config_.eis.crop_budget_percent);
+    } else {
+        kf_theta_.update(lk.da);
+        kf_tx_.update(lk.dx);
+        kf_ty_.update(lk.dy);
+
+        if (lk_frame_count_ > 0) {
+            corr_da = kf_theta_.diff() * correction_scale;
+            corr_dx = std::clamp(kf_tx_.diff() * correction_scale,
+                                 -config_.eis.lk_translation_max_corr_px,
+                                 config_.eis.lk_translation_max_corr_px);
+            corr_dy = std::clamp(kf_ty_.diff() * correction_scale,
+                                 -config_.eis.lk_translation_max_corr_px,
+                                 config_.eis.lk_translation_max_corr_px);
         }
-        if (!prev_target_ok_ || target_time_ms > prev_target_ms_) {
-            Quaternion current_phys;
-            if (integrator_.integrate_to(target_time_ms, *gyro_buffer_, current_phys, &gyro_info)) {
-                if (prev_phys_ok_) {
-                    Quaternion delta = prev_phys_.conjugate() * current_phys;
-                    delta.normalize();
-                    gyro_delta_raw = quat_to_euler(delta);
-                    const double alpha = std::clamp(config_.eis.gyro_hp_lpf_alpha, 0.0, 1.0);
-                    if (!hp_initialized_) {
-                        hp_lp_delta_rad_ = gyro_delta_raw;
-                        hp_initialized_ = true;
-                    } else {
-                        hp_lp_delta_rad_ = alpha * hp_lp_delta_rad_ + (1.0 - alpha) * gyro_delta_raw;
-                    }
-                    gyro_delta_hp = gyro_delta_raw - hp_lp_delta_rad_;
+        ++lk_frame_count_;
 
-                    gyro_corr[0] = -gyro_delta_hp[0] * config_.eis.gyro_gain_roll * config_.eis.gyro_hp_gain_roll;
-                    gyro_corr[1] = -gyro_delta_hp[1] * config_.eis.gyro_gain_pitch * config_.eis.gyro_hp_gain_pitch;
-                    gyro_corr[2] = -gyro_delta_hp[2] * config_.eis.gyro_gain_yaw * config_.eis.gyro_hp_gain_yaw;
+        const double out_da = lk.da + corr_da;
+        const double out_dx = lk.dx + corr_dx;
+        const double out_dy = lk.dy + corr_dy;
 
-                    const double delta_angle_deg = quaternion_angle_deg(delta);
-                    if (delta_angle_deg > config_.eis.gyro_large_rot_thresh_deg) {
-                        gyro_corr *= config_.eis.gyro_large_rot_gain_scale;
-                    }
-                    gyro_corr = clamp_rotation_correction(gyro_corr, config_.eis);
-                    gyro_valid = true;
-                }
-                prev_phys_ = current_phys;
-                prev_phys_ok_ = true;
-            }
-            prev_target_ms_ = target_time_ms;
-            prev_target_ok_ = true;
-        }
+        const cv::Mat smoothed = (cv::Mat_<double>(2, 3) <<
+            lk.sx * std::cos(out_da), lk.sx * -std::sin(out_da), out_dx,
+            lk.sy * std::sin(out_da), lk.sy *  std::cos(out_da), out_dy);
+
+        cv::warpAffine(prev_frame_,
+                       stabilized,
+                       smoothed,
+                       current.size(),
+                       cv::INTER_LINEAR,
+                       cv::BORDER_REPLICATE);
+        required_crop = compute_required_crop_percent(to_homography3x3(smoothed), current.cols, current.rows);
+        stabilized = apply_fixed_crop(stabilized, config_.eis.crop_budget_percent);
     }
-
-    double translation_scale = 1.0;
-    double rotation_scale = 1.0;
-    double visual_scale = 1.0;
-    if (state_ == HybridState::TURN_FOLLOW) {
-        translation_scale = config_.eis.lk_translation_turn_scale;
-        rotation_scale = config_.eis.turn_follow_correction_scale;
-        visual_scale = 0.0;
-    } else if (state_ == HybridState::RECOVER) {
-        const double progress = recover_progress(config_, recover_frames_left_);
-        translation_scale = config_.eis.lk_translation_turn_scale +
-            (1.0 - config_.eis.lk_translation_turn_scale) * progress;
-        rotation_scale = config_.eis.turn_follow_correction_scale +
-            (1.0 - config_.eis.turn_follow_correction_scale) * progress;
-        visual_scale = progress;
-    }
-
-    double tx = smooth_tx_;
-    double ty = smooth_ty_;
-    if (lk.valid && lk.confidence >= config_.eis.lk_confidence_gate) {
-        const double measured_tx = -lk.dx * translation_scale;
-        const double measured_ty = -lk.dy * translation_scale;
-        const double alpha = std::clamp(config_.eis.lk_translation_alpha, 0.0, 1.0);
-        if (!smooth_translation_ok_) {
-            smooth_tx_ = measured_tx;
-            smooth_ty_ = measured_ty;
-            smooth_translation_ok_ = true;
-        } else {
-            smooth_tx_ = alpha * smooth_tx_ + (1.0 - alpha) * measured_tx;
-            smooth_ty_ = alpha * smooth_ty_ + (1.0 - alpha) * measured_ty;
-        }
-
-        smooth_tx_ = std::clamp(smooth_tx_,
-                                -config_.eis.lk_translation_max_corr_px,
-                                config_.eis.lk_translation_max_corr_px);
-        smooth_ty_ = std::clamp(smooth_ty_,
-                                -config_.eis.lk_translation_max_corr_px,
-                                config_.eis.lk_translation_max_corr_px);
-        tx = smooth_tx_;
-        ty = smooth_ty_;
-
-        const double visual_alpha = std::clamp(config_.eis.lk_rotation_anchor_alpha, 0.0, 1.0);
-        if (!visual_anchor_ok_) {
-            visual_anchor_rad_ = lk.da;
-            visual_anchor_ok_ = true;
-        } else {
-            visual_anchor_rad_ = visual_alpha * visual_anchor_rad_ + (1.0 - visual_alpha) * lk.da;
-        }
-    } else if (smooth_translation_ok_) {
-        smooth_tx_ *= 0.92;
-        smooth_ty_ *= 0.92;
-        tx = smooth_tx_;
-        ty = smooth_ty_;
-    }
-
-    double visual_anchor = 0.0;
-    if (visual_anchor_ok_ && lk.confidence >= config_.eis.lk_confidence_gate) {
-        visual_anchor = -visual_anchor_rad_ * config_.eis.lk_rotation_gain * visual_scale;
-    }
-
-    gyro_corr *= rotation_scale;
-
-    cv::Mat H = cv::Mat::eye(3, 3, CV_64F);
-    H = translation_homography(tx, ty) * H;
-    if (std::abs(visual_anchor) > 1e-8) {
-        H = center_rotation_homography(current.cols, current.rows, visual_anchor) * H;
-    }
-    if (gyro_valid && warp_.valid()) {
-        const Quaternion q_corr = quat_from_euler(gyro_corr[0], gyro_corr[1], gyro_corr[2]);
-        H = warp_.homography_from_quat(q_corr) * H;
-    }
-
-    double clamp_scale = 1.0;
-    const double required_crop = compute_required_crop_percent(H, current.cols, current.rows);
-    if (required_crop > config_.eis.crop_budget_percent && required_crop > 0.0) {
-        clamp_scale = std::clamp(config_.eis.crop_budget_percent / required_crop, 0.0, 1.0);
-        tx *= clamp_scale;
-        ty *= clamp_scale;
-        visual_anchor *= clamp_scale;
-        gyro_corr *= clamp_scale;
-
-        H = translation_homography(tx, ty);
-        if (std::abs(visual_anchor) > 1e-8) {
-            H = center_rotation_homography(current.cols, current.rows, visual_anchor) * H;
-        }
-        if (gyro_valid && warp_.valid()) {
-            const Quaternion q_corr = quat_from_euler(gyro_corr[0], gyro_corr[1], gyro_corr[2]);
-            H = warp_.homography_from_quat(q_corr) * H;
-        }
-    }
-
-    cv::warpPerspective(current,
-                        stabilized,
-                        H,
-                        current.size(),
-                        cv::INTER_LINEAR,
-                        cv::BORDER_REPLICATE);
-    stabilized = apply_fixed_crop(stabilized, config_.eis.crop_budget_percent);
 
     if (config_.eis.debug_overlay) {
         char line1[256];
         std::snprintf(line1,
                       sizeof(line1),
-                      "state=%s yaw=%+.1fdps lk=%.2f tx=%+.1f ty=%+.1f crop=%.1f%%",
+                      "state=%s yaw=%+.1fdps lk=%.2f corr x=%+.1f y=%+.1f a=%+.2fdeg",
                       hybrid_state_str(state_),
                       yaw_rate_dps,
                       lk.confidence,
-                      tx,
-                      ty,
-                      compute_required_crop_percent(H, current.cols, current.rows));
+                      corr_dx,
+                      corr_dy,
+                      corr_da * 180.0 / CV_PI);
         cv::putText(stabilized,
                     line1,
                     cv::Point(10, 28),
@@ -340,20 +254,13 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
         debug->lk_features = lk.features;
         debug->lk_valid_points = lk.valid_points;
         debug->lk_inliers = lk.inliers;
-        debug->gyro_valid = gyro_valid;
-        debug->gyro_range_used = gyro_info.used;
-        debug->gyro_range_min_ms = gyro_info.min_ts;
-        debug->gyro_range_max_ms = gyro_info.max_ts;
-        debug->gyro_covers_start = gyro_info.covers_start;
-        debug->gyro_covers_end = gyro_info.covers_end;
-        debug->crop_required_percent = compute_required_crop_percent(H, current.cols, current.rows);
-        debug->clamp_scale = clamp_scale;
-        debug->visual_anchor_rad = visual_anchor;
-        debug->gyro_delta_raw_rad = gyro_delta_raw;
-        debug->gyro_delta_hp_rad = gyro_delta_hp;
-        debug->applied_rotation_rad = gyro_corr;
-        debug->applied_tx = tx;
-        debug->applied_ty = ty;
+        debug->crop_required_percent = required_crop;
+        debug->clamp_scale = 1.0;
+        debug->visual_anchor_rad = corr_da;
+        debug->applied_rotation_rad = cv::Vec3d(0.0, 0.0, corr_da);
+        debug->applied_tx = corr_dx;
+        debug->applied_ty = corr_dy;
     }
-    return gyro_valid || lk.valid;
+
+    return true;
 }

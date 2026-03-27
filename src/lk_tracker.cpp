@@ -104,6 +104,12 @@ LkMotionEstimate LkTracker::estimate(const cv::Mat& prev_bgr, const cv::Mat& cur
     result.dx = affine.at<double>(0, 2);
     result.dy = affine.at<double>(1, 2);
     result.da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+    const double cos_da = std::cos(result.da);
+    if (std::abs(cos_da) <= 1e-6) {
+        return result;
+    }
+    result.sx = affine.at<double>(0, 0) / cos_da;
+    result.sy = affine.at<double>(1, 1) / cos_da;
     result.valid = true;
     return result;
 }

@@ -104,8 +104,8 @@ button {
 .minimap-overlay {
   position: absolute;
   top: max(10px, env(safe-area-inset-top));
-  right: max(10px, env(safe-area-inset-right));
-  width: clamp(140px, 26vw, 220px);
+  right: max(44px, calc(env(safe-area-inset-right) + 44px));
+  width: clamp(112px, 20vw, 170px);
   aspect-ratio: 1 / 1;
   border-radius: 16px;
   overflow: hidden;
@@ -144,7 +144,7 @@ button {
 
   .minimap-overlay {
     top: max(8px, env(safe-area-inset-top));
-    right: max(8px, env(safe-area-inset-right));
-    width: clamp(140px, 34vw, 180px);
+    right: max(28px, calc(env(safe-area-inset-right) + 28px));
+    width: clamp(108px, 28vw, 150px);
   }
 }

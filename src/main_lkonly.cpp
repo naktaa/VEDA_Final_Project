@@ -332,7 +332,11 @@ int main() {
         vr_input_config.speed_step = config.controller.speed_step;
         vr_input_config.log_only = config.controller.log_only;
         vr_input_thread = std::thread([&, vr_input_config]() {
-            const bool ok = run_vr_remote_input_loop(vr_input_config, running);
+            const bool ok = run_vr_remote_input_loop(vr_input_config,
+                                                     running,
+                                                     [&](const char* reason) {
+                                                         auto_controller.cancel_goal(reason);
+                                                     });
             if (!ok && running.load()) {
                 std::fprintf(stderr, "[VR] controller loop unavailable; Qt/auto control remains active\n");
             }
@@ -565,7 +569,12 @@ int main() {
                  config.mqtt.port,
                  config.mqtt.control_topic.c_str());
 
-    const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt, running, &ptz_controller);
+    const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt,
+                                             running,
+                                             &ptz_controller,
+                                             [&](const char* reason) {
+                                                 auto_controller.cancel_goal(reason);
+                                             });
     if (!mqtt_ok) {
         std::fprintf(stderr, "[LKONLY] Qt control loop ended with error\n");
     }

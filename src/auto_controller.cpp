@@ -109,6 +109,7 @@ void AutoController::cancel_goal(const char* reason) {
         canceled_goal = goal_;
         had_goal = true;
         goal_ = RcGoal{};
+        ++goal_revision_;
         control_status_ = ControlStatus{};
         control_status_.robot_state = "WAIT_GOAL";
         last_command_ = RcCommand{};
@@ -200,6 +201,7 @@ void AutoController::onMessage(const struct mosquitto_message* msg) {
         RcGoal next_goal;
         if (ParseGoalJson(payload, next_goal) && next_goal.frame == "world") {
             goal_ = next_goal;
+            ++goal_revision_;
             std::cerr << "[GOAL] x=" << next_goal.x
                       << " y=" << next_goal.y
                       << " frame=" << next_goal.frame
@@ -245,16 +247,24 @@ void AutoController::controlStep() {
     RcPose pose;
     RcSafety safety;
     std::chrono::steady_clock::time_point last_pose_rx;
+    uint64_t goal_revision = 0;
     {
         std::lock_guard<std::mutex> lock(data_mtx_);
         goal = goal_;
         pose = pose_;
         safety = safety_;
         last_pose_rx = last_pose_rx_;
+        goal_revision = goal_revision_;
     }
 
     ControlStatus control_status;
     RcCommand cmd;
+    bool state_still_current = true;
+
+    const auto goal_still_current = [&]() {
+        std::lock_guard<std::mutex> lock(data_mtx_);
+        return goal_revision_ == goal_revision;
+    };
 
     if (!pose.valid) {
         control_status.robot_state = "WAIT_INPUT";
@@ -277,12 +287,27 @@ void AutoController::controlStep() {
             updatePathPlan(pose, goal);
             const RcGoal tracking_goal = resolveTrackingGoal(pose, goal);
             cmd = computeCommand(pose, tracking_goal, control_status);
-            tank_drive::command_auto(cmd, config_.motor);
+            if (goal_still_current()) {
+                tank_drive::command_auto(cmd, config_.motor);
+            } else {
+                state_still_current = false;
+            }
         }
+    }
+
+    if (state_still_current && !goal_still_current()) {
+        state_still_current = false;
+    }
+
+    if (!state_still_current) {
+        return;
     }
 
     {
         std::lock_guard<std::mutex> lock(data_mtx_);
+        if (goal_revision_ != goal_revision) {
+            return;
+        }
         control_status_ = control_status;
         last_command_ = cmd;
     }

@@ -165,10 +165,13 @@ void AutoController::onMessage(const struct mosquitto_message* msg) {
         RcGoal next_goal;
         if (ParseGoalJson(payload, next_goal) && next_goal.frame == "world") {
             goal_ = next_goal;
-            std::cerr << "[GOAL] x=" << next_goal.x
-                      << " y=" << next_goal.y
-                      << " frame=" << next_goal.frame
-                      << " ts_ms=" << next_goal.ts_ms << "\n";
+            static int goal_rx_count = 0;
+            if (++goal_rx_count % 10 == 0) {
+                std::cerr << "[GOAL] x=" << next_goal.x
+                          << " y=" << next_goal.y
+                          << " frame=" << next_goal.frame
+                          << " ts_ms=" << next_goal.ts_ms << "\n";
+            }
         } else if (ParseGoalJson(payload, next_goal)) {
             std::cerr << "[GOAL] ignored: unsupported frame=" << next_goal.frame
                       << " payload=" << payload << "\n";
@@ -183,11 +186,14 @@ void AutoController::onMessage(const struct mosquitto_message* msg) {
         if (ParsePoseJson(payload, next_pose) && next_pose.frame == "world") {
             pose_ = next_pose;
             last_pose_rx_ = std::chrono::steady_clock::now();
-            std::cerr << "[POSE] x=" << next_pose.x
-                      << " y=" << next_pose.y
-                      << " yaw=" << next_pose.yaw
-                      << " frame=" << next_pose.frame
-                      << " ts_ms=" << next_pose.ts_ms << "\n";
+            static int pose_rx_count = 0;
+            if (++pose_rx_count % 10 == 0) {
+                std::cerr << "[POSE] x=" << next_pose.x
+                          << " y=" << next_pose.y
+                          << " yaw=" << next_pose.yaw
+                          << " frame=" << next_pose.frame
+                          << " ts_ms=" << next_pose.ts_ms << "\n";
+            }
         } else if (ParsePoseJson(payload, next_pose)) {
             std::cerr << "[POSE] ignored: unsupported frame=" << next_pose.frame
                       << " payload=" << payload << "\n";

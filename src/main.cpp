@@ -248,7 +248,25 @@ int main() {
     FrameJpegCache frame_cache;
     HttpVrServer http_server;
     if (config.http.enable) {
-        if (!http_server.start(config.http, running, frame_cache, ptz_controller)) {
+        auto overlay_state_provider = [&auto_controller]() {
+            const AutoStatusSnapshot snapshot = auto_controller.snapshot();
+
+            HttpVrOverlayState overlay_state;
+            overlay_state.valid = snapshot.pose.valid;
+            overlay_state.stale = snapshot.control_status.robot_state == "POSE_TIMEOUT";
+            overlay_state.x = snapshot.pose.x;
+            overlay_state.y = snapshot.pose.y;
+            overlay_state.yaw_rad = snapshot.pose.yaw;
+            overlay_state.frame = snapshot.pose.frame;
+            overlay_state.ts_ms = snapshot.pose.ts_ms;
+            return overlay_state;
+        };
+
+        if (!http_server.start(config.http,
+                               running,
+                               frame_cache,
+                               ptz_controller,
+                               overlay_state_provider)) {
             std::fprintf(stderr, "[MAIN] HTTP tiltVR start failed on port %d\n", config.http.port);
             ptz_controller.stop();
             auto_controller.stop();

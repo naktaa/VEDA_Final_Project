@@ -592,7 +592,7 @@ function drawMinimap() {
   const canvas = minimapCanvas;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  ctx.fillStyle = "#08141c";
+  ctx.fillStyle = "rgba(8, 20, 28, 0.42)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   if (!minimapConfig) {

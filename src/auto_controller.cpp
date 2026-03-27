@@ -17,6 +17,12 @@ constexpr int kPoseTimeoutMs = 800;
 constexpr int kControlStepMs = 50;
 constexpr double kPi = 3.14159265358979323846;
 
+RcPose pose_for_control(const RcPose& pose) {
+    RcPose corrected = pose;
+    corrected.yaw = -corrected.yaw;
+    return corrected;
+}
+
 } // namespace
 
 AutoController::AutoController(const AppConfig& config)
@@ -165,10 +171,13 @@ void AutoController::onMessage(const struct mosquitto_message* msg) {
         RcGoal next_goal;
         if (ParseGoalJson(payload, next_goal) && next_goal.frame == "world") {
             goal_ = next_goal;
-            std::cerr << "[GOAL] x=" << next_goal.x
-                      << " y=" << next_goal.y
-                      << " frame=" << next_goal.frame
-                      << " ts_ms=" << next_goal.ts_ms << "\n";
+            static int goal_rx_count = 0;
+            if (++goal_rx_count % 10 == 0) {
+                std::cerr << "[GOAL] x=" << next_goal.x
+                          << " y=" << next_goal.y
+                          << " frame=" << next_goal.frame
+                          << " ts_ms=" << next_goal.ts_ms << "\n";
+            }
         } else if (ParseGoalJson(payload, next_goal)) {
             std::cerr << "[GOAL] ignored: unsupported frame=" << next_goal.frame
                       << " payload=" << payload << "\n";
@@ -183,11 +192,14 @@ void AutoController::onMessage(const struct mosquitto_message* msg) {
         if (ParsePoseJson(payload, next_pose) && next_pose.frame == "world") {
             pose_ = next_pose;
             last_pose_rx_ = std::chrono::steady_clock::now();
-            std::cerr << "[POSE] x=" << next_pose.x
-                      << " y=" << next_pose.y
-                      << " yaw=" << next_pose.yaw
-                      << " frame=" << next_pose.frame
-                      << " ts_ms=" << next_pose.ts_ms << "\n";
+            static int pose_rx_count = 0;
+            if (++pose_rx_count % 10 == 0) {
+                std::cerr << "[POSE] x=" << next_pose.x
+                          << " y=" << next_pose.y
+                          << " yaw=" << next_pose.yaw
+                          << " frame=" << next_pose.frame
+                          << " ts_ms=" << next_pose.ts_ms << "\n";
+            }
         } else if (ParsePoseJson(payload, next_pose)) {
             std::cerr << "[POSE] ignored: unsupported frame=" << next_pose.frame
                       << " payload=" << payload << "\n";
@@ -220,6 +232,7 @@ void AutoController::controlStep() {
 
     ControlStatus control_status;
     RcCommand cmd;
+    const RcPose control_pose = pose_for_control(pose);
 
     if (!pose.valid) {
         control_status.robot_state = "WAIT_INPUT";
@@ -239,9 +252,9 @@ void AutoController::controlStep() {
             control_status.robot_state = "SAFE_STOP";
             tank_drive::stop_from(tank_drive::DriveSource::kAuto);
         } else {
-            updatePathPlan(pose, goal);
-            const RcGoal tracking_goal = resolveTrackingGoal(pose, goal);
-            cmd = computeCommand(pose, tracking_goal, control_status);
+            updatePathPlan(control_pose, goal);
+            const RcGoal tracking_goal = resolveTrackingGoal(control_pose, goal);
+            cmd = computeCommand(control_pose, tracking_goal, control_status);
             tank_drive::command_auto(cmd, config_.motor);
         }
     }
@@ -303,6 +316,8 @@ RcCommand AutoController::computeCommand(const RcPose& pose,
                                          ControlStatus& out_status) {
     constexpr double kRotateEnterTh = 35.0 * kPi / 180.0;
     constexpr double kRotateExitTh = 20.0 * kPi / 180.0;
+    constexpr double kRotateMinRateFracNear = 0.45;
+    constexpr double kRotateMinRateFracFar = 0.85;
 
     const double dx = goal.x - pose.x;
     const double dy = goal.y - pose.y;
@@ -349,19 +364,34 @@ RcCommand AutoController::computeCommand(const RcPose& pose,
     if (rotating_) {
         out_status.robot_state = "ROTATE";
         cmd.speed_cmps = 0.0;
+        cmd.turn_effort =
+            clamp((abs_err - kRotateExitTh) / std::max(0.001, kPi - kRotateExitTh), 0.0, 1.0);
         double rotate_err = err_yaw;
         if (std::fabs(rotate_err) > config_.auto_control.rotate_yaw_offset_rad) {
             rotate_err -= (rotate_err > 0.0 ? config_.auto_control.rotate_yaw_offset_rad
                                             : -config_.auto_control.rotate_yaw_offset_rad);
         } else {
             rotate_err = 0.0;
+            cmd.turn_effort = 0.0;
         }
         cmd.yaw_rate_rps = clamp(config_.auto_control.k_yaw * rotate_err,
                                  -config_.auto_control.max_yaw_rate_rps,
                                  config_.auto_control.max_yaw_rate_rps);
+        if (rotate_err != 0.0) {
+            const double rotate_blend =
+                clamp((abs_err - kRotateExitTh) / std::max(0.001, kPi - kRotateExitTh), 0.0, 1.0);
+            const double min_rotate_rate =
+                config_.auto_control.max_yaw_rate_rps *
+                (kRotateMinRateFracNear +
+                 ((kRotateMinRateFracFar - kRotateMinRateFracNear) * rotate_blend));
+            if (std::fabs(cmd.yaw_rate_rps) < min_rotate_rate) {
+                cmd.yaw_rate_rps = (rotate_err > 0.0 ? min_rotate_rate : -min_rotate_rate);
+            }
+        }
         return cmd;
     }
 
+    cmd.turn_effort = 0.0;
     const double tracking_yaw_limit = config_.auto_control.max_yaw_rate_rps * 0.6;
     cmd.yaw_rate_rps = clamp(config_.auto_control.k_yaw * err_yaw,
                              -tracking_yaw_limit,

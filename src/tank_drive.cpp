@@ -407,8 +407,22 @@ void command_auto(const RcCommand& cmd, const RcMotorParams& params) {
 
     const int left_cmd = (left_speed > 0.0) ? 1 : (left_speed < 0.0 ? -1 : 0);
     const int right_cmd = (right_speed > 0.0) ? 1 : (right_speed < 0.0 ? -1 : 0);
-    const int left_pwm = speed_to_pwm(left_speed, params);
-    const int right_pwm = speed_to_pwm(right_speed, params);
+    int left_pwm = speed_to_pwm(left_speed, params);
+    int right_pwm = speed_to_pwm(right_speed, params);
+
+    const bool pure_rotate =
+        std::fabs(cmd.speed_cmps) < params.speed_deadband_cmps &&
+        left_cmd != 0 &&
+        right_cmd != 0 &&
+        left_cmd == -right_cmd;
+    if (pure_rotate) {
+        const double effort = std::max(0.0, std::min(1.0, cmd.turn_effort));
+        const int rotate_pwm = static_cast<int>(
+            std::lround(params.pwm_min_effective +
+                        ((params.pwm_max - params.pwm_min_effective) * effort)));
+        left_pwm = rotate_pwm;
+        right_pwm = rotate_pwm;
+    }
 
     std::lock_guard<std::mutex> lock(g_state_mutex);
     SourceDriveState& state = g_source_states[source_index(DriveSource::kAuto)];

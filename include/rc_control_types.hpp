@@ -39,6 +39,7 @@ struct ControlStatus {
 struct RcCommand {
     double speed_cmps = 0.0;
     double yaw_rate_rps = 0.0;
+    double turn_effort = 0.0;
 };
 
 struct RcWaypoint {
@@ -50,17 +51,17 @@ struct RcWaypoint {
 struct RcControlParams {
     double k_linear = 0.5;
     double k_yaw = 0.8;
-    double max_speed_cmps = 70.0;
+    double max_speed_cmps = 50.0;
     double max_yaw_rate_rps = 0.5;
-    double tolerance_cm = 10.0;
+    double tolerance_cm = 15.0;
     double rotate_yaw_offset_rad = 5.0 * 3.14159265358979323846 / 180.0;
 };
 
 struct RcMotorParams {
     double track_width_cm = 22.0;
-    double wheel_max_speed_cmps = 70.0;
+    double wheel_max_speed_cmps = 50.0;
     double speed_deadband_cmps = 0.3;
-    int pwm_min_effective = 110;
+    int pwm_min_effective = 120;
     int pwm_max = 220;
 };
 

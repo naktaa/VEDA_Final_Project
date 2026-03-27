@@ -29,6 +29,7 @@ public:
     bool start(std::string* error = nullptr);
     void run(const std::atomic<bool>* external_run = nullptr);
     void stop();
+    void cancel_goal(const char* reason);
 
     AutoStatusSnapshot snapshot() const;
 

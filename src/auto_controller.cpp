@@ -97,6 +97,41 @@ void AutoController::stop() {
     mqtt_connected_ = false;
 }
 
+void AutoController::cancel_goal(const char* reason) {
+    RcGoal canceled_goal;
+    bool had_goal = false;
+    {
+        std::lock_guard<std::mutex> lock(data_mtx_);
+        if (!goal_.valid) {
+            return;
+        }
+
+        canceled_goal = goal_;
+        had_goal = true;
+        goal_ = RcGoal{};
+        control_status_ = ControlStatus{};
+        control_status_.robot_state = "WAIT_GOAL";
+        last_command_ = RcCommand{};
+        rotating_ = false;
+        reached_ = false;
+        last_goal_ = RcGoal{};
+        planned_path_.clear();
+        planned_path_index_ = 0;
+        tracking_goal_is_final_ = true;
+        planned_goal_ts_ms_ = -1;
+        last_plan_at_ = std::chrono::steady_clock::time_point::min();
+    }
+
+    tank_drive::stop_from(tank_drive::DriveSource::kAuto);
+    if (had_goal) {
+        std::cerr << "[AUTO] goal canceled by "
+                  << ((reason && reason[0] != '\0') ? reason : "manual override")
+                  << " x=" << canceled_goal.x
+                  << " y=" << canceled_goal.y
+                  << " ts_ms=" << canceled_goal.ts_ms << "\n";
+    }
+}
+
 AutoStatusSnapshot AutoController::snapshot() const {
     std::lock_guard<std::mutex> lock(data_mtx_);
     AutoStatusSnapshot out;

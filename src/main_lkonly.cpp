@@ -99,6 +99,20 @@ bool manual_override_active(const tank_drive::DriveStatusSnapshot& drive) {
            (drive.active_source == tank_drive::DriveSource::kManualKey && drive.moving);
 }
 
+const char* drive_source_name(tank_drive::DriveSource source) {
+    switch (source) {
+    case tank_drive::DriveSource::kQt:
+        return "qt";
+    case tank_drive::DriveSource::kController:
+        return "controller";
+    case tank_drive::DriveSource::kManualKey:
+        return "manual_key";
+    case tank_drive::DriveSource::kAuto:
+        return "auto";
+    }
+    return "unknown";
+}
+
 void fill_runtime_status(RcStatus& status,
                          const tank_drive::DriveStatusSnapshot& drive,
                          const AutoStatusSnapshot& auto_state,
@@ -329,6 +343,10 @@ int main() {
     std::thread tick_thread([&]() {
         while (running.load()) {
             tank_drive::tick();
+            const tank_drive::DriveStatusSnapshot drive = tank_drive::get_status_snapshot();
+            if (manual_override_active(drive) && auto_controller.snapshot().goal.valid) {
+                auto_controller.cancel_goal(drive_source_name(drive.active_source));
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
     });

@@ -106,11 +106,11 @@ button {
   top: max(10px, env(safe-area-inset-top));
   right: max(44px, calc(env(safe-area-inset-right) + 44px));
   width: clamp(112px, 20vw, 170px);
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 1 / 0.78;
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid rgba(83, 208, 255, 0.35);
-  background: rgba(5, 16, 23, 0.72);
+  background: rgba(5, 16, 23, 0.5);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
   pointer-events: none;
   z-index: 5;

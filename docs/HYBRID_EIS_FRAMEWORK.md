@@ -94,7 +94,7 @@ frame_time = SensorTimestamp + ExposureTime / 2
 - 프레임 사이 고주파 진동을 적분할 때 위상 오차를 줄이기 위해
 
 ## 3. LK 추정
-LK는 `goodFeaturesToTrack -> calcOpticalFlowPyrLK -> estimateAffinePartial2D(RANSAC)` 순서입니다.
+런타임 LK는 `LkTracker` 기준으로 `goodFeaturesToTrack -> calcOpticalFlowPyrLK -> error median filter -> estimateAffinePartial2D(RANSAC)` 순서입니다.
 
 출력:
 - `dx`
@@ -104,8 +104,13 @@ LK는 `goodFeaturesToTrack -> calcOpticalFlowPyrLK -> estimateAffinePartial2D(RA
 
 이 구현에서 LK의 주 역할:
 - translation 메인 추정
-- visual confidence 제공
-- 약한 visual rotation anchor 제공
+- weak frame reject용 visual confidence 제공
+- 약한 rotation correction 제공
+
+현재 `main` 런타임에서는:
+- `lk_confidence_gate` 미만 프레임은 새 LK warp를 적용하지 않습니다.
+- weak frame이 3프레임 연속되면 LK stabilization filter를 reset합니다.
+- `lk_rotation_gain`으로 rotation correction만 별도로 약하게 줄일 수 있습니다.
 
 ## 4. Gyro 추정
 gyro는 각속도 샘플을 `Quaternion`으로 적분합니다.
@@ -127,43 +132,35 @@ delta_hp  = delta_raw - LPF(delta_raw)
 - pure gyro drift가 장기적으로 커지는 문제를 줄이기 위해
 
 ## 5. Fusion 구조
-채택 구조는 아래입니다.
+현재 `main` 런타임의 채택 구조는 아래에 가깝습니다.
 
 ```text
-translation = LK main
-rotation    = gyro high-pass + weak visual anchor
-controller  = turn-follow state machine
+global motion = robust LK main
+controller    = gyro yaw gate + turn-follow state machine
+optional RS   = gyro band warp
 ```
 
-정확히는 다음 homography를 합성합니다.
-
-```text
-H_total = H_trans_lk * H_visual_anchor * H_gyro
-```
-
-여기서 중요한 점:
-- `LK rotation`과 `gyro rotation`을 그대로 더하지 않습니다.
-- gyro는 고주파 rotation 담당입니다.
-- LK는 translation 메인 + 저강도 visual anchor입니다.
-
-이렇게 하지 않으면 같은 회전을 이중으로 잡아 과보정이 생길 수 있습니다.
+이 브랜치의 핵심은 gyro global correction을 늘리는 쪽이 아니라:
+- LK outlier를 더 보수적으로 거르고
+- weak frame에서 헛보정을 막고
+- `TURN_FOLLOW`에서도 `turn_follow_correction_scale`만큼 correction을 남겨
+  늦게 따라오는 느낌을 줄이는 데 있습니다.
 
 ## 6. State Machine
 ### `STABILIZE`
 - 직진 또는 약한 회전
-- gyro high-pass correction 적극 사용
-- LK translation 정상 사용
-- visual anchor 사용
+- LK correction을 1.0 scale로 사용
+- weak frame이면 새 LK warp를 건너뜀
 
 ### `TURN_FOLLOW`
 - 큰 yaw rate가 일정 프레임 이상 유지
-- correction gain을 낮춤
+- `turn_follow_correction_scale`만큼 correction gain을 낮춤
 - 화면이 실제 회전을 따라가게 함
 - 검은 여백/검은 화면 폭주를 줄이는 모드
 
 ### `RECOVER`
 - 회전 종료 직후
-- stabilization gain을 서서히 복귀
+- correction gain을 `turn_follow_correction_scale -> 1.0`으로 선형 복귀
 - 갑작스런 recenter jump를 막음
 
 ## 7. Crop Budget Protection
@@ -270,8 +267,9 @@ if required_crop > crop_budget:
 ### 바로 기대할 수 있는 것
 - `exposure_us` 단축으로 blur 감소
 - `SensorTimestamp` 기반 프레임 시각 확보
-- gyro high-pass 보조로 잔떨림 완화 가능성 증가
+- robust LK + weak frame reject로 sudden correction spike 감소 기대
 - 큰 회전 시 `TURN_FOLLOW`로 검은 여백 폭주 완화
+- `turn_follow_correction_scale` 연결로 회전 종료 후 follow 지연 완화
 
 ### 여전히 남는 한계
 - IMX219 rolling shutter 왜곡

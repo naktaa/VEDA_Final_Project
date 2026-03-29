@@ -104,6 +104,7 @@ private:
     KalmanState kf_tx_;
     KalmanState kf_ty_;
     int lk_frame_count_ = 0;
+    int weak_lk_frames_ = 0;
 
     HybridState state_ = HybridState::STABILIZE;
     int turn_enter_count_ = 0;

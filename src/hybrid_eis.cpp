@@ -11,12 +11,11 @@
 
 namespace {
 
-constexpr int kReferenceMinFeatureCount = 10;
-constexpr int kReferenceMinAffinePoints = 6;
 constexpr double kGateWindowMs = 12.0;
 constexpr double kGateStaleMs = 30.0;
 constexpr double kGateMaxAbsYawDps = 250.0;
 constexpr int kGateInvalidFrameLimit = 3;
+constexpr int kWeakLkResetFrameLimit = 3;
 
 struct GateYawResult {
     bool valid = false;
@@ -81,6 +80,24 @@ cv::Mat apply_fixed_crop(const cv::Mat& frame, double crop_percent) {
 double recover_progress(const AppConfig& config, int frames_left) {
     const int total = std::max(1, config.eis.recover_frames);
     return 1.0 - static_cast<double>(std::clamp(frames_left, 0, total)) / static_cast<double>(total);
+}
+
+double correction_scale_for_state(const AppConfig& config,
+                                  HybridState state,
+                                  int recover_frames_left) {
+    const double turn_follow_scale = std::clamp(config.eis.turn_follow_correction_scale, 0.0, 1.0);
+    switch (state) {
+    case HybridState::STABILIZE:
+        return 1.0;
+    case HybridState::TURN_FOLLOW:
+        return turn_follow_scale;
+    case HybridState::RECOVER: {
+        const double recover_alpha = recover_progress(config, recover_frames_left);
+        return turn_follow_scale + ((1.0 - turn_follow_scale) * recover_alpha);
+    }
+    default:
+        return 1.0;
+    }
 }
 
 double median_value(std::vector<double>& values) {
@@ -219,84 +236,6 @@ RollingShutterResult render_rolling_shutter_bands(const cv::Mat& source_frame,
     return result;
 }
 
-LkMotionEstimate estimate_reference_style_lk(const cv::Mat& prev_bgr,
-                                             const cv::Mat& curr_bgr,
-                                             const EisRuntimeConfig& config) {
-    LkMotionEstimate result;
-    if (prev_bgr.empty() || curr_bgr.empty()) {
-        return result;
-    }
-
-    cv::Mat prev_gray;
-    cv::Mat curr_gray;
-    if (prev_bgr.channels() == 3) {
-        cv::cvtColor(prev_bgr, prev_gray, cv::COLOR_BGR2GRAY);
-    } else {
-        prev_gray = prev_bgr;
-    }
-    if (curr_bgr.channels() == 3) {
-        cv::cvtColor(curr_bgr, curr_gray, cv::COLOR_BGR2GRAY);
-    } else {
-        curr_gray = curr_bgr;
-    }
-
-    std::vector<cv::Point2f> features_prev;
-    cv::goodFeaturesToTrack(prev_gray,
-                            features_prev,
-                            config.lk_max_features,
-                            config.lk_quality,
-                            config.lk_min_dist);
-    result.features = static_cast<int>(features_prev.size());
-    if (result.features < kReferenceMinFeatureCount) {
-        return result;
-    }
-
-    std::vector<cv::Point2f> features_curr;
-    std::vector<uchar> status;
-    std::vector<float> errors;
-    cv::calcOpticalFlowPyrLK(prev_gray,
-                             curr_gray,
-                             features_prev,
-                             features_curr,
-                             status,
-                             errors);
-
-    std::vector<cv::Point2f> good_prev;
-    std::vector<cv::Point2f> good_curr;
-    good_prev.reserve(features_prev.size());
-    good_curr.reserve(features_prev.size());
-    for (size_t i = 0; i < status.size(); ++i) {
-        if (status[i]) {
-            good_prev.push_back(features_prev[i]);
-            good_curr.push_back(features_curr[i]);
-        }
-    }
-
-    result.valid_points = static_cast<int>(good_prev.size());
-    result.inliers = result.valid_points;
-    result.confidence = result.valid_points > 0 ? 1.0 : 0.0;
-    if (result.valid_points < kReferenceMinAffinePoints) {
-        return result;
-    }
-
-    const cv::Mat affine = cv::estimateAffinePartial2D(good_prev, good_curr);
-    if (affine.empty()) {
-        return result;
-    }
-
-    result.dx = affine.at<double>(0, 2);
-    result.dy = affine.at<double>(1, 2);
-    result.da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
-    const double cos_da = std::cos(result.da);
-    if (std::abs(cos_da) <= 1e-6) {
-        return result;
-    }
-    result.sx = affine.at<double>(0, 0) / cos_da;
-    result.sy = affine.at<double>(1, 1) / cos_da;
-    result.valid = true;
-    return result;
-}
-
 } // namespace
 
 HybridEisProcessor::HybridEisProcessor(const AppConfig& config, const GyroBuffer* gyro_buffer)
@@ -327,6 +266,7 @@ void HybridEisProcessor::reset_lk_stabilization() {
     kf_tx_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
     kf_ty_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
     lk_frame_count_ = 0;
+    weak_lk_frames_ = 0;
 }
 
 void HybridEisProcessor::reset() {
@@ -443,13 +383,20 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
 
     LkMotionEstimate lk;
     if (prev_frame_ok_) {
-        lk = estimate_reference_style_lk(prev_frame_, current, config_.eis);
+        lk = lk_tracker_.estimate(prev_frame_, current);
     }
 
-    const bool lk_usable = lk.valid;
-    const double correction_scale = state_ == HybridState::RECOVER
-        ? recover_progress(config_, recover_frames_left_)
-        : (state_ == HybridState::TURN_FOLLOW ? 0.0 : 1.0);
+    const bool lk_weak = prev_frame_ok_ && (!lk.valid || lk.confidence < config_.eis.lk_confidence_gate);
+    if (lk_weak) {
+        ++weak_lk_frames_;
+        if (weak_lk_frames_ >= kWeakLkResetFrameLimit) {
+            reset_lk_stabilization();
+        }
+    } else {
+        weak_lk_frames_ = 0;
+    }
+
+    const double correction_scale = correction_scale_for_state(config_, state_, recover_frames_left_);
 
     double corr_dx = 0.0;
     double corr_dy = 0.0;
@@ -458,13 +405,13 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     cv::Mat global_h = make_identity_homography();
     bool use_global_lk = false;
 
-    if (prev_frame_ok_ && lk_usable && state_ != HybridState::TURN_FOLLOW) {
+    if (prev_frame_ok_ && !lk_weak) {
         kf_theta_.update(lk.da);
         kf_tx_.update(lk.dx);
         kf_ty_.update(lk.dy);
 
         if (lk_frame_count_ > 0) {
-            corr_da = kf_theta_.diff() * correction_scale;
+            corr_da = kf_theta_.diff() * correction_scale * std::max(0.0, config_.eis.lk_rotation_gain);
             corr_dx = std::clamp(kf_tx_.diff() * correction_scale,
                                  -config_.eis.lk_translation_max_corr_px,
                                  config_.eis.lk_translation_max_corr_px);
@@ -484,8 +431,6 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
         global_h = to_homography3x3(smoothed);
         global_required_crop = compute_required_crop_percent(global_h, current.cols, current.rows);
         use_global_lk = true;
-    } else if (prev_frame_ok_ && !lk_usable) {
-        reset_lk_stabilization();
     }
 
     const cv::Mat* source_frame = &current;

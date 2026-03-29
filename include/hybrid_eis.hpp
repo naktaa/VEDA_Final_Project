@@ -47,7 +47,10 @@ public:
 
     void update_config(const AppConfig& config);
     void reset();
-    bool process(const CapturedFrame& frame, cv::Mat& stabilized, HybridEisDebugInfo* debug = nullptr);
+    bool process(const CapturedFrame& frame,
+                 const cv::Mat& tracking_frame,
+                 cv::Mat& stabilized,
+                 HybridEisDebugInfo* debug = nullptr);
 
 private:
     struct KalmanState {
@@ -86,8 +89,9 @@ private:
     EISWarpCalculator warp_;
     GyroIntegrator integrator_;
 
-    cv::Mat prev_frame_;
-    bool prev_frame_ok_ = false;
+    cv::Mat prev_tracking_frame_;
+    cv::Mat prev_render_frame_;
+    bool prev_frames_ok_ = false;
     double prev_frame_time_ms_ = 0.0;
     int64_t prev_sensor_ts_ns_ = 0;
     int prev_exposure_us_ = 0;

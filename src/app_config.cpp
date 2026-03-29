@@ -199,6 +199,14 @@ std::string make_default_config_text() {
     append_kv(oss, "debug_log", cfg.eis.debug_log ? 1 : 0);
     oss << "\n";
 
+    oss << "# [pipeline] tracking/display 분리 파이프라인 설정\n";
+    append_section(oss, "pipeline");
+    append_kv(oss, "tracking_clahe_clip", cfg.pipeline.tracking_clahe_clip);
+    append_kv(oss, "display_gain", cfg.pipeline.display_gain);
+    append_kv(oss, "display_gamma", cfg.pipeline.display_gamma);
+    append_kv(oss, "display_denoise_strength", cfg.pipeline.display_denoise_strength);
+    oss << "\n";
+
     oss << "# [rtsp] 스트림 경로와 인코더 튜닝\n";
     append_section(oss, "rtsp");
     append_kv(oss, "port", cfg.rtsp.port);
@@ -398,6 +406,11 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_bool(map, "eis.debug_overlay", config.eis.debug_overlay);
         load_bool(map, "eis.debug_log", config.eis.debug_log);
 
+        load_double(map, "pipeline.tracking_clahe_clip", config.pipeline.tracking_clahe_clip);
+        load_double(map, "pipeline.display_gain", config.pipeline.display_gain);
+        load_double(map, "pipeline.display_gamma", config.pipeline.display_gamma);
+        load_double(map, "pipeline.display_denoise_strength", config.pipeline.display_denoise_strength);
+
         load_string(map, "rtsp.port", config.rtsp.port);
         load_string(map, "rtsp.path", config.rtsp.path);
         load_string(map, "rtsp.raw_path", config.rtsp.raw_path);
@@ -570,6 +583,13 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "rs_band_count", copy.eis.rs_band_count);
         append_kv(oss, "debug_overlay", copy.eis.debug_overlay ? 1 : 0);
         append_kv(oss, "debug_log", copy.eis.debug_log ? 1 : 0);
+        oss << "\n";
+
+        append_section(oss, "pipeline");
+        append_kv(oss, "tracking_clahe_clip", copy.pipeline.tracking_clahe_clip);
+        append_kv(oss, "display_gain", copy.pipeline.display_gain);
+        append_kv(oss, "display_gamma", copy.pipeline.display_gamma);
+        append_kv(oss, "display_denoise_strength", copy.pipeline.display_denoise_strength);
         oss << "\n";
 
         append_section(oss, "rtsp");

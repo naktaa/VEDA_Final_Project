@@ -11,8 +11,6 @@
 
 namespace {
 
-constexpr int kReferenceMinFeatureCount = 10;
-constexpr int kReferenceMinAffinePoints = 6;
 constexpr double kGateWindowMs = 12.0;
 constexpr double kGateStaleMs = 30.0;
 constexpr double kGateMaxAbsYawDps = 250.0;
@@ -219,84 +217,6 @@ RollingShutterResult render_rolling_shutter_bands(const cv::Mat& source_frame,
     return result;
 }
 
-LkMotionEstimate estimate_reference_style_lk(const cv::Mat& prev_bgr,
-                                             const cv::Mat& curr_bgr,
-                                             const EisRuntimeConfig& config) {
-    LkMotionEstimate result;
-    if (prev_bgr.empty() || curr_bgr.empty()) {
-        return result;
-    }
-
-    cv::Mat prev_gray;
-    cv::Mat curr_gray;
-    if (prev_bgr.channels() == 3) {
-        cv::cvtColor(prev_bgr, prev_gray, cv::COLOR_BGR2GRAY);
-    } else {
-        prev_gray = prev_bgr;
-    }
-    if (curr_bgr.channels() == 3) {
-        cv::cvtColor(curr_bgr, curr_gray, cv::COLOR_BGR2GRAY);
-    } else {
-        curr_gray = curr_bgr;
-    }
-
-    std::vector<cv::Point2f> features_prev;
-    cv::goodFeaturesToTrack(prev_gray,
-                            features_prev,
-                            config.lk_max_features,
-                            config.lk_quality,
-                            config.lk_min_dist);
-    result.features = static_cast<int>(features_prev.size());
-    if (result.features < kReferenceMinFeatureCount) {
-        return result;
-    }
-
-    std::vector<cv::Point2f> features_curr;
-    std::vector<uchar> status;
-    std::vector<float> errors;
-    cv::calcOpticalFlowPyrLK(prev_gray,
-                             curr_gray,
-                             features_prev,
-                             features_curr,
-                             status,
-                             errors);
-
-    std::vector<cv::Point2f> good_prev;
-    std::vector<cv::Point2f> good_curr;
-    good_prev.reserve(features_prev.size());
-    good_curr.reserve(features_prev.size());
-    for (size_t i = 0; i < status.size(); ++i) {
-        if (status[i]) {
-            good_prev.push_back(features_prev[i]);
-            good_curr.push_back(features_curr[i]);
-        }
-    }
-
-    result.valid_points = static_cast<int>(good_prev.size());
-    result.inliers = result.valid_points;
-    result.confidence = result.valid_points > 0 ? 1.0 : 0.0;
-    if (result.valid_points < kReferenceMinAffinePoints) {
-        return result;
-    }
-
-    const cv::Mat affine = cv::estimateAffinePartial2D(good_prev, good_curr);
-    if (affine.empty()) {
-        return result;
-    }
-
-    result.dx = affine.at<double>(0, 2);
-    result.dy = affine.at<double>(1, 2);
-    result.da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
-    const double cos_da = std::cos(result.da);
-    if (std::abs(cos_da) <= 1e-6) {
-        return result;
-    }
-    result.sx = affine.at<double>(0, 0) / cos_da;
-    result.sy = affine.at<double>(1, 1) / cos_da;
-    result.valid = true;
-    return result;
-}
-
 } // namespace
 
 HybridEisProcessor::HybridEisProcessor(const AppConfig& config, const GyroBuffer* gyro_buffer)
@@ -330,8 +250,9 @@ void HybridEisProcessor::reset_lk_stabilization() {
 }
 
 void HybridEisProcessor::reset() {
-    prev_frame_.release();
-    prev_frame_ok_ = false;
+    prev_tracking_frame_.release();
+    prev_render_frame_.release();
+    prev_frames_ok_ = false;
     prev_frame_time_ms_ = 0.0;
     prev_sensor_ts_ns_ = 0;
     prev_exposure_us_ = 0;
@@ -414,7 +335,10 @@ void HybridEisProcessor::update_state(bool gate_valid, double yaw_gate_dps) {
     }
 }
 
-bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized, HybridEisDebugInfo* debug) {
+bool HybridEisProcessor::process(const CapturedFrame& frame,
+                                 const cv::Mat& tracking_frame,
+                                 cv::Mat& stabilized,
+                                 HybridEisDebugInfo* debug) {
     if (debug) {
         *debug = HybridEisDebugInfo{};
         debug->state = state_;
@@ -425,7 +349,8 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
         return false;
     }
 
-    const cv::Mat current = frame.image;
+    const cv::Mat current_render = frame.image;
+    const cv::Mat current_tracking = tracking_frame.empty() ? frame.image : tracking_frame;
     const double target_time_ms = frame.frame_time_ms + config_.calib.imu_offset_ms;
 
     ImuSample latest_imu;
@@ -442,8 +367,8 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     }
 
     LkMotionEstimate lk;
-    if (prev_frame_ok_) {
-        lk = estimate_reference_style_lk(prev_frame_, current, config_.eis);
+    if (prev_frames_ok_) {
+        lk = lk_tracker_.estimate(prev_tracking_frame_, current_tracking);
     }
 
     const bool lk_usable = lk.valid;
@@ -458,7 +383,7 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     cv::Mat global_h = make_identity_homography();
     bool use_global_lk = false;
 
-    if (prev_frame_ok_ && lk_usable && state_ != HybridState::TURN_FOLLOW) {
+    if (prev_frames_ok_ && lk_usable && state_ != HybridState::TURN_FOLLOW) {
         kf_theta_.update(lk.da);
         kf_tx_.update(lk.dx);
         kf_ty_.update(lk.dy);
@@ -482,17 +407,17 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
             lk.sy * std::sin(out_da), lk.sy *  std::cos(out_da), out_dy);
 
         global_h = to_homography3x3(smoothed);
-        global_required_crop = compute_required_crop_percent(global_h, current.cols, current.rows);
+        global_required_crop = compute_required_crop_percent(global_h, current_render.cols, current_render.rows);
         use_global_lk = true;
-    } else if (prev_frame_ok_ && !lk_usable) {
+    } else if (prev_frames_ok_ && !lk_usable) {
         reset_lk_stabilization();
     }
 
-    const cv::Mat* source_frame = &current;
+    const cv::Mat* source_frame = &current_render;
     double source_time_ms = frame.frame_time_ms;
     int64_t source_sensor_ts_ns = frame.sensor_ts_ns;
     if (use_global_lk) {
-        source_frame = &prev_frame_;
+        source_frame = &prev_render_frame_;
         source_time_ms = prev_frame_time_ms_;
         source_sensor_ts_ns = prev_sensor_ts_ns_;
     }
@@ -518,7 +443,7 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
         cv::warpPerspective(*source_frame,
                             stabilized,
                             global_h,
-                            current.size(),
+                            current_render.size(),
                             cv::INTER_LINEAR,
                             cv::BORDER_REPLICATE);
         required_crop = global_required_crop;
@@ -554,8 +479,9 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
                     cv::LINE_AA);
     }
 
-    prev_frame_ = current.clone();
-    prev_frame_ok_ = true;
+    prev_tracking_frame_ = current_tracking.clone();
+    prev_render_frame_ = current_render.clone();
+    prev_frames_ok_ = true;
     prev_frame_time_ms_ = frame.frame_time_ms;
     prev_sensor_ts_ns_ = frame.sensor_ts_ns;
     prev_exposure_us_ = frame.exposure_us;

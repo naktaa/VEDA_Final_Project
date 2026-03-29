@@ -488,7 +488,7 @@ function bindStreamEvents() {
     }
     reconnectTimer = setTimeout(() => {
       const token = Date.now();
-      streamSource.src = `/stream.mjpg?t=${token}`;
+      streamSource.src = `/stream_display.mjpg?t=${token}`;
     }, 800);
   };
 }
@@ -536,7 +536,7 @@ async function connect() {
     }, 3000);
 
     const token = Date.now();
-    streamSource.src = `/stream.mjpg?t=${token}`;
+    streamSource.src = `/stream_display.mjpg?t=${token}`;
     startRenderLoop();
     setStatus("VR mode active. Connecting video stream...");
   } catch (err) {

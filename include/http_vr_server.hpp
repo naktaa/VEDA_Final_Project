@@ -23,8 +23,9 @@ public:
 
     bool start(const HttpVrConfig& cfg,
                std::atomic<bool>& app_running,
-               FrameJpegCache& frame_cache,
-               PtzController& ptz_controller);
+               FrameJpegCache& raw_frame_cache,
+               PtzController& ptz_controller,
+               FrameJpegCache* display_frame_cache = nullptr);
     void stop();
 
 private:

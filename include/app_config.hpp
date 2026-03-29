@@ -12,7 +12,7 @@ struct CameraConfig {
     int height = 480;
     int fps = 20;
     int frame_duration_us = 50000;
-    int exposure_us = 8000;
+    int exposure_us = 10000;
     bool flip = true;
     double hfov_deg = 62.2;
     double vfov_deg = 48.8;
@@ -119,10 +119,18 @@ struct ControllerConfig {
     bool log_only = false;
 };
 
+struct PipelineConfig {
+    double tracking_clahe_clip = 2.0;
+    double display_gain = 1.10;
+    double display_gamma = 1.15;
+    double display_denoise_strength = 0.0;
+};
+
 struct AppConfig {
     CameraConfig camera;
     ImuConfig imu;
     EisRuntimeConfig eis;
+    PipelineConfig pipeline;
     RtspConfig rtsp;
     MqttConfig mqtt{
         "192.168.100.10",

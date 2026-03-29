@@ -13,7 +13,7 @@
 - `rtsp`
 - `drive`
 
-최종 방향은 `LK main + gyro assist + turn-follow state machine`입니다.
+최종 방향은 `LK main + gyro assist + turn-follow state machine + two-pipeline render split`입니다.
 
 ## 전체 프레임워크
 ### 공통 모듈
@@ -30,15 +30,18 @@
 - `include/gyro_eis.hpp`, `src/gyro_eis.cpp`
   gyro buffer, quaternion 적분, 회전 homography 계산
 - `include/hybrid_eis.hpp`, `src/hybrid_eis.cpp`
-  LK + gyro fusion, state machine, crop clamp
+  LK + gyro fusion, state machine, crop clamp, tracking/render frame 분리
 - `include/rtsp_server.hpp`, `src/rtsp_server.cpp`
   `/cam`과 `/raw` RTSP 송출
+- `include/http_vr_server.hpp`, `src/http_vr_server.cpp`
+  `/stream.mjpg` raw 호환 MJPEG, `/stream_display.mjpg` 표시용 MJPEG
 - `src/mqtt_drive.cpp`, `src/tank_drive.cpp`
   기존 탱크 주행 제어 재사용
 
 ### 실행 흐름
 - `src/main.cpp`
   최종 통합 런타임
+  - 같은 센서 프레임을 `tracking`과 `display` 경로로 나눠 사용
 - `src/calib_offset.cpp`
   bias/offset calibration 전용 실행 흐름
 
@@ -95,6 +98,17 @@ frame_time = SensorTimestamp + ExposureTime / 2
 
 ## 3. LK 추정
 LK는 `goodFeaturesToTrack -> calcOpticalFlowPyrLK -> estimateAffinePartial2D(RANSAC)` 순서입니다.
+
+현재 `main` 런타임은 LK 입력을 원본 BGR 그대로 쓰지 않고, 같은 센서 프레임에서 아래 전처리된 `tracking frame`을 따로 만듭니다.
+
+```text
+raw BGR -> grayscale -> CLAHE -> weak unsharp -> LK
+```
+
+이렇게 하는 이유:
+- 짧은 노출로 어두워진 프레임에서도 국부 대비를 살리기 위해
+- display 후처리와 LK 추정 목적을 분리하기 위해
+- 센서 노출을 두 개로 나눌 수 없는 환경에서 tracking 품질을 최대한 확보하기 위해
 
 출력:
 - `dx`
@@ -180,6 +194,26 @@ if required_crop > crop_budget:
 - 큰 회전에서 검정 화면만 보이는 상황 완화
 - “무조건 고정”보다 자연스러운 follow 우선
 
+## 8. Two-Pipeline Display
+센서 노출은 하나만 쓰고, 같은 캡처 프레임을 아래 두 경로로 분리합니다.
+
+```text
+tracking frame = LK 추정 전용
+display frame  = warp + 사용자 출력 전용
+```
+
+display 경로는 stabilization 이후에만 약한 후처리를 적용합니다.
+
+```text
+stabilized frame -> gain -> gamma -> optional light denoise
+```
+
+주의:
+- 이 후처리는 실제 긴 노출을 복원하는 기능이 아닙니다.
+- 목적은 짧은 노출로 얻은 덜 흐린 프레임을 사람이 보기 좋게 다듬는 것입니다.
+- 기본 운용은 `exposure_us=10000`, 밝은 환경에서는 `8000`까지 내려보는 쪽을 권장합니다.
+- `6000us` 이하는 추가 조명 없이 기본 권장값으로 두지 않습니다.
+
 ## calibration 절차
 1. `build/calib` 실행
 2. 시작 직후 2.5초 정도 정지 상태 유지
@@ -249,6 +283,12 @@ if required_crop > crop_budget:
   - `recover_frames`
   - `turn_follow_correction_scale`
   - `debug_overlay`
+
+### `[pipeline]`
+- `tracking_clahe_clip`
+- `display_gain`
+- `display_gamma`
+- `display_denoise_strength`
 
 ### `[rtsp]`
 - `port`

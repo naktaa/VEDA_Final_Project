@@ -3,6 +3,7 @@
 #include <cctype>
 #include <chrono>
 #include <csignal>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
@@ -41,6 +42,72 @@ void handle_signal(int) {
 constexpr const char* kTemplateConfigPath = "config_template.ini";
 constexpr const char* kLocalConfigPath = "config_local.ini";
 constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+constexpr double kTrackingSharpenStrength = 0.20;
+
+cv::Mat make_tracking_frame(const cv::Mat& raw_bgr, const PipelineConfig& config) {
+    if (raw_bgr.empty()) {
+        return {};
+    }
+
+    cv::Mat gray;
+    if (raw_bgr.channels() == 3) {
+        cv::cvtColor(raw_bgr, gray, cv::COLOR_BGR2GRAY);
+    } else if (raw_bgr.channels() == 4) {
+        cv::cvtColor(raw_bgr, gray, cv::COLOR_BGRA2GRAY);
+    } else {
+        gray = raw_bgr.clone();
+    }
+
+    cv::Mat contrast = gray;
+    if (config.tracking_clahe_clip > 0.0) {
+        cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(std::max(0.1, config.tracking_clahe_clip),
+                                                   cv::Size(8, 8));
+        clahe->apply(gray, contrast);
+    }
+
+    cv::Mat blurred;
+    cv::GaussianBlur(contrast, blurred, cv::Size(0, 0), 1.0, 1.0);
+    cv::Mat sharpened;
+    cv::addWeighted(contrast,
+                    1.0 + kTrackingSharpenStrength,
+                    blurred,
+                    -kTrackingSharpenStrength,
+                    0.0,
+                    sharpened);
+    return sharpened;
+}
+
+cv::Mat apply_display_pipeline(const cv::Mat& stabilized, const PipelineConfig& config) {
+    if (stabilized.empty()) {
+        return {};
+    }
+
+    cv::Mat output = stabilized.clone();
+    const double gain = std::max(0.0, config.display_gain);
+    if (std::abs(gain - 1.0) > 1e-3) {
+        output.convertTo(output, -1, gain, 0.0);
+    }
+
+    const double gamma = std::max(0.01, config.display_gamma);
+    if (std::abs(gamma - 1.0) > 1e-3) {
+        cv::Mat lut(1, 256, CV_8U);
+        for (int i = 0; i < 256; ++i) {
+            const double normalized = static_cast<double>(i) / 255.0;
+            const double corrected = std::pow(normalized, 1.0 / gamma);
+            lut.at<unsigned char>(0, i) = static_cast<unsigned char>(std::round(corrected * 255.0));
+        }
+        cv::LUT(output, lut, output);
+    }
+
+    const double denoise_strength = std::clamp(config.display_denoise_strength, 0.0, 0.5);
+    if (denoise_strength > 0.0) {
+        cv::Mat blurred;
+        cv::GaussianBlur(output, blurred, cv::Size(3, 3), 0.0, 0.0);
+        cv::addWeighted(output, 1.0 - denoise_strength, blurred, denoise_strength, 0.0, output);
+    }
+
+    return output;
+}
 
 bool use_gstreamer_capture(const CameraConfig& config) {
     std::string backend = config.capture_backend;
@@ -251,10 +318,11 @@ int main() {
     PtzController ptz_controller;
     ptz_controller.start(config.ptz);
 
-    FrameJpegCache frame_cache;
+    FrameJpegCache raw_frame_cache;
+    FrameJpegCache display_frame_cache;
     HttpVrServer http_server;
     if (config.http.enable) {
-        if (!http_server.start(config.http, running, frame_cache, ptz_controller)) {
+        if (!http_server.start(config.http, running, raw_frame_cache, ptz_controller, &display_frame_cache)) {
             std::fprintf(stderr, "[MAIN] HTTP tiltVR start failed on port %d\n", config.http.port);
             ptz_controller.stop();
             auto_controller.stop();
@@ -345,19 +413,32 @@ int main() {
                 cv::flip(frame.image, frame.image, -1);
             }
 
-            if (config.http.enable && frame_cache.has_consumers()) {
-                const cv::Mat mjpeg_source = frame.image.isContinuous() ? frame.image : frame.image.clone();
-                frame_cache.update_bgr_frame(mjpeg_source.data,
-                                             mjpeg_source.total() * mjpeg_source.elemSize(),
-                                             mjpeg_source.cols,
-                                             mjpeg_source.rows);
+            if (config.http.enable && raw_frame_cache.has_consumers()) {
+                const cv::Mat raw_source = frame.image.isContinuous() ? frame.image : frame.image.clone();
+                raw_frame_cache.update_bgr_frame(raw_source.data,
+                                                 raw_source.total() * raw_source.elemSize(),
+                                                 raw_source.cols,
+                                                 raw_source.rows);
             }
 
+            const cv::Mat tracking_frame = make_tracking_frame(frame.image, config.pipeline);
             cv::Mat stabilized;
             HybridEisDebugInfo debug;
-            processor.process(frame, stabilized, &debug);
+            processor.process(frame, tracking_frame, stabilized, &debug);
             if (stabilized.empty()) {
                 stabilized = frame.image.clone();
+            }
+            cv::Mat display_output = apply_display_pipeline(stabilized, config.pipeline);
+            if (display_output.empty()) {
+                display_output = stabilized;
+            }
+
+            if (config.http.enable && display_frame_cache.has_consumers()) {
+                const cv::Mat display_source = display_output.isContinuous() ? display_output : display_output.clone();
+                display_frame_cache.update_bgr_frame(display_source.data,
+                                                     display_source.total() * display_source.elemSize(),
+                                                     display_source.cols,
+                                                     display_source.rows);
             }
 
             ImuSample latest_imu;
@@ -421,7 +502,7 @@ int main() {
             }
 
             rtsp_server.push_raw(frame, frame.image);
-            if (!rtsp_server.push_stabilized(frame, stabilized)) {
+            if (!rtsp_server.push_stabilized(frame, display_output)) {
                 // Same as above.
             }
         }
@@ -429,7 +510,7 @@ int main() {
     });
 
     std::fprintf(stderr,
-                 "[MAIN] runtime ready: RTSP %s%s (stab), %s%s (raw), MQTT %s:%d topic=%s\n",
+                 "[MAIN] runtime ready: RTSP %s%s (stab), %s%s (raw), HTTP /stream.mjpg (raw), /stream_display.mjpg (display), MQTT %s:%d topic=%s\n",
                  config.rtsp.port.c_str(),
                  config.rtsp.path.c_str(),
                  config.rtsp.port.c_str(),

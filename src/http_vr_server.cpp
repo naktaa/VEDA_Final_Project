@@ -69,7 +69,8 @@ bool load_file_text(const std::filesystem::path& path, std::string& out) {
 struct HttpVrServer::Impl {
     HttpVrConfig config;
     std::atomic<bool>* app_running = nullptr;
-    FrameJpegCache* frame_cache = nullptr;
+    FrameJpegCache* raw_frame_cache = nullptr;
+    FrameJpegCache* display_frame_cache = nullptr;
     PtzController* ptz = nullptr;
     std::unique_ptr<httplib::Server> server;
     std::thread server_thread;
@@ -83,8 +84,9 @@ HttpVrServer::~HttpVrServer() {
 
 bool HttpVrServer::start(const HttpVrConfig& cfg,
                          std::atomic<bool>& app_running,
-                         FrameJpegCache& frame_cache,
-                         PtzController& ptz_controller) {
+                         FrameJpegCache& raw_frame_cache,
+                         PtzController& ptz_controller,
+                         FrameJpegCache* display_frame_cache) {
     if (impl_) {
         return true;
     }
@@ -92,7 +94,8 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     auto* impl = new Impl();
     impl->config = cfg;
     impl->app_running = &app_running;
-    impl->frame_cache = &frame_cache;
+    impl->raw_frame_cache = &raw_frame_cache;
+    impl->display_frame_cache = display_frame_cache;
     impl->ptz = &ptz_controller;
     impl->server = std::make_unique<httplib::Server>();
 
@@ -173,18 +176,23 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     });
 
     impl->server->Get("/stream.mjpg", [impl](const httplib::Request&, httplib::Response& res) {
-        impl->frame_cache->add_consumer();
+        FrameJpegCache* cache = impl->raw_frame_cache;
+        if (!cache) {
+            res.status = 503;
+            return;
+        }
+        cache->add_consumer();
         res.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
         res.set_header("Pragma", "no-cache");
         res.set_header("Connection", "close");
         res.set_chunked_content_provider(
             "multipart/x-mixed-replace; boundary=frame",
-            [impl](size_t, httplib::DataSink& sink) {
+            [impl, cache](size_t, httplib::DataSink& sink) {
                 static thread_local uint64_t last_frame = 0;
                 while (impl->app_running->load()) {
                     std::vector<unsigned char> jpg;
                     uint64_t frame_id = 0;
-                    if (!impl->frame_cache->latest_jpeg(jpg, &frame_id) || frame_id == last_frame) {
+                    if (!cache->latest_jpeg(jpg, &frame_id) || frame_id == last_frame) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                         continue;
                     }
@@ -208,8 +216,54 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
                 }
                 return false;
             },
-            [impl](bool) {
-                impl->frame_cache->remove_consumer();
+            [cache](bool) {
+                cache->remove_consumer();
+            });
+    });
+
+    impl->server->Get("/stream_display.mjpg", [impl](const httplib::Request&, httplib::Response& res) {
+        FrameJpegCache* cache = impl->display_frame_cache ? impl->display_frame_cache : impl->raw_frame_cache;
+        if (!cache) {
+            res.status = 503;
+            return;
+        }
+        cache->add_consumer();
+        res.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res.set_header("Pragma", "no-cache");
+        res.set_header("Connection", "close");
+        res.set_chunked_content_provider(
+            "multipart/x-mixed-replace; boundary=frame",
+            [impl, cache](size_t, httplib::DataSink& sink) {
+                static thread_local uint64_t last_frame = 0;
+                while (impl->app_running->load()) {
+                    std::vector<unsigned char> jpg;
+                    uint64_t frame_id = 0;
+                    if (!cache->latest_jpeg(jpg, &frame_id) || frame_id == last_frame) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        continue;
+                    }
+                    last_frame = frame_id;
+
+                    std::ostringstream header;
+                    header << "--frame\r\n"
+                           << "Content-Type: image/jpeg\r\n"
+                           << "Content-Length: " << jpg.size() << "\r\n\r\n";
+                    const std::string header_text = header.str();
+
+                    if (!sink.write(header_text.data(), header_text.size())) {
+                        return false;
+                    }
+                    if (!sink.write(reinterpret_cast<const char*>(jpg.data()), jpg.size())) {
+                        return false;
+                    }
+                    if (!sink.write("\r\n", 2)) {
+                        return false;
+                    }
+                }
+                return false;
+            },
+            [cache](bool) {
+                cache->remove_consumer();
             });
     });
 

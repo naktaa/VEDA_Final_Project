@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <httplib.h>
@@ -71,6 +72,7 @@ struct HttpVrServer::Impl {
     std::atomic<bool>* app_running = nullptr;
     FrameJpegCache* frame_cache = nullptr;
     PtzController* ptz = nullptr;
+    OverlayStateProvider overlay_state_provider;
     std::unique_ptr<httplib::Server> server;
     std::thread server_thread;
     std::atomic<bool> listen_finished{false};
@@ -84,7 +86,8 @@ HttpVrServer::~HttpVrServer() {
 bool HttpVrServer::start(const HttpVrConfig& cfg,
                          std::atomic<bool>& app_running,
                          FrameJpegCache& frame_cache,
-                         PtzController& ptz_controller) {
+                         PtzController& ptz_controller,
+                         OverlayStateProvider overlay_state_provider) {
     if (impl_) {
         return true;
     }
@@ -94,6 +97,7 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     impl->app_running = &app_running;
     impl->frame_cache = &frame_cache;
     impl->ptz = &ptz_controller;
+    impl->overlay_state_provider = std::move(overlay_state_provider);
     impl->server = std::make_unique<httplib::Server>();
 
     impl->server->Get("/health", [](const httplib::Request&, httplib::Response& res) {
@@ -113,6 +117,27 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
             {"pan", status.pan},
             {"tilt", status.tilt},
             {"source", status.active_source},
+        };
+        res.set_content(body.dump(), "application/json");
+    });
+
+    impl->server->Get("/overlay/state", [impl](const httplib::Request&, httplib::Response& res) {
+        HttpVrOverlayState overlay_state;
+        if (impl->overlay_state_provider) {
+            overlay_state = impl->overlay_state_provider();
+        }
+
+        json body = {
+            {"rc",
+             {
+                 {"valid", overlay_state.valid},
+                 {"stale", overlay_state.stale},
+                 {"x", overlay_state.x},
+                 {"y", overlay_state.y},
+                 {"yaw_rad", overlay_state.yaw_rad},
+                 {"frame", overlay_state.frame},
+                 {"ts_ms", overlay_state.ts_ms},
+             }},
         };
         res.set_content(body.dump(), "application/json");
     });

@@ -11,8 +11,10 @@ const vrStage = document.querySelector(".vr-stage");
 const streamSource = document.getElementById("streamSource");
 const leftCanvas = document.getElementById("leftCanvas");
 const rightCanvas = document.getElementById("rightCanvas");
+const minimapCanvas = document.getElementById("minimapCanvas");
 const leftCtx = leftCanvas.getContext("2d", { alpha: false });
 const rightCtx = rightCanvas.getContext("2d", { alpha: false });
+const minimapCtx = minimapCanvas.getContext("2d");
 
 let orientationHandler = null;
 let sendInterval = null;
@@ -33,9 +35,23 @@ let initialSensorWaitReject = null;
 let initialSensorWaitTimer = null;
 let pendingInitialZero = false;
 let vrModeRecoveryInFlight = false;
+let overlayStateInterval = null;
+let minimapConfig = null;
+let latestOverlayState = {
+  rc: {
+    valid: false,
+    stale: false,
+    x: 0,
+    y: 0,
+    yaw_rad: 0,
+    frame: "world",
+    ts_ms: 0,
+  },
+};
 
 const imuSendIntervalMs = 16;
 const initialSensorWaitMs = 2000;
+const overlayStatePollMs = 100;
 const degToRad = Math.PI / 180;
 const radToDeg = 180 / Math.PI;
 
@@ -422,6 +438,226 @@ function resizeCanvasToDisplaySize(canvas) {
   }
 }
 
+async function loadMinimapConfig() {
+  if (minimapConfig) {
+    return minimapConfig;
+  }
+
+  const res = await fetch("/web/minimap-config.json", { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`Minimap config failed: ${res.status}`);
+  }
+
+  minimapConfig = await res.json();
+  drawMinimap();
+  return minimapConfig;
+}
+
+function sortMarkerEntries(markers) {
+  return Object.entries(markers || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
+}
+
+function mapPointToCanvas(x, y, bounds, canvas) {
+  const pad = 18;
+  const spanX = Math.max(1e-6, Number(bounds.maxX) - Number(bounds.minX));
+  const spanY = Math.max(1e-6, Number(bounds.maxY) - Number(bounds.minY));
+  const innerW = Math.max(1, canvas.width - pad * 2);
+  const innerH = Math.max(1, canvas.height - pad * 2);
+  const scale = Math.min(innerW / spanX, innerH / spanY);
+  const drawW = spanX * scale;
+  const drawH = spanY * scale;
+  const offsetX = (canvas.width - drawW) * 0.5;
+  const offsetY = (canvas.height - drawH) * 0.5;
+
+  return {
+    x: offsetX + (x - bounds.minX) * scale,
+    y: canvas.height - (offsetY + (y - bounds.minY) * scale),
+    scale,
+  };
+}
+
+function drawPolygon(ctx, canvas, bounds, points, { fillStyle = null, strokeStyle = null, lineWidth = 2 } = {}) {
+  if (!Array.isArray(points) || points.length < 2) {
+    return;
+  }
+
+  ctx.beginPath();
+  points.forEach(([x, y], index) => {
+    const pt = mapPointToCanvas(x, y, bounds, canvas);
+    if (index === 0) {
+      ctx.moveTo(pt.x, pt.y);
+    } else {
+      ctx.lineTo(pt.x, pt.y);
+    }
+  });
+  ctx.closePath();
+
+  if (fillStyle) {
+    ctx.fillStyle = fillStyle;
+    ctx.fill();
+  }
+  if (strokeStyle) {
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = strokeStyle;
+    ctx.stroke();
+  }
+}
+
+function drawMarkerReference(ctx, canvas, bounds, markers) {
+  const entries = sortMarkerEntries(markers);
+  const orderedIds = ["10", "11", "13", "12"];
+  const points = orderedIds
+    .map((id) => markers?.[id])
+    .filter((value) => Array.isArray(value) && value.length === 2);
+  drawPolygon(ctx, canvas, bounds, points, {
+    strokeStyle: "rgba(64, 224, 255, 0.95)",
+    lineWidth: 2,
+  });
+
+  ctx.save();
+  ctx.fillStyle = "#f3fbff";
+  ctx.font = `${Math.max(12, Math.floor(canvas.width * 0.055))}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+
+  for (const [id, value] of entries) {
+    const pt = mapPointToCanvas(value[0], value[1], bounds, canvas);
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(64, 224, 255, 0.95)";
+    ctx.arc(pt.x, pt.y, Math.max(3, canvas.width * 0.018), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#f3fbff";
+    ctx.fillText(id, pt.x, pt.y - 7);
+  }
+
+  ctx.restore();
+}
+
+function drawRcPose(ctx, canvas, bounds, rc) {
+  if (!rc || !rc.valid) {
+    return;
+  }
+
+  const pt = mapPointToCanvas(rc.x, rc.y, bounds, canvas);
+  const heading = Number.isFinite(rc.yaw_rad) ? rc.yaw_rad : 0;
+  const color = rc.stale ? "rgba(173, 184, 194, 0.78)" : "#ffffff";
+  const glow = rc.stale ? "rgba(173, 184, 194, 0.24)" : "rgba(83, 208, 255, 0.34)";
+  const radius = Math.max(4, canvas.width * 0.022);
+  const arrowLen = Math.max(12, canvas.width * 0.09);
+  const tipX = pt.x + Math.cos(heading) * arrowLen;
+  const tipY = pt.y - Math.sin(heading) * arrowLen;
+
+  ctx.save();
+  ctx.strokeStyle = glow;
+  ctx.lineWidth = radius * 3;
+  ctx.beginPath();
+  ctx.moveTo(pt.x, pt.y);
+  ctx.lineTo(tipX, tipY);
+  ctx.stroke();
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(pt.x, pt.y);
+  ctx.lineTo(tipX, tipY);
+  ctx.stroke();
+
+  const sideAngle = Math.PI / 7;
+  const headLen = Math.max(7, canvas.width * 0.04);
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(
+    tipX - Math.cos(heading - sideAngle) * headLen,
+    tipY + Math.sin(heading - sideAngle) * headLen
+  );
+  ctx.lineTo(
+    tipX - Math.cos(heading + sideAngle) * headLen,
+    tipY + Math.sin(heading + sideAngle) * headLen
+  );
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawMinimap() {
+  resizeCanvasToDisplaySize(minimapCanvas);
+
+  const ctx = minimapCtx;
+  const canvas = minimapCanvas;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "rgba(8, 20, 28, 0.42)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (!minimapConfig) {
+    ctx.fillStyle = "rgba(232, 243, 251, 0.72)";
+    ctx.font = `${Math.max(12, Math.floor(canvas.width * 0.08))}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("Loading map", canvas.width * 0.5, canvas.height * 0.5);
+    return;
+  }
+
+  const bounds = minimapConfig.viewBox;
+  drawPolygon(ctx, canvas, bounds, minimapConfig.outerBoundary, {
+    fillStyle: "rgba(117, 22, 22, 0.18)",
+    strokeStyle: "#ff4747",
+    lineWidth: 2.5,
+  });
+  drawPolygon(ctx, canvas, bounds, minimapConfig.driveZone, {
+    fillStyle: "rgba(44, 194, 82, 0.24)",
+    strokeStyle: "rgba(56, 214, 95, 0.95)",
+    lineWidth: 2,
+  });
+  drawMarkerReference(ctx, canvas, bounds, minimapConfig.markers);
+  drawRcPose(ctx, canvas, bounds, latestOverlayState.rc);
+
+  ctx.save();
+  ctx.fillStyle = "#e8f3fb";
+  ctx.font = `${Math.max(12, Math.floor(canvas.width * 0.07))}px sans-serif`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText("MINIMAP", 12, 10);
+  ctx.restore();
+}
+
+async function fetchOverlayState() {
+  try {
+    const res = await fetch("/overlay/state", { cache: "no-store" });
+    if (!res.ok) {
+      return;
+    }
+    latestOverlayState = await res.json();
+    drawMinimap();
+  } catch (_) {
+    // Keep the last known state and try again on the next tick.
+  }
+}
+
+function startOverlayPolling() {
+  if (overlayStateInterval) {
+    return;
+  }
+
+  overlayStateInterval = setInterval(() => {
+    fetchOverlayState().catch(() => {});
+  }, overlayStatePollMs);
+  fetchOverlayState().catch(() => {});
+}
+
+function stopOverlayPolling() {
+  if (overlayStateInterval) {
+    clearInterval(overlayStateInterval);
+    overlayStateInterval = null;
+  }
+}
+
 function drawCover(ctx, canvas, img) {
   const cw = canvas.width;
   const ch = canvas.height;
@@ -558,6 +794,15 @@ async function initializeMode() {
   renderConnectButton();
 }
 
+async function initializeMinimap() {
+  try {
+    await loadMinimapConfig();
+  } catch (_) {
+    drawMinimap();
+  }
+  startOverlayPolling();
+}
+
 async function toggleFullscreen() {
   try {
     if (!document.fullscreenElement) {
@@ -586,12 +831,15 @@ function scrollToVideo() {
 }
 
 bindStreamEvents();
+drawMinimap();
 initializeMode();
+initializeMinimap().catch(() => {});
 window.addEventListener("resize", () => {
   if (connected) {
     resizeCanvasToDisplaySize(leftCanvas);
     resizeCanvasToDisplaySize(rightCanvas);
   }
+  drawMinimap();
 });
 connectBtn.addEventListener("click", () => {
   connect().catch(() => {
@@ -603,6 +851,7 @@ fullscreenBtn.addEventListener("click", toggleFullscreen);
 scrollBtn.addEventListener("click", scrollToVideo);
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 window.addEventListener("beforeunload", () => {
+  stopOverlayPolling();
   if (connected) {
     fetch("/ptz/mode", {
       method: "POST",

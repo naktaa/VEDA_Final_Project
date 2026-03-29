@@ -63,6 +63,7 @@ button {
 }
 
 .vr-stage {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: 100%;
@@ -100,6 +101,27 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.minimap-overlay {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(44px, calc(env(safe-area-inset-right) + 44px));
+  width: clamp(112px, 20vw, 170px);
+  aspect-ratio: 1 / 0.78;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(83, 208, 255, 0.35);
+  background: rgba(5, 16, 23, 0.5);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.minimap-overlay canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 .stream-source {
   position: fixed;
   left: -9999px;
@@ -118,5 +140,11 @@ button {
   button {
     font-size: 0.85rem;
     padding: 8px 10px;
+  }
+
+  .minimap-overlay {
+    top: max(8px, env(safe-area-inset-top));
+    right: max(28px, calc(env(safe-area-inset-right) + 28px));
+    width: clamp(108px, 28vw, 150px);
   }
 }

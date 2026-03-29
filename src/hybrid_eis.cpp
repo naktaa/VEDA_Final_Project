@@ -2,16 +2,56 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "image_utils.hpp"
 
 namespace {
 
-cv::Mat center_rotation_homography(int width, int height, double angle_rad) {
-    const cv::Point2f center(width * 0.5F, height * 0.5F);
-    const cv::Mat affine = cv::getRotationMatrix2D(center, angle_rad * 180.0 / CV_PI, 1.0);
-    return to_homography3x3(affine);
+constexpr int kReferenceMinFeatureCount = 10;
+constexpr int kReferenceMinAffinePoints = 6;
+constexpr double kGateWindowMs = 12.0;
+constexpr double kGateStaleMs = 30.0;
+constexpr double kGateMaxAbsYawDps = 250.0;
+constexpr int kGateInvalidFrameLimit = 3;
+
+struct GateYawResult {
+    bool valid = false;
+    double yaw_gate_dps = 0.0;
+    int samples = 0;
+    double latest_sample_time_ms = 0.0;
+    double latest_lag_ms = 0.0;
+    int range_used = 0;
+    double range_min_ms = 0.0;
+    double range_max_ms = 0.0;
+    bool covers_start = false;
+    bool covers_end = false;
+};
+
+struct RollingShutterResult {
+    bool attempted = false;
+    bool applied = false;
+    int band_used = 0;
+    int band_total = 0;
+    double required_crop_percent = 0.0;
+};
+
+std::string lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+bool rolling_shutter_enabled(const EisRuntimeConfig& config) {
+    return lower_copy(config.rs_mode) == "gyro_bands";
+}
+
+cv::Mat make_identity_homography() {
+    return cv::Mat::eye(3, 3, CV_64F);
 }
 
 cv::Mat apply_fixed_crop(const cv::Mat& frame, double crop_percent) {
@@ -43,6 +83,220 @@ double recover_progress(const AppConfig& config, int frames_left) {
     return 1.0 - static_cast<double>(std::clamp(frames_left, 0, total)) / static_cast<double>(total);
 }
 
+double median_value(std::vector<double>& values) {
+    if (values.empty()) {
+        return 0.0;
+    }
+    const size_t mid = values.size() / 2;
+    std::nth_element(values.begin(), values.begin() + mid, values.end());
+    double median = values[mid];
+    if ((values.size() % 2) == 0) {
+        const auto max_it = std::max_element(values.begin(), values.begin() + mid);
+        median = (*max_it + median) * 0.5;
+    }
+    return median;
+}
+
+GateYawResult compute_gate_yaw(const GyroBuffer* gyro_buffer, double target_time_ms) {
+    GateYawResult result;
+    if (!gyro_buffer || !std::isfinite(target_time_ms)) {
+        return result;
+    }
+
+    ImuSample latest_sample;
+    if (!gyro_buffer->latest(latest_sample)) {
+        return result;
+    }
+    result.latest_sample_time_ms = latest_sample.sample_time_ms;
+    result.latest_lag_ms = target_time_ms - latest_sample.sample_time_ms;
+    if (!std::isfinite(result.latest_lag_ms) || result.latest_lag_ms > kGateStaleMs) {
+        return result;
+    }
+
+    std::vector<ImuSample> range_samples;
+    GyroRangeInfo range_info;
+    const double window_start_ms = target_time_ms - kGateWindowMs;
+    if (!gyro_buffer->get_range(window_start_ms, target_time_ms, range_samples, &range_info)) {
+        return result;
+    }
+    result.range_used = range_info.used;
+    result.range_min_ms = range_info.min_ts;
+    result.range_max_ms = range_info.max_ts;
+    result.covers_start = range_info.covers_start;
+    result.covers_end = range_info.covers_end;
+
+    std::vector<double> abs_yaw_values;
+    abs_yaw_values.reserve(range_samples.size());
+    for (const ImuSample& sample : range_samples) {
+        if (sample.sample_time_ms < window_start_ms || sample.sample_time_ms > target_time_ms) {
+            continue;
+        }
+        const double yaw_dps = sample.gyro_rad_s[2] * 180.0 / CV_PI;
+        if (!std::isfinite(yaw_dps)) {
+            continue;
+        }
+        const double abs_yaw = std::abs(yaw_dps);
+        if (abs_yaw > kGateMaxAbsYawDps) {
+            continue;
+        }
+        abs_yaw_values.push_back(abs_yaw);
+    }
+
+    result.samples = static_cast<int>(abs_yaw_values.size());
+    if (result.samples <= 0) {
+        return result;
+    }
+
+    result.yaw_gate_dps = median_value(abs_yaw_values);
+    result.valid = std::isfinite(result.yaw_gate_dps);
+    return result;
+}
+
+RollingShutterResult render_rolling_shutter_bands(const cv::Mat& source_frame,
+                                                  const cv::Mat& global_homography,
+                                                  double source_center_time_ms,
+                                                  int64_t source_sensor_ts_ns,
+                                                  const GyroBuffer* gyro_buffer,
+                                                  const EISWarpCalculator& warp,
+                                                  const AppConfig& config,
+                                                  cv::Mat& stabilized) {
+    RollingShutterResult result;
+    result.band_total = std::max(1, std::min(config.eis.rs_band_count, source_frame.rows));
+    result.attempted = rolling_shutter_enabled(config.eis);
+    if (!result.attempted ||
+        source_frame.empty() ||
+        result.band_total < 2 ||
+        config.eis.rs_readout_time_ms <= 0.0 ||
+        source_sensor_ts_ns <= 0 ||
+        !gyro_buffer ||
+        !warp.valid() ||
+        !std::isfinite(source_center_time_ms)) {
+        return result;
+    }
+
+    cv::Mat assembled(source_frame.size(), source_frame.type());
+    cv::Mat warped_band;
+    const cv::Mat global_h = to_homography3x3(global_homography);
+    const double readout_ms = config.eis.rs_readout_time_ms;
+
+    for (int band = 0; band < result.band_total; ++band) {
+        const int y0 = (source_frame.rows * band) / result.band_total;
+        const int y1 = (source_frame.rows * (band + 1)) / result.band_total;
+        if (y1 <= y0) {
+            continue;
+        }
+
+        const double band_center_y = (static_cast<double>(y0 + y1) * 0.5) / static_cast<double>(source_frame.rows);
+        const double band_time_ms = source_center_time_ms - (readout_ms * 0.5) + (band_center_y * readout_ms);
+
+        cv::Mat total_h = global_h;
+        Quaternion q_center_to_band;
+        GyroRangeInfo range_info;
+        if (integrate_gyro_delta(*gyro_buffer, source_center_time_ms, band_time_ms, q_center_to_band, &range_info)) {
+            const cv::Mat rs_h = warp.homography_from_quat(q_center_to_band.conjugate());
+            if (!rs_h.empty()) {
+                total_h = global_h * rs_h;
+                ++result.band_used;
+            }
+        }
+
+        result.required_crop_percent = std::max(result.required_crop_percent,
+                                                compute_required_crop_percent(total_h, source_frame.cols, source_frame.rows));
+
+        cv::warpPerspective(source_frame,
+                            warped_band,
+                            total_h,
+                            source_frame.size(),
+                            cv::INTER_LINEAR,
+                            cv::BORDER_REPLICATE);
+        warped_band.rowRange(y0, y1).copyTo(assembled.rowRange(y0, y1));
+    }
+
+    if (result.band_used > (result.band_total / 2)) {
+        stabilized = assembled;
+        result.applied = true;
+    }
+    return result;
+}
+
+LkMotionEstimate estimate_reference_style_lk(const cv::Mat& prev_bgr,
+                                             const cv::Mat& curr_bgr,
+                                             const EisRuntimeConfig& config) {
+    LkMotionEstimate result;
+    if (prev_bgr.empty() || curr_bgr.empty()) {
+        return result;
+    }
+
+    cv::Mat prev_gray;
+    cv::Mat curr_gray;
+    if (prev_bgr.channels() == 3) {
+        cv::cvtColor(prev_bgr, prev_gray, cv::COLOR_BGR2GRAY);
+    } else {
+        prev_gray = prev_bgr;
+    }
+    if (curr_bgr.channels() == 3) {
+        cv::cvtColor(curr_bgr, curr_gray, cv::COLOR_BGR2GRAY);
+    } else {
+        curr_gray = curr_bgr;
+    }
+
+    std::vector<cv::Point2f> features_prev;
+    cv::goodFeaturesToTrack(prev_gray,
+                            features_prev,
+                            config.lk_max_features,
+                            config.lk_quality,
+                            config.lk_min_dist);
+    result.features = static_cast<int>(features_prev.size());
+    if (result.features < kReferenceMinFeatureCount) {
+        return result;
+    }
+
+    std::vector<cv::Point2f> features_curr;
+    std::vector<uchar> status;
+    std::vector<float> errors;
+    cv::calcOpticalFlowPyrLK(prev_gray,
+                             curr_gray,
+                             features_prev,
+                             features_curr,
+                             status,
+                             errors);
+
+    std::vector<cv::Point2f> good_prev;
+    std::vector<cv::Point2f> good_curr;
+    good_prev.reserve(features_prev.size());
+    good_curr.reserve(features_prev.size());
+    for (size_t i = 0; i < status.size(); ++i) {
+        if (status[i]) {
+            good_prev.push_back(features_prev[i]);
+            good_curr.push_back(features_curr[i]);
+        }
+    }
+
+    result.valid_points = static_cast<int>(good_prev.size());
+    result.inliers = result.valid_points;
+    result.confidence = result.valid_points > 0 ? 1.0 : 0.0;
+    if (result.valid_points < kReferenceMinAffinePoints) {
+        return result;
+    }
+
+    const cv::Mat affine = cv::estimateAffinePartial2D(good_prev, good_curr);
+    if (affine.empty()) {
+        return result;
+    }
+
+    result.dx = affine.at<double>(0, 2);
+    result.dy = affine.at<double>(1, 2);
+    result.da = std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0));
+    const double cos_da = std::cos(result.da);
+    if (std::abs(cos_da) <= 1e-6) {
+        return result;
+    }
+    result.sx = affine.at<double>(0, 0) / cos_da;
+    result.sy = affine.at<double>(1, 1) / cos_da;
+    result.valid = true;
+    return result;
+}
+
 } // namespace
 
 HybridEisProcessor::HybridEisProcessor(const AppConfig& config, const GyroBuffer* gyro_buffer)
@@ -53,7 +307,9 @@ HybridEisProcessor::HybridEisProcessor(const AppConfig& config, const GyroBuffer
                                              config.camera.height,
                                              config.camera.hfov_deg,
                                              config.camera.vfov_deg)),
-      warp_(intrinsics_) {}
+      warp_(intrinsics_) {
+    reset_lk_stabilization();
+}
 
 void HybridEisProcessor::update_config(const AppConfig& config) {
     config_ = config;
@@ -63,33 +319,46 @@ void HybridEisProcessor::update_config(const AppConfig& config) {
                                              config.camera.hfov_deg,
                                              config.camera.vfov_deg);
     warp_ = EISWarpCalculator(intrinsics_);
+    reset_lk_stabilization();
+}
+
+void HybridEisProcessor::reset_lk_stabilization() {
+    kf_theta_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
+    kf_tx_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
+    kf_ty_.init(config_.eis.lk_kalman_q, config_.eis.lk_kalman_r);
+    lk_frame_count_ = 0;
 }
 
 void HybridEisProcessor::reset() {
     prev_frame_.release();
     prev_frame_ok_ = false;
+    prev_frame_time_ms_ = 0.0;
+    prev_sensor_ts_ns_ = 0;
+    prev_exposure_us_ = 0;
     prev_phys_ = Quaternion::identity();
     prev_phys_ok_ = false;
     prev_target_ms_ = 0.0;
     prev_target_ok_ = false;
     hp_lp_delta_rad_ = cv::Vec3d(0.0, 0.0, 0.0);
     hp_initialized_ = false;
-    visual_anchor_rad_ = 0.0;
-    visual_anchor_ok_ = false;
-    smooth_tx_ = 0.0;
-    smooth_ty_ = 0.0;
-    smooth_translation_ok_ = false;
     state_ = HybridState::STABILIZE;
     turn_enter_count_ = 0;
     turn_exit_count_ = 0;
     recover_frames_left_ = 0;
+    gate_invalid_frames_ = 0;
     integrator_.reset();
+    reset_lk_stabilization();
 }
 
-void HybridEisProcessor::update_state(double yaw_rate_dps) {
-    const double abs_yaw = std::abs(yaw_rate_dps);
+void HybridEisProcessor::update_state(bool gate_valid, double yaw_gate_dps) {
+    const double abs_yaw = std::abs(yaw_gate_dps);
     switch (state_) {
     case HybridState::STABILIZE:
+        gate_invalid_frames_ = 0;
+        if (!gate_valid) {
+            turn_enter_count_ = 0;
+            break;
+        }
         if (abs_yaw >= config_.eis.turn_enter_yaw_rate_dps) {
             ++turn_enter_count_;
             if (turn_enter_count_ >= std::max(1, config_.eis.turn_hold_frames)) {
@@ -97,12 +366,24 @@ void HybridEisProcessor::update_state(double yaw_rate_dps) {
                 turn_enter_count_ = 0;
                 turn_exit_count_ = 0;
                 recover_frames_left_ = 0;
+                gate_invalid_frames_ = 0;
             }
         } else {
             turn_enter_count_ = 0;
         }
         break;
     case HybridState::TURN_FOLLOW:
+        if (!gate_valid) {
+            turn_exit_count_ = 0;
+            ++gate_invalid_frames_;
+            if (gate_invalid_frames_ >= kGateInvalidFrameLimit) {
+                state_ = HybridState::RECOVER;
+                recover_frames_left_ = std::max(1, config_.eis.recover_frames);
+                gate_invalid_frames_ = 0;
+            }
+            break;
+        }
+        gate_invalid_frames_ = 0;
         if (abs_yaw <= config_.eis.turn_exit_yaw_rate_dps) {
             ++turn_exit_count_;
             if (turn_exit_count_ >= std::max(1, config_.eis.turn_hold_frames)) {
@@ -115,7 +396,8 @@ void HybridEisProcessor::update_state(double yaw_rate_dps) {
         }
         break;
     case HybridState::RECOVER:
-        if (abs_yaw >= config_.eis.turn_enter_yaw_rate_dps) {
+        gate_invalid_frames_ = 0;
+        if (gate_valid && abs_yaw >= config_.eis.turn_enter_yaw_rate_dps) {
             state_ = HybridState::TURN_FOLLOW;
             turn_enter_count_ = 0;
             turn_exit_count_ = 0;
@@ -144,183 +426,124 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     }
 
     const cv::Mat current = frame.image;
+    const double target_time_ms = frame.frame_time_ms + config_.calib.imu_offset_ms;
 
     ImuSample latest_imu;
     const bool have_latest_imu = gyro_buffer_ && gyro_buffer_->latest(latest_imu);
-    const double yaw_rate_dps = have_latest_imu
+    const double raw_yaw_rate_dps = have_latest_imu
         ? latest_imu.gyro_rad_s[2] * 180.0 / CV_PI
         : 0.0;
-    update_state(yaw_rate_dps);
+    const GateYawResult gate = compute_gate_yaw(gyro_buffer_, target_time_ms);
 
-    if (debug) {
-        debug->state = state_;
-        debug->yaw_rate_dps = yaw_rate_dps;
-        debug->gyro_latest_sample_time_ms = have_latest_imu ? latest_imu.sample_time_ms : 0.0;
-        debug->gyro_latest_lag_ms = have_latest_imu ? (frame.frame_time_ms - latest_imu.sample_time_ms) : 0.0;
+    const HybridState prev_state = state_;
+    update_state(gate.valid, gate.yaw_gate_dps);
+    if (state_ == HybridState::TURN_FOLLOW && prev_state != HybridState::TURN_FOLLOW) {
+        reset_lk_stabilization();
     }
 
     LkMotionEstimate lk;
     if (prev_frame_ok_) {
-        lk = lk_tracker_.estimate(prev_frame_, current);
+        lk = estimate_reference_style_lk(prev_frame_, current, config_.eis);
     }
 
-    cv::Vec3d gyro_delta_raw(0.0, 0.0, 0.0);
-    cv::Vec3d gyro_delta_hp(0.0, 0.0, 0.0);
-    cv::Vec3d gyro_corr(0.0, 0.0, 0.0);
-    GyroRangeInfo gyro_info{};
-    bool gyro_valid = false;
-    if (gyro_buffer_) {
-        const double target_time_ms = frame.frame_time_ms + config_.calib.imu_offset_ms;
-        if (debug) {
-            debug->gyro_target_time_ms = target_time_ms;
-            if (have_latest_imu) {
-                debug->gyro_latest_lag_ms = target_time_ms - latest_imu.sample_time_ms;
-            }
+    const bool lk_usable = lk.valid;
+    const double correction_scale = state_ == HybridState::RECOVER
+        ? recover_progress(config_, recover_frames_left_)
+        : (state_ == HybridState::TURN_FOLLOW ? 0.0 : 1.0);
+
+    double corr_dx = 0.0;
+    double corr_dy = 0.0;
+    double corr_da = 0.0;
+    double global_required_crop = 0.0;
+    cv::Mat global_h = make_identity_homography();
+    bool use_global_lk = false;
+
+    if (prev_frame_ok_ && lk_usable && state_ != HybridState::TURN_FOLLOW) {
+        kf_theta_.update(lk.da);
+        kf_tx_.update(lk.dx);
+        kf_ty_.update(lk.dy);
+
+        if (lk_frame_count_ > 0) {
+            corr_da = kf_theta_.diff() * correction_scale;
+            corr_dx = std::clamp(kf_tx_.diff() * correction_scale,
+                                 -config_.eis.lk_translation_max_corr_px,
+                                 config_.eis.lk_translation_max_corr_px);
+            corr_dy = std::clamp(kf_ty_.diff() * correction_scale,
+                                 -config_.eis.lk_translation_max_corr_px,
+                                 config_.eis.lk_translation_max_corr_px);
         }
-        if (!prev_target_ok_ || target_time_ms > prev_target_ms_) {
-            Quaternion current_phys;
-            if (integrator_.integrate_to(target_time_ms, *gyro_buffer_, current_phys, &gyro_info)) {
-                if (prev_phys_ok_) {
-                    Quaternion delta = prev_phys_.conjugate() * current_phys;
-                    delta.normalize();
-                    gyro_delta_raw = quat_to_euler(delta);
-                    const double alpha = std::clamp(config_.eis.gyro_hp_lpf_alpha, 0.0, 1.0);
-                    if (!hp_initialized_) {
-                        hp_lp_delta_rad_ = gyro_delta_raw;
-                        hp_initialized_ = true;
-                    } else {
-                        hp_lp_delta_rad_ = alpha * hp_lp_delta_rad_ + (1.0 - alpha) * gyro_delta_raw;
-                    }
-                    gyro_delta_hp = gyro_delta_raw - hp_lp_delta_rad_;
+        ++lk_frame_count_;
 
-                    gyro_corr[0] = -gyro_delta_hp[0] * config_.eis.gyro_gain_roll * config_.eis.gyro_hp_gain_roll;
-                    gyro_corr[1] = -gyro_delta_hp[1] * config_.eis.gyro_gain_pitch * config_.eis.gyro_hp_gain_pitch;
-                    gyro_corr[2] = -gyro_delta_hp[2] * config_.eis.gyro_gain_yaw * config_.eis.gyro_hp_gain_yaw;
+        const double out_da = lk.da + corr_da;
+        const double out_dx = lk.dx + corr_dx;
+        const double out_dy = lk.dy + corr_dy;
+        const cv::Mat smoothed = (cv::Mat_<double>(2, 3) <<
+            lk.sx * std::cos(out_da), lk.sx * -std::sin(out_da), out_dx,
+            lk.sy * std::sin(out_da), lk.sy *  std::cos(out_da), out_dy);
 
-                    const double delta_angle_deg = quaternion_angle_deg(delta);
-                    if (delta_angle_deg > config_.eis.gyro_large_rot_thresh_deg) {
-                        gyro_corr *= config_.eis.gyro_large_rot_gain_scale;
-                    }
-                    gyro_corr = clamp_rotation_correction(gyro_corr, config_.eis);
-                    gyro_valid = true;
-                }
-                prev_phys_ = current_phys;
-                prev_phys_ok_ = true;
-            }
-            prev_target_ms_ = target_time_ms;
-            prev_target_ok_ = true;
-        }
+        global_h = to_homography3x3(smoothed);
+        global_required_crop = compute_required_crop_percent(global_h, current.cols, current.rows);
+        use_global_lk = true;
+    } else if (prev_frame_ok_ && !lk_usable) {
+        reset_lk_stabilization();
     }
 
-    double translation_scale = 1.0;
-    double rotation_scale = 1.0;
-    double visual_scale = 1.0;
-    if (state_ == HybridState::TURN_FOLLOW) {
-        translation_scale = config_.eis.lk_translation_turn_scale;
-        rotation_scale = config_.eis.turn_follow_correction_scale;
-        visual_scale = 0.0;
-    } else if (state_ == HybridState::RECOVER) {
-        const double progress = recover_progress(config_, recover_frames_left_);
-        translation_scale = config_.eis.lk_translation_turn_scale +
-            (1.0 - config_.eis.lk_translation_turn_scale) * progress;
-        rotation_scale = config_.eis.turn_follow_correction_scale +
-            (1.0 - config_.eis.turn_follow_correction_scale) * progress;
-        visual_scale = progress;
+    const cv::Mat* source_frame = &current;
+    double source_time_ms = frame.frame_time_ms;
+    int64_t source_sensor_ts_ns = frame.sensor_ts_ns;
+    if (use_global_lk) {
+        source_frame = &prev_frame_;
+        source_time_ms = prev_frame_time_ms_;
+        source_sensor_ts_ns = prev_sensor_ts_ns_;
     }
 
-    double tx = smooth_tx_;
-    double ty = smooth_ty_;
-    if (lk.valid && lk.confidence >= config_.eis.lk_confidence_gate) {
-        const double measured_tx = -lk.dx * translation_scale;
-        const double measured_ty = -lk.dy * translation_scale;
-        const double alpha = std::clamp(config_.eis.lk_translation_alpha, 0.0, 1.0);
-        if (!smooth_translation_ok_) {
-            smooth_tx_ = measured_tx;
-            smooth_ty_ = measured_ty;
-            smooth_translation_ok_ = true;
-        } else {
-            smooth_tx_ = alpha * smooth_tx_ + (1.0 - alpha) * measured_tx;
-            smooth_ty_ = alpha * smooth_ty_ + (1.0 - alpha) * measured_ty;
-        }
-
-        smooth_tx_ = std::clamp(smooth_tx_,
-                                -config_.eis.lk_translation_max_corr_px,
-                                config_.eis.lk_translation_max_corr_px);
-        smooth_ty_ = std::clamp(smooth_ty_,
-                                -config_.eis.lk_translation_max_corr_px,
-                                config_.eis.lk_translation_max_corr_px);
-        tx = smooth_tx_;
-        ty = smooth_ty_;
-
-        const double visual_alpha = std::clamp(config_.eis.lk_rotation_anchor_alpha, 0.0, 1.0);
-        if (!visual_anchor_ok_) {
-            visual_anchor_rad_ = lk.da;
-            visual_anchor_ok_ = true;
-        } else {
-            visual_anchor_rad_ = visual_alpha * visual_anchor_rad_ + (1.0 - visual_alpha) * lk.da;
-        }
-    } else if (smooth_translation_ok_) {
-        smooth_tx_ *= 0.92;
-        smooth_ty_ *= 0.92;
-        tx = smooth_tx_;
-        ty = smooth_ty_;
+    RollingShutterResult rs_result;
+    cv::Mat rs_stabilized;
+    if (rolling_shutter_enabled(config_.eis)) {
+        rs_result = render_rolling_shutter_bands(*source_frame,
+                                                 global_h,
+                                                 source_time_ms,
+                                                 source_sensor_ts_ns,
+                                                 gyro_buffer_,
+                                                 warp_,
+                                                 config_,
+                                                 rs_stabilized);
     }
 
-    double visual_anchor = 0.0;
-    if (visual_anchor_ok_ && lk.confidence >= config_.eis.lk_confidence_gate) {
-        visual_anchor = -visual_anchor_rad_ * config_.eis.lk_rotation_gain * visual_scale;
+    double required_crop = 0.0;
+    if (rs_result.applied) {
+        stabilized = rs_stabilized;
+        required_crop = std::max(global_required_crop, rs_result.required_crop_percent);
+    } else if (use_global_lk) {
+        cv::warpPerspective(*source_frame,
+                            stabilized,
+                            global_h,
+                            current.size(),
+                            cv::INTER_LINEAR,
+                            cv::BORDER_REPLICATE);
+        required_crop = global_required_crop;
+    } else {
+        stabilized = source_frame->clone();
     }
 
-    gyro_corr *= rotation_scale;
-
-    cv::Mat H = cv::Mat::eye(3, 3, CV_64F);
-    H = translation_homography(tx, ty) * H;
-    if (std::abs(visual_anchor) > 1e-8) {
-        H = center_rotation_homography(current.cols, current.rows, visual_anchor) * H;
-    }
-    if (gyro_valid && warp_.valid()) {
-        const Quaternion q_corr = quat_from_euler(gyro_corr[0], gyro_corr[1], gyro_corr[2]);
-        H = warp_.homography_from_quat(q_corr) * H;
-    }
-
-    double clamp_scale = 1.0;
-    const double required_crop = compute_required_crop_percent(H, current.cols, current.rows);
-    if (required_crop > config_.eis.crop_budget_percent && required_crop > 0.0) {
-        clamp_scale = std::clamp(config_.eis.crop_budget_percent / required_crop, 0.0, 1.0);
-        tx *= clamp_scale;
-        ty *= clamp_scale;
-        visual_anchor *= clamp_scale;
-        gyro_corr *= clamp_scale;
-
-        H = translation_homography(tx, ty);
-        if (std::abs(visual_anchor) > 1e-8) {
-            H = center_rotation_homography(current.cols, current.rows, visual_anchor) * H;
-        }
-        if (gyro_valid && warp_.valid()) {
-            const Quaternion q_corr = quat_from_euler(gyro_corr[0], gyro_corr[1], gyro_corr[2]);
-            H = warp_.homography_from_quat(q_corr) * H;
-        }
-    }
-
-    cv::warpPerspective(current,
-                        stabilized,
-                        H,
-                        current.size(),
-                        cv::INTER_LINEAR,
-                        cv::BORDER_REPLICATE);
     stabilized = apply_fixed_crop(stabilized, config_.eis.crop_budget_percent);
 
     if (config_.eis.debug_overlay) {
+        const char* rs_label = rolling_shutter_enabled(config_.eis) ? "bands" : "off";
         char line1[256];
         std::snprintf(line1,
                       sizeof(line1),
-                      "state=%s yaw=%+.1fdps lk=%.2f tx=%+.1f ty=%+.1f crop=%.1f%%",
+                      "state=%s feat=%d pts=%d yaw=%+.1f corr=%+.1f/%+.1f/%+.2f rs=%s %d/%d",
                       hybrid_state_str(state_),
-                      yaw_rate_dps,
-                      lk.confidence,
-                      tx,
-                      ty,
-                      compute_required_crop_percent(H, current.cols, current.rows));
+                      lk.features,
+                      lk.valid_points,
+                      gate.yaw_gate_dps,
+                      corr_dx,
+                      corr_dy,
+                      corr_da * 180.0 / CV_PI,
+                      rs_label,
+                      rs_result.band_used,
+                      rs_result.band_total);
         cv::putText(stabilized,
                     line1,
                     cv::Point(10, 28),
@@ -333,27 +556,41 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
 
     prev_frame_ = current.clone();
     prev_frame_ok_ = true;
+    prev_frame_time_ms_ = frame.frame_time_ms;
+    prev_sensor_ts_ns_ = frame.sensor_ts_ns;
+    prev_exposure_us_ = frame.exposure_us;
 
     if (debug) {
+        debug->state = state_;
         debug->lk_valid = lk.valid;
         debug->lk_confidence = lk.confidence;
         debug->lk_features = lk.features;
         debug->lk_valid_points = lk.valid_points;
         debug->lk_inliers = lk.inliers;
-        debug->gyro_valid = gyro_valid;
-        debug->gyro_range_used = gyro_info.used;
-        debug->gyro_range_min_ms = gyro_info.min_ts;
-        debug->gyro_range_max_ms = gyro_info.max_ts;
-        debug->gyro_covers_start = gyro_info.covers_start;
-        debug->gyro_covers_end = gyro_info.covers_end;
-        debug->crop_required_percent = compute_required_crop_percent(H, current.cols, current.rows);
-        debug->clamp_scale = clamp_scale;
-        debug->visual_anchor_rad = visual_anchor;
-        debug->gyro_delta_raw_rad = gyro_delta_raw;
-        debug->gyro_delta_hp_rad = gyro_delta_hp;
-        debug->applied_rotation_rad = gyro_corr;
-        debug->applied_tx = tx;
-        debug->applied_ty = ty;
+        debug->gyro_valid = have_latest_imu;
+        debug->yaw_rate_dps = raw_yaw_rate_dps;
+        debug->gyro_gate_valid = gate.valid;
+        debug->yaw_gate_dps = gate.yaw_gate_dps;
+        debug->gyro_gate_samples = gate.samples;
+        debug->gyro_target_time_ms = target_time_ms;
+        debug->gyro_latest_sample_time_ms = gate.latest_sample_time_ms;
+        debug->gyro_latest_lag_ms = gate.latest_lag_ms;
+        debug->gyro_range_used = gate.range_used;
+        debug->gyro_range_min_ms = gate.range_min_ms;
+        debug->gyro_range_max_ms = gate.range_max_ms;
+        debug->gyro_covers_start = gate.covers_start;
+        debug->gyro_covers_end = gate.covers_end;
+        debug->crop_required_percent = required_crop;
+        debug->rs_crop_required_percent = rs_result.required_crop_percent;
+        debug->rs_active = rs_result.applied;
+        debug->rs_band_used = rs_result.band_used;
+        debug->rs_band_total = rs_result.band_total;
+        debug->clamp_scale = 1.0;
+        debug->visual_anchor_rad = corr_da;
+        debug->applied_rotation_rad = cv::Vec3d(0.0, 0.0, corr_da);
+        debug->applied_tx = corr_dx;
+        debug->applied_ty = corr_dy;
     }
-    return gyro_valid || lk.valid;
+
+    return true;
 }

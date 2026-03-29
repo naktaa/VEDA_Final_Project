@@ -167,6 +167,8 @@ std::string make_default_config_text() {
     append_kv(oss, "lk_min_dist", cfg.eis.lk_min_dist);
     append_kv(oss, "lk_ransac_thresh", cfg.eis.lk_ransac_thresh);
     append_kv(oss, "lk_confidence_gate", cfg.eis.lk_confidence_gate);
+    append_kv(oss, "lk_kalman_q", cfg.eis.lk_kalman_q);
+    append_kv(oss, "lk_kalman_r", cfg.eis.lk_kalman_r);
     append_kv(oss, "lk_translation_alpha", cfg.eis.lk_translation_alpha);
     append_kv(oss, "lk_translation_max_corr_px", cfg.eis.lk_translation_max_corr_px);
     append_kv(oss, "lk_translation_turn_scale", cfg.eis.lk_translation_turn_scale);
@@ -190,7 +192,11 @@ std::string make_default_config_text() {
     append_kv(oss, "turn_hold_frames", cfg.eis.turn_hold_frames);
     append_kv(oss, "recover_frames", cfg.eis.recover_frames);
     append_kv(oss, "turn_follow_correction_scale", cfg.eis.turn_follow_correction_scale);
+    append_kv(oss, "rs_mode", cfg.eis.rs_mode);
+    append_kv(oss, "rs_readout_time_ms", cfg.eis.rs_readout_time_ms);
+    append_kv(oss, "rs_band_count", cfg.eis.rs_band_count);
     append_kv(oss, "debug_overlay", cfg.eis.debug_overlay ? 1 : 0);
+    append_kv(oss, "debug_log", cfg.eis.debug_log ? 1 : 0);
     oss << "\n";
 
     oss << "# [rtsp] 스트림 경로와 인코더 튜닝\n";
@@ -361,6 +367,8 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_double(map, "eis.lk_min_dist", config.eis.lk_min_dist);
         load_double(map, "eis.lk_ransac_thresh", config.eis.lk_ransac_thresh);
         load_double(map, "eis.lk_confidence_gate", config.eis.lk_confidence_gate);
+        load_double(map, "eis.lk_kalman_q", config.eis.lk_kalman_q);
+        load_double(map, "eis.lk_kalman_r", config.eis.lk_kalman_r);
         load_double(map, "eis.lk_translation_alpha", config.eis.lk_translation_alpha);
         load_double(map, "eis.lk_translation_max_corr_px", config.eis.lk_translation_max_corr_px);
         load_double(map, "eis.lk_translation_turn_scale", config.eis.lk_translation_turn_scale);
@@ -384,7 +392,11 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_int(map, "eis.turn_hold_frames", config.eis.turn_hold_frames);
         load_int(map, "eis.recover_frames", config.eis.recover_frames);
         load_double(map, "eis.turn_follow_correction_scale", config.eis.turn_follow_correction_scale);
+        load_string(map, "eis.rs_mode", config.eis.rs_mode);
+        load_double(map, "eis.rs_readout_time_ms", config.eis.rs_readout_time_ms);
+        load_int(map, "eis.rs_band_count", config.eis.rs_band_count);
         load_bool(map, "eis.debug_overlay", config.eis.debug_overlay);
+        load_bool(map, "eis.debug_log", config.eis.debug_log);
 
         load_string(map, "rtsp.port", config.rtsp.port);
         load_string(map, "rtsp.path", config.rtsp.path);
@@ -528,6 +540,8 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "lk_min_dist", copy.eis.lk_min_dist);
         append_kv(oss, "lk_ransac_thresh", copy.eis.lk_ransac_thresh);
         append_kv(oss, "lk_confidence_gate", copy.eis.lk_confidence_gate);
+        append_kv(oss, "lk_kalman_q", copy.eis.lk_kalman_q);
+        append_kv(oss, "lk_kalman_r", copy.eis.lk_kalman_r);
         append_kv(oss, "lk_translation_alpha", copy.eis.lk_translation_alpha);
         append_kv(oss, "lk_translation_max_corr_px", copy.eis.lk_translation_max_corr_px);
         append_kv(oss, "lk_translation_turn_scale", copy.eis.lk_translation_turn_scale);
@@ -551,7 +565,11 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "turn_hold_frames", copy.eis.turn_hold_frames);
         append_kv(oss, "recover_frames", copy.eis.recover_frames);
         append_kv(oss, "turn_follow_correction_scale", copy.eis.turn_follow_correction_scale);
+        append_kv(oss, "rs_mode", copy.eis.rs_mode);
+        append_kv(oss, "rs_readout_time_ms", copy.eis.rs_readout_time_ms);
+        append_kv(oss, "rs_band_count", copy.eis.rs_band_count);
         append_kv(oss, "debug_overlay", copy.eis.debug_overlay ? 1 : 0);
+        append_kv(oss, "debug_log", copy.eis.debug_log ? 1 : 0);
         oss << "\n";
 
         append_section(oss, "rtsp");

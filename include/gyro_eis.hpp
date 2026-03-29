@@ -91,6 +91,11 @@ private:
     cv::Mat Kinv_;
 };
 
+bool integrate_gyro_delta(const GyroBuffer& buffer,
+                          double t0_ms,
+                          double t1_ms,
+                          Quaternion& out_q,
+                          GyroRangeInfo* info = nullptr);
 cv::Vec3d quat_to_euler(const Quaternion& q);
 Quaternion quat_from_euler(double roll_rad, double pitch_rad, double yaw_rad);
 double quaternion_angle_deg(const Quaternion& q);

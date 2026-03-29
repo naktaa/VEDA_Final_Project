@@ -281,6 +281,88 @@ bool GyroIntegrator::integrate_to(double t_ms, const GyroBuffer& buffer, Quatern
     return true;
 }
 
+bool integrate_gyro_delta(const GyroBuffer& buffer,
+                          double t0_ms,
+                          double t1_ms,
+                          Quaternion& out_q,
+                          GyroRangeInfo* info) {
+    out_q = Quaternion::identity();
+
+    if (!std::isfinite(t0_ms) || !std::isfinite(t1_ms)) {
+        if (info) {
+            *info = GyroRangeInfo{};
+        }
+        return false;
+    }
+
+    if (std::abs(t1_ms - t0_ms) <= 1e-6) {
+        if (info) {
+            info->t0 = t0_ms;
+            info->t1 = t1_ms;
+            info->covers_start = true;
+            info->covers_end = true;
+            info->used = 0;
+        }
+        return true;
+    }
+
+    bool invert = false;
+    double start_ms = t0_ms;
+    double end_ms = t1_ms;
+    if (end_ms < start_ms) {
+        std::swap(start_ms, end_ms);
+        invert = true;
+    }
+
+    std::vector<ImuSample> samples;
+    GyroRangeInfo tmp;
+    if (!buffer.get_range(start_ms, end_ms, samples, &tmp) || samples.empty()) {
+        if (info) {
+            *info = tmp;
+        }
+        return false;
+    }
+    if (!tmp.covers_start || !tmp.covers_end) {
+        if (info) {
+            *info = tmp;
+        }
+        return false;
+    }
+
+    Quaternion q = Quaternion::identity();
+    double t_prev = start_ms;
+    cv::Vec3d omega_prev = samples.front().gyro_rad_s;
+    int used = 0;
+
+    for (const ImuSample& sample : samples) {
+        const double t = std::clamp(sample.sample_time_ms, start_ms, end_ms);
+        if (t <= t_prev) {
+            omega_prev = sample.gyro_rad_s;
+            continue;
+        }
+
+        const double dt = (t - t_prev) / 1000.0;
+        q = q * Quaternion::from_omega_dt(omega_prev, dt);
+        t_prev = t;
+        omega_prev = sample.gyro_rad_s;
+        ++used;
+    }
+
+    if (t_prev < end_ms) {
+        const double dt = (end_ms - t_prev) / 1000.0;
+        q = q * Quaternion::from_omega_dt(omega_prev, dt);
+    }
+
+    q.normalize();
+    out_q = invert ? q.conjugate() : q;
+
+    if (info) {
+        *info = tmp;
+        info->used = used;
+    }
+    return true;
+}
+
 EISWarpCalculator::EISWarpCalculator(const CameraIntrinsics& intrinsics) {
     if (intrinsics.valid()) {
         K_ = intrinsics.K();

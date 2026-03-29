@@ -46,6 +46,8 @@ struct EisRuntimeConfig {
     double lk_min_dist = 24.0;
     double lk_ransac_thresh = 2.5;
     double lk_confidence_gate = 0.55;
+    double lk_kalman_q = 0.004;
+    double lk_kalman_r = 0.5;
 
     double lk_translation_alpha = 0.55;
     double lk_translation_max_corr_px = 20.0;
@@ -73,8 +75,12 @@ struct EisRuntimeConfig {
     int turn_hold_frames = 3;
     int recover_frames = 12;
     double turn_follow_correction_scale = 0.25;
+    std::string rs_mode = "off";
+    double rs_readout_time_ms = 12.0;
+    int rs_band_count = 6;
 
     bool debug_overlay = false;
+    bool debug_log = true;
 };
 
 struct RtspConfig {

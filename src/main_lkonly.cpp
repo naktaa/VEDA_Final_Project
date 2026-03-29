@@ -46,8 +46,6 @@ constexpr const char* kLocalConfigPath = "config_local.ini";
 constexpr int kMaxFeatures = 200;
 constexpr double kFeatureQuality = 0.01;
 constexpr double kFeatureMinDist = 30.0;
-constexpr double kKalmanQ = 0.004;
-constexpr double kKalmanR = 0.5;
 constexpr int kBorderCropPx = 30;
 constexpr bool kDebugOverlay = true;
 constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
@@ -337,9 +335,9 @@ int main() {
         KalmanState kf_theta;
         KalmanState kf_tx;
         KalmanState kf_ty;
-        kalman_init(kf_theta, kKalmanQ, kKalmanR);
-        kalman_init(kf_tx, kKalmanQ, kKalmanR);
-        kalman_init(kf_ty, kKalmanQ, kKalmanR);
+        kalman_init(kf_theta, config.eis.lk_kalman_q, config.eis.lk_kalman_r);
+        kalman_init(kf_tx, config.eis.lk_kalman_q, config.eis.lk_kalman_r);
+        kalman_init(kf_ty, config.eis.lk_kalman_q, config.eis.lk_kalman_r);
 
         cv::Mat prev_gray;
         cv::Mat prev_frame;
@@ -486,8 +484,8 @@ int main() {
                                                   sizeof(buf2),
                                                   "features: %zu  Q:%.4f R:%.1f",
                                                   overlay_points,
-                                                  kKalmanQ,
-                                                  kKalmanR);
+                                                  config.eis.lk_kalman_q,
+                                                  config.eis.lk_kalman_r);
                                     cv::putText(stabilized,
                                                 buf2,
                                                 cv::Point(8, 36),

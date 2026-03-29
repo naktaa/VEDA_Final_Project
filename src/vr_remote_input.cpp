@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -173,8 +174,10 @@ bool resolve_input_device(const VrRemoteInputConfig& config,
 
 class VrTankDispatcher {
 public:
-    explicit VrTankDispatcher(const VrRemoteInputConfig& config)
+    VrTankDispatcher(const VrRemoteInputConfig& config,
+                     std::function<void(const char*)> on_manual_override)
         : config_(config),
+          on_manual_override_(std::move(on_manual_override)),
           last_input_(Clock::now()) {}
 
     void handle_event(const input_event& ev) {
@@ -231,6 +234,7 @@ private:
     void handle_key(const input_event& ev) {
         if (ev.code == BTN_LEFT && ev.value == 1) {
             update_last_input();
+            notify_manual_override();
             std::fprintf(stderr, "[VR] EV_KEY %s value=%d -> stop\n", key_code_name(ev.code), ev.value);
             std::fflush(stderr);
             stop_drive("btn_left");
@@ -266,6 +270,7 @@ private:
         case SideButtonAction::kEstop:
             if (pressed) {
                 estop_active_ = true;
+                notify_manual_override();
                 std::fprintf(stderr, "[VR] side button -> estop active\n");
                 std::fflush(stderr);
                 stop_drive("estop");
@@ -286,6 +291,7 @@ private:
 
     void drive_command(int left_cmd, int right_cmd, const input_event& ev, const char* action) {
         update_last_input();
+        notify_manual_override();
         std::fprintf(stderr, "[VR] EV_REL %s value=%d -> %s\n", rel_code_name(ev.code), ev.value, action);
         std::fflush(stderr);
 
@@ -343,11 +349,18 @@ private:
         last_input_ = Clock::now();
     }
 
+    void notify_manual_override() {
+        if (on_manual_override_) {
+            on_manual_override_("controller");
+        }
+    }
+
     static int normalize_cmd(int value) {
         return (value > 0) ? 1 : (value < 0 ? -1 : 0);
     }
 
     VrRemoteInputConfig config_;
+    std::function<void(const char*)> on_manual_override_;
     int current_speed_ = kDefaultSpeed;
     int left_cmd_ = 0;
     int right_cmd_ = 0;
@@ -389,7 +402,9 @@ bool read_events(int fd, VrTankDispatcher& dispatcher) {
 
 } // namespace
 
-bool run_vr_remote_input_loop(const VrRemoteInputConfig& config, std::atomic<bool>& running) {
+bool run_vr_remote_input_loop(const VrRemoteInputConfig& config,
+                              std::atomic<bool>& running,
+                              const std::function<void(const char*)>& on_manual_override) {
     std::string resolved_path;
     std::string resolved_name;
     std::string resolve_error;
@@ -415,7 +430,7 @@ bool run_vr_remote_input_loop(const VrRemoteInputConfig& config, std::atomic<boo
                  side_button_action_name(config.side_button_action));
     std::fflush(stderr);
 
-    VrTankDispatcher dispatcher(config);
+    VrTankDispatcher dispatcher(config, on_manual_override);
 
     while (running.load()) {
         pollfd pfd{};

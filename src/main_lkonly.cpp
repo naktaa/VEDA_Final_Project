@@ -97,6 +97,20 @@ bool manual_override_active(const tank_drive::DriveStatusSnapshot& drive) {
            (drive.active_source == tank_drive::DriveSource::kManualKey && drive.moving);
 }
 
+const char* drive_source_name(tank_drive::DriveSource source) {
+    switch (source) {
+    case tank_drive::DriveSource::kQt:
+        return "qt";
+    case tank_drive::DriveSource::kController:
+        return "controller";
+    case tank_drive::DriveSource::kManualKey:
+        return "manual_key";
+    case tank_drive::DriveSource::kAuto:
+        return "auto";
+    }
+    return "unknown";
+}
+
 void fill_runtime_status(RcStatus& status,
                          const tank_drive::DriveStatusSnapshot& drive,
                          const AutoStatusSnapshot& auto_state,
@@ -316,7 +330,11 @@ int main() {
         vr_input_config.speed_step = config.controller.speed_step;
         vr_input_config.log_only = config.controller.log_only;
         vr_input_thread = std::thread([&, vr_input_config]() {
-            const bool ok = run_vr_remote_input_loop(vr_input_config, running);
+            const bool ok = run_vr_remote_input_loop(vr_input_config,
+                                                     running,
+                                                     [&](const char* reason) {
+                                                         auto_controller.cancel_goal(reason);
+                                                     });
             if (!ok && running.load()) {
                 std::fprintf(stderr, "[VR] controller loop unavailable; Qt/auto control remains active\n");
             }
@@ -327,6 +345,10 @@ int main() {
     std::thread tick_thread([&]() {
         while (running.load()) {
             tank_drive::tick();
+            const tank_drive::DriveStatusSnapshot drive = tank_drive::get_status_snapshot();
+            if (manual_override_active(drive) && auto_controller.snapshot().goal.valid) {
+                auto_controller.cancel_goal(drive_source_name(drive.active_source));
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
     });
@@ -545,7 +567,12 @@ int main() {
                  config.mqtt.port,
                  config.mqtt.control_topic.c_str());
 
-    const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt, running, &ptz_controller);
+    const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt,
+                                             running,
+                                             &ptz_controller,
+                                             [&](const char* reason) {
+                                                 auto_controller.cancel_goal(reason);
+                                             });
     if (!mqtt_ok) {
         std::fprintf(stderr, "[LKONLY] Qt control loop ended with error\n");
     }

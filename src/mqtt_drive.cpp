@@ -13,6 +13,7 @@ struct MqttRuntime {
     std::string topic;
     std::string active_drive_cmd;
     PtzController* ptz_controller = nullptr;
+    std::function<void(const char*)> on_manual_override;
 };
 
 bool extract_json_string(const std::string& json, const char* key, std::string& out) {
@@ -128,6 +129,9 @@ void on_message(struct mosquitto*, void* obj, const struct mosquitto_message* ms
     if (!decode_drive_command(command, left_cmd, right_cmd)) return;
 
     if (active) {
+        if (rt->on_manual_override) {
+            rt->on_manual_override("qt");
+        }
         tank_drive::command_drive_from(tank_drive::DriveSource::kQt, left_cmd, right_cmd);
         rt->active_drive_cmd = command;
         fprintf(stderr, "[QT] drive start: %s\n", command.c_str());
@@ -145,10 +149,12 @@ void on_message(struct mosquitto*, void* obj, const struct mosquitto_message* ms
 
 bool run_mqtt_drive_loop(const MqttConfig& cfg,
                          std::atomic<bool>& running,
-                         PtzController* ptz_controller) {
+                         PtzController* ptz_controller,
+                         const std::function<void(const char*)>& on_manual_override) {
     MqttRuntime runtime;
     runtime.topic = cfg.control_topic;
     runtime.ptz_controller = ptz_controller;
+    runtime.on_manual_override = on_manual_override;
 
     mosquitto* mosq = mosquitto_new("tank_qt_drive", true, &runtime);
     if (!mosq) {

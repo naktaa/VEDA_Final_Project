@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <string>
 
 class PtzController;
@@ -19,5 +20,6 @@ struct MqttConfig {
 
 bool run_mqtt_drive_loop(const MqttConfig& cfg,
                          std::atomic<bool>& running,
-                         PtzController* ptz_controller = nullptr);
+                         PtzController* ptz_controller = nullptr,
+                         const std::function<void(const char*)>& on_manual_override = {});
 

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -29,6 +30,7 @@ public:
     bool start(std::string* error = nullptr);
     void run(const std::atomic<bool>* external_run = nullptr);
     void stop();
+    void cancel_goal(const char* reason);
 
     AutoStatusSnapshot snapshot() const;
 
@@ -71,5 +73,6 @@ private:
     size_t planned_path_index_ = 0;
     bool tracking_goal_is_final_ = true;
     long long planned_goal_ts_ms_ = -1;
+    uint64_t goal_revision_ = 0;
     std::chrono::steady_clock::time_point last_plan_at_ = std::chrono::steady_clock::time_point::min();
 };

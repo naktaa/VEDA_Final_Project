@@ -103,6 +103,42 @@ void AutoController::stop() {
     mqtt_connected_ = false;
 }
 
+void AutoController::cancel_goal(const char* reason) {
+    RcGoal canceled_goal;
+    bool had_goal = false;
+    {
+        std::lock_guard<std::mutex> lock(data_mtx_);
+        if (!goal_.valid) {
+            return;
+        }
+
+        canceled_goal = goal_;
+        had_goal = true;
+        goal_ = RcGoal{};
+        ++goal_revision_;
+        control_status_ = ControlStatus{};
+        control_status_.robot_state = "WAIT_GOAL";
+        last_command_ = RcCommand{};
+        rotating_ = false;
+        reached_ = false;
+        last_goal_ = RcGoal{};
+        planned_path_.clear();
+        planned_path_index_ = 0;
+        tracking_goal_is_final_ = true;
+        planned_goal_ts_ms_ = -1;
+        last_plan_at_ = std::chrono::steady_clock::time_point::min();
+    }
+
+    tank_drive::stop_from(tank_drive::DriveSource::kAuto);
+    if (had_goal) {
+        std::cerr << "[AUTO] goal canceled by "
+                  << ((reason && reason[0] != '\0') ? reason : "manual override")
+                  << " x=" << canceled_goal.x
+                  << " y=" << canceled_goal.y
+                  << " ts_ms=" << canceled_goal.ts_ms << "\n";
+    }
+}
+
 AutoStatusSnapshot AutoController::snapshot() const {
     std::lock_guard<std::mutex> lock(data_mtx_);
     AutoStatusSnapshot out;
@@ -171,6 +207,7 @@ void AutoController::onMessage(const struct mosquitto_message* msg) {
         RcGoal next_goal;
         if (ParseGoalJson(payload, next_goal) && next_goal.frame == "world") {
             goal_ = next_goal;
+            ++goal_revision_;
             static int goal_rx_count = 0;
             if (++goal_rx_count % 10 == 0) {
                 std::cerr << "[GOAL] x=" << next_goal.x
@@ -222,17 +259,25 @@ void AutoController::controlStep() {
     RcPose pose;
     RcSafety safety;
     std::chrono::steady_clock::time_point last_pose_rx;
+    uint64_t goal_revision = 0;
     {
         std::lock_guard<std::mutex> lock(data_mtx_);
         goal = goal_;
         pose = pose_;
         safety = safety_;
         last_pose_rx = last_pose_rx_;
+        goal_revision = goal_revision_;
     }
 
     ControlStatus control_status;
     RcCommand cmd;
     const RcPose control_pose = pose_for_control(pose);
+    bool state_still_current = true;
+
+    const auto goal_still_current = [&]() {
+        std::lock_guard<std::mutex> lock(data_mtx_);
+        return goal_revision_ == goal_revision;
+    };
 
     if (!pose.valid) {
         control_status.robot_state = "WAIT_INPUT";
@@ -255,12 +300,27 @@ void AutoController::controlStep() {
             updatePathPlan(control_pose, goal);
             const RcGoal tracking_goal = resolveTrackingGoal(control_pose, goal);
             cmd = computeCommand(control_pose, tracking_goal, control_status);
-            tank_drive::command_auto(cmd, config_.motor);
+            if (goal_still_current()) {
+                tank_drive::command_auto(cmd, config_.motor);
+            } else {
+                state_still_current = false;
+            }
         }
+    }
+
+    if (state_still_current && !goal_still_current()) {
+        state_still_current = false;
+    }
+
+    if (!state_still_current) {
+        return;
     }
 
     {
         std::lock_guard<std::mutex> lock(data_mtx_);
+        if (goal_revision_ != goal_revision) {
+            return;
+        }
         control_status_ = control_status;
         last_command_ = cmd;
     }

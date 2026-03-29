@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <string>
 
 enum class SideButtonAction {
@@ -17,4 +18,6 @@ struct VrRemoteInputConfig {
     SideButtonAction side_button_action = SideButtonAction::kEstop;
 };
 
-bool run_vr_remote_input_loop(const VrRemoteInputConfig& config, std::atomic<bool>& running);
+bool run_vr_remote_input_loop(const VrRemoteInputConfig& config,
+                              std::atomic<bool>& running,
+                              const std::function<void(const char*)>& on_manual_override = {});

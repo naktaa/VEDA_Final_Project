@@ -67,6 +67,7 @@ set(COMMON_SOURCES
   src/rc_status_publisher.cpp
   src/rc_status_types.cpp
   src/rtsp_server.cpp
+  src/system_usage_monitor.cpp
   src/tank_drive.cpp
   src/timebase.cpp
   src/vr_remote_input.cpp

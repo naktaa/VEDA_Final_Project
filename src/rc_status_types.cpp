@@ -137,6 +137,17 @@ std::string SerializeRcStatusToJson(const RcStatus& status) {
             << "\"z\":" << target.z
             << "}";
     }
+    if (status.system_usage.has_value()) {
+        if (!first) {
+            oss << ",";
+        }
+        first = false;
+        const SystemUsageInfo& system_usage = status.system_usage.value();
+        oss << "\"system_usage\":{"
+            << "\"cpu\":" << system_usage.cpu << ","
+            << "\"memory\":" << system_usage.memory
+            << "}";
+    }
     if (status.task_daily.has_value()) {
         AppendIntField(oss, first, "task_daily", status.task_daily.value());
     }

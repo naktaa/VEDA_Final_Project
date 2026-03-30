@@ -15,6 +15,11 @@ struct MotorInfo {
     double torque = 0.0;
 };
 
+struct SystemUsageInfo {
+    int cpu = -1;
+    int memory = -1;
+};
+
 struct RcStatus {
     std::string type = "rc_status";
     std::string src = "rc";
@@ -34,6 +39,7 @@ struct RcStatus {
     std::optional<std::string> data_period;
     std::optional<double> z;
     std::optional<TargetInfo> target;
+    std::optional<SystemUsageInfo> system_usage;
     std::optional<int> task_daily;
     std::optional<int> task_weekly;
     std::optional<int> task_monthly;

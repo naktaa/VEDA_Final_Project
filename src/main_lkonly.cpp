@@ -27,6 +27,7 @@
 #include "ptz_control.hpp"
 #include "rc_status_publisher.h"
 #include "rtsp_server.hpp"
+#include "system_usage_monitor.hpp"
 #include "tank_drive.hpp"
 #include "vr_remote_input.hpp"
 
@@ -298,12 +299,14 @@ int main() {
     status_config.qos = 1;
     status_config.retain = true;
     RcStatusPublisher status_publisher(status_config);
+    SystemUsageMonitor system_usage_monitor;
     status_publisher.setStatusProvider([&](RcStatus& status) {
         fill_runtime_status(
             status,
             tank_drive::get_status_snapshot(),
             auto_controller.snapshot(),
             config.mqtt.status_publish_interval_ms);
+        status.system_usage = system_usage_monitor.snapshot();
     });
 
     bool status_thread_started = false;

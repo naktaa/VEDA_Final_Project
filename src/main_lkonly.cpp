@@ -403,15 +403,6 @@ int main() {
                 cv::flip(frame.image, frame.image, -1);
             }
 
-            if (config.http.enable && frame_cache.has_consumers()) {
-                const cv::Mat mjpeg_source = frame.image.isContinuous() ? frame.image : frame.image.clone();
-                frame_cache.update_bgr_frame(mjpeg_source.data,
-                                             mjpeg_source.total() * mjpeg_source.elemSize(),
-                                             mjpeg_source.cols,
-                                             mjpeg_source.rows,
-                                             true);
-            }
-
             cv::Mat stabilized = frame.image.clone();
             cv::Mat curr_gray;
             cv::cvtColor(frame.image, curr_gray, cv::COLOR_BGR2GRAY);
@@ -568,6 +559,15 @@ int main() {
             ++logged_frames;
             if ((logged_frames % 30U) == 0U) {
                 runtime_log.flush();
+            }
+
+            if (config.http.enable && frame_cache.has_consumers()) {
+                const cv::Mat mjpeg_source = stabilized.isContinuous() ? stabilized : stabilized.clone();
+                frame_cache.update_bgr_frame(mjpeg_source.data,
+                                             mjpeg_source.total() * mjpeg_source.elemSize(),
+                                             mjpeg_source.cols,
+                                             mjpeg_source.rows,
+                                             true);
             }
 
             rtsp_server.push_raw(frame, frame.image);

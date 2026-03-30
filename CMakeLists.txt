@@ -197,6 +197,21 @@ target_link_libraries(calib PRIVATE
   wiringPi
 )
 
+add_executable(rtsp_meta_forward
+  src/rtsp_meta_forward.cpp
+)
+
+target_include_directories(rtsp_meta_forward PRIVATE
+  ${MOSQUITTO_INCLUDE_DIRS}
+)
+target_compile_options(rtsp_meta_forward PRIVATE
+  ${MOSQUITTO_CFLAGS_OTHER}
+)
+target_link_libraries(rtsp_meta_forward PRIVATE
+  ${MOSQUITTO_LIBRARIES}
+  Threads::Threads
+)
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config_template.ini")
   configure_file(config_template.ini config_template.ini COPYONLY)
 endif()

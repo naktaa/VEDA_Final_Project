@@ -332,6 +332,21 @@ void register_service_routes(ServerType& server, RouteContext* ctx) {
             });
     });
 
+    server.Get("/events/state", [ctx](const httplib::Request&, httplib::Response& res) {
+        uint64_t request_id = 0;
+        {
+            std::lock_guard<std::mutex> lock(ctx->event_state->mutex);
+            request_id = ctx->event_state->vr_session_toggle_request_id;
+        }
+
+        json body = {
+            {"request_id", request_id},
+        };
+        res.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res.set_header("Pragma", "no-cache");
+        res.set_content(body.dump(), "application/json");
+    });
+
     server.Get("/stream.mjpg", [ctx](const httplib::Request&, httplib::Response& res) {
         ctx->frame_cache->add_consumer();
         res.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");

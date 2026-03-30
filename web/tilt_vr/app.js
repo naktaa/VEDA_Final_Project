@@ -38,6 +38,7 @@ let vrModeRecoveryInFlight = false;
 let vrSessionStarting = false;
 let eventSource = null;
 let lastVrSessionToggleRequestId = 0;
+let eventStatePollTimer = null;
 let overlayStateInterval = null;
 let minimapConfig = null;
 let latestOverlayState = {
@@ -574,6 +575,22 @@ async function handleVrSessionToggleRequest(requestId) {
   await startVrSession("controller");
 }
 
+async function pollEventStateOnce() {
+  try {
+    const res = await fetch("/events/state", { cache: "no-store" });
+    if (!res.ok) {
+      return;
+    }
+
+    const body = await res.json();
+    const requestId = Number(body.request_id) || 0;
+    if (requestId > lastVrSessionToggleRequestId) {
+      await handleVrSessionToggleRequest(requestId);
+    }
+  } catch (_) {
+  }
+}
+
 function ensureEventStream() {
   if (eventSource) {
     return;
@@ -590,6 +607,16 @@ function ensureEventStream() {
       setStatus("Controller toggle event parse error.");
     }
   });
+}
+
+function ensureEventStatePolling() {
+  if (eventStatePollTimer) {
+    return;
+  }
+
+  eventStatePollTimer = setInterval(() => {
+    pollEventStateOnce().catch(() => {});
+  }, 300);
 }
 
 function resizeCanvasToDisplaySize(canvas) {
@@ -961,6 +988,7 @@ drawMinimap();
 initializeMode();
 initializeMinimap().catch(() => {});
 ensureEventStream();
+ensureEventStatePolling();
 window.addEventListener("resize", () => {
   if (connected) {
     resizeCanvasToDisplaySize(leftCanvas);
@@ -984,6 +1012,10 @@ scrollBtn.addEventListener("click", scrollToVideo);
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 window.addEventListener("beforeunload", () => {
   stopOverlayPolling();
+  if (eventStatePollTimer) {
+    clearInterval(eventStatePollTimer);
+    eventStatePollTimer = null;
+  }
   if (eventSource) {
     eventSource.close();
     eventSource = null;

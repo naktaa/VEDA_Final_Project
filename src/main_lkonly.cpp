@@ -349,7 +349,9 @@ int main() {
                                                          auto_controller.cancel_goal(reason);
                                                      },
                                                      [&]() {
-                                                         return ptz_controller.set_mode(PtzMode::kVr);
+                                                         const bool mode_ok = ptz_controller.set_mode(PtzMode::kVr);
+                                                         http_server.publish_vr_connect_request();
+                                                         return mode_ok || config.http.enable;
                                                      },
                                                      [&]() {
                                                          return ptz_controller.zero_vr_reference();
@@ -407,7 +409,8 @@ int main() {
                 frame_cache.update_bgr_frame(mjpeg_source.data,
                                              mjpeg_source.total() * mjpeg_source.elemSize(),
                                              mjpeg_source.cols,
-                                             mjpeg_source.rows);
+                                             mjpeg_source.rows,
+                                             true);
             }
 
             cv::Mat stabilized = frame.image.clone();

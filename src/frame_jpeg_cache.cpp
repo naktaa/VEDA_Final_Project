@@ -10,7 +10,8 @@
 void FrameJpegCache::update_bgr_frame(const unsigned char* data,
                                       std::size_t bytes,
                                       int width,
-                                      int height) {
+                                      int height,
+                                      bool swap_rb) {
     if (!data || width <= 0 || height <= 0) {
         return;
     }
@@ -24,6 +25,11 @@ void FrameJpegCache::update_bgr_frame(const unsigned char* data,
     // OpenCV Mat expects a mutable pointer, but we only read from the capture buffer here.
     cv::Mat frame(height, width, CV_8UC3, const_cast<unsigned char*>(data));
     cv::Mat encoded_source = frame.isContinuous() ? frame : frame.clone();
+    if (swap_rb) {
+        cv::Mat swapped;
+        cv::cvtColor(encoded_source, swapped, cv::COLOR_BGR2RGB);
+        encoded_source = std::move(swapped);
+    }
     const float width_scale =
         static_cast<float>(stream_config::DEFAULT_MJPEG_WIDTH) /
         static_cast<float>(encoded_source.cols);

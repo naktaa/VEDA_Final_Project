@@ -8,7 +8,11 @@
 
 class FrameJpegCache {
 public:
-    void update_bgr_frame(const unsigned char* data, std::size_t bytes, int width, int height);
+    void update_bgr_frame(const unsigned char* data,
+                          std::size_t bytes,
+                          int width,
+                          int height,
+                          bool swap_rb = false);
     bool latest_jpeg(std::vector<unsigned char>& out, uint64_t* frame_counter = nullptr) const;
     void add_consumer();
     void remove_consumer();

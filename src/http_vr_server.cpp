@@ -1,10 +1,13 @@
 #include "http_vr_server.hpp"
 
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -24,6 +27,7 @@ using json = nlohmann::json;
 
 const char* kManualMode = "manual";
 const char* kVrMode = "vr";
+constexpr int kSseHeartbeatMs = 2000;
 
 struct ListenerState {
     std::thread thread;
@@ -31,12 +35,21 @@ struct ListenerState {
     std::atomic<bool> listen_result{false};
 };
 
+struct EventState;
+
 struct RouteContext {
     HttpVrConfig config;
     std::atomic<bool>* app_running = nullptr;
     FrameJpegCache* frame_cache = nullptr;
     PtzController* ptz = nullptr;
     HttpVrServer::OverlayStateProvider overlay_state_provider;
+    EventState* event_state = nullptr;
+};
+
+struct EventState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    uint64_t vr_connect_request_id = 0;
 };
 
 bool parse_ptz_mode(const std::string& mode_text, PtzMode& mode) {
@@ -150,6 +163,7 @@ void register_redirect_routes(ServerType& server, int https_port) {
 
 struct HttpVrServer::Impl {
     RouteContext ctx;
+    EventState event_state;
 
     std::unique_ptr<httplib::Server> http_server;
     ListenerState http_listener;
@@ -261,6 +275,63 @@ void register_service_routes(ServerType& server, RouteContext* ctx) {
         }
     });
 
+    server.Get("/events", [ctx](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res.set_header("Pragma", "no-cache");
+        res.set_header("Connection", "keep-alive");
+        res.set_header("X-Accel-Buffering", "no");
+        res.set_chunked_content_provider(
+            "text/event-stream; charset=utf-8",
+            [ctx](size_t, httplib::DataSink& sink) {
+                uint64_t last_sent_request = 0;
+                {
+                    std::lock_guard<std::mutex> lock(ctx->event_state->mutex);
+                    last_sent_request = ctx->event_state->vr_connect_request_id;
+                }
+
+                auto next_heartbeat =
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds(kSseHeartbeatMs);
+
+                while (ctx->app_running->load()) {
+                    uint64_t pending_request = last_sent_request;
+                    {
+                        std::unique_lock<std::mutex> lock(ctx->event_state->mutex);
+                        ctx->event_state->cv.wait_until(lock, next_heartbeat, [&]() {
+                            return !ctx->app_running->load() ||
+                                   ctx->event_state->vr_connect_request_id > last_sent_request;
+                        });
+                        pending_request = ctx->event_state->vr_connect_request_id;
+                    }
+
+                    if (!ctx->app_running->load()) {
+                        return false;
+                    }
+
+                    if (pending_request > last_sent_request) {
+                        std::ostringstream event;
+                        event << "event: vr_connect_request\n"
+                              << "data: {\"request_id\":" << pending_request << "}\n\n";
+                        const std::string payload = event.str();
+                        if (!sink.write(payload.data(), payload.size())) {
+                            return false;
+                        }
+                        last_sent_request = pending_request;
+                        next_heartbeat =
+                            std::chrono::steady_clock::now() + std::chrono::milliseconds(kSseHeartbeatMs);
+                        continue;
+                    }
+
+                    static const std::string heartbeat = ": keepalive\n\n";
+                    if (!sink.write(heartbeat.data(), heartbeat.size())) {
+                        return false;
+                    }
+                    next_heartbeat =
+                        std::chrono::steady_clock::now() + std::chrono::milliseconds(kSseHeartbeatMs);
+                }
+                return false;
+            });
+    });
+
     server.Get("/stream.mjpg", [ctx](const httplib::Request&, httplib::Response& res) {
         ctx->frame_cache->add_consumer();
         res.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
@@ -366,6 +437,7 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     impl->ctx.frame_cache = &frame_cache;
     impl->ctx.ptz = &ptz_controller;
     impl->ctx.overlay_state_provider = std::move(overlay_state_provider);
+    impl->ctx.event_state = &impl->event_state;
 
     const bool https_requested = cfg.https_enable;
     bool https_active = false;
@@ -448,10 +520,24 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     return true;
 }
 
+void HttpVrServer::publish_vr_connect_request() {
+    if (!impl_) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(impl_->event_state.mutex);
+        ++impl_->event_state.vr_connect_request_id;
+    }
+    impl_->event_state.cv.notify_all();
+}
+
 void HttpVrServer::stop() {
     if (!impl_) {
         return;
     }
+
+    impl_->event_state.cv.notify_all();
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     stop_listener(impl_->https_server.get(), impl_->https_listener);

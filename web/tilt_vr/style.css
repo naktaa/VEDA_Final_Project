@@ -54,6 +54,11 @@ button {
   padding: 10px 14px;
 }
 
+#permissionBtn {
+  border-color: rgba(83, 208, 255, 0.75);
+  background: linear-gradient(160deg, #286180, #14465d);
+}
+
 #status,
 #imu,
 #imuAck {

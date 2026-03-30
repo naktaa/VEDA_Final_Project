@@ -6,6 +6,7 @@ const connectBtn = document.getElementById("connectBtn");
 const centerBtn = document.getElementById("centerBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
 const scrollBtn = document.getElementById("scrollBtn");
+const permissionBtn = document.getElementById("permissionBtn");
 const vrStage = document.querySelector(".vr-stage");
 
 const streamSource = document.getElementById("streamSource");
@@ -20,6 +21,8 @@ let orientationHandler = null;
 let sendInterval = null;
 let imuAckInterval = null;
 let connected = false;
+let imuPermissionGranted = false;
+let sensorArmed = false;
 let currentMode = "manual";
 let latestRaw = { pitch: 0, roll: 0, yaw: 0 };
 let latestQuaternion = { x: 0, y: 0, z: 0, w: 1 };
@@ -32,6 +35,9 @@ let orientationEventCount = 0;
 let imuSendInFlight = false;
 let pendingInitialZero = false;
 let vrModeRecoveryInFlight = false;
+let vrSessionStarting = false;
+let eventSource = null;
+let lastVrConnectRequestId = 0;
 let overlayStateInterval = null;
 let minimapConfig = null;
 let latestOverlayState = {
@@ -62,6 +68,14 @@ function setMode(mode) {
 
 function renderConnectButton() {
   connectBtn.textContent = connected ? "Stop VR + Manual" : "Connect + Start VR";
+}
+
+function renderPermissionButton() {
+  permissionBtn.textContent = sensorArmed ? "IMU Ready" : "Allow IMU";
+}
+
+function isImuReady() {
+  return imuPermissionGranted && sensorArmed;
 }
 
 function getPitchRollYaw(evt) {
@@ -210,6 +224,38 @@ async function ensureOrientationPermission() {
   }
 }
 
+async function grantImuPermission() {
+  if (isImuReady()) {
+    setStatus("IMU ready. Waiting for VR request...");
+    renderPermissionButton();
+    return;
+  }
+
+  permissionBtn.disabled = true;
+  setStatus("Requesting IMU permission...");
+
+  try {
+    if (!window.isSecureContext) {
+      setStatus(waitingForImuStatus());
+    }
+
+    await ensureOrientationPermission();
+    imuPermissionGranted = true;
+    if (!sensorArmed) {
+      hasSensorData = false;
+      orientationEventCount = 0;
+      startOrientationFeed();
+    }
+    renderPermissionButton();
+    imuEl.textContent = hasSensorData ? imuEl.textContent : "IMU: waiting for phone sensor";
+    setStatus(hasSensorData ? "IMU ready. Waiting for VR request..." : waitingForImuStatus());
+  } catch (err) {
+    setStatus(`IMU permission error: ${err.message}`);
+  } finally {
+    permissionBtn.disabled = false;
+  }
+}
+
 async function fetchPtzMode() {
   const res = await fetch("/ptz/mode");
   if (!res.ok) {
@@ -252,6 +298,11 @@ async function requestVrModeRecovery() {
 }
 
 function startOrientationFeed() {
+  if (orientationHandler) {
+    sensorArmed = true;
+    return;
+  }
+
   orientationHandler = (evt) => {
     orientationEventCount += 1;
     const hasFiniteAngles =
@@ -284,6 +335,13 @@ function startOrientationFeed() {
   };
 
   window.addEventListener("deviceorientation", orientationHandler, true);
+  sensorArmed = true;
+}
+
+function startImuPosting() {
+  if (sendInterval) {
+    return;
+  }
 
   sendInterval = setInterval(() => {
     if (!connected || currentMode !== "vr" || !hasSensorData || imuSendInFlight) {
@@ -312,6 +370,23 @@ function startOrientationFeed() {
   }, imuSendIntervalMs);
 }
 
+function stopImuPosting() {
+  if (sendInterval) {
+    clearInterval(sendInterval);
+    sendInterval = null;
+  }
+  imuSendInFlight = false;
+}
+
+function primeSessionZeroCalibrate() {
+  if (hasSensorData) {
+    pendingInitialZero = false;
+    zeroCalibrate();
+    return;
+  }
+  pendingInitialZero = true;
+}
+
 async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
   connectBtn.disabled = true;
 
@@ -325,9 +400,8 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
     setMode("manual");
   } finally {
     pendingInitialZero = false;
-    imuSendInFlight = false;
     vrModeRecoveryInFlight = false;
-    stopOrientationFeed();
+    stopImuPosting();
     stopRenderLoop();
     connected = false;
     renderConnectButton();
@@ -336,15 +410,27 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    if (sensorCheckTimer) {
+      clearTimeout(sensorCheckTimer);
+      sensorCheckTimer = null;
+    }
     imuAckEl.textContent = "Server IMU: -";
-    imuEl.textContent = "IMU: -";
     clearCanvases();
-    setStatus(statusMessage);
+    stopImuAckPolling();
+    const showReadyStatus =
+      statusMessage === "Idle" || statusMessage === "Manual mode active";
+    setStatus(
+      showReadyStatus && isImuReady() ? "IMU ready. Manual mode." : statusMessage
+    );
     connectBtn.disabled = false;
   }
 }
 
 function startImuAckPolling() {
+  if (imuAckInterval) {
+    return;
+  }
+
   imuAckInterval = setInterval(async () => {
     if (!connected) {
       return;
@@ -374,23 +460,134 @@ function startImuAckPolling() {
   }, 500);
 }
 
+function stopImuAckPolling() {
+  if (imuAckInterval) {
+    clearInterval(imuAckInterval);
+    imuAckInterval = null;
+  }
+}
+
 function stopOrientationFeed() {
   if (orientationHandler) {
     window.removeEventListener("deviceorientation", orientationHandler, true);
     orientationHandler = null;
   }
-  if (sendInterval) {
-    clearInterval(sendInterval);
-    sendInterval = null;
-  }
-  if (imuAckInterval) {
-    clearInterval(imuAckInterval);
-    imuAckInterval = null;
-  }
+  sensorArmed = false;
+  stopImuPosting();
+  stopImuAckPolling();
   if (sensorCheckTimer) {
     clearTimeout(sensorCheckTimer);
     sensorCheckTimer = null;
   }
+}
+
+async function startVrSession(trigger = "manual") {
+  if (!isImuReady()) {
+    setStatus("Tap Allow IMU first.");
+    return;
+  }
+
+  if (vrSessionStarting) {
+    return;
+  }
+
+  if (connected) {
+    await setPtzMode("vr");
+    setStatus(trigger === "controller" ? "Controller requested VR. VR mode active." : "VR mode active.");
+    return;
+  }
+
+  vrSessionStarting = true;
+  connectBtn.disabled = true;
+
+  try {
+    primeSessionZeroCalibrate();
+    imuEl.textContent = hasSensorData ? imuEl.textContent : "IMU: waiting for phone sensor";
+    if (!hasSensorData) {
+      setStatus(waitingForImuStatus());
+    }
+
+    const health = await fetch("/health");
+    if (!health.ok) {
+      throw new Error(`Server not ready: ${health.status}`);
+    }
+
+    connected = true;
+    renderConnectButton();
+    startImuPosting();
+    startImuAckPolling();
+
+    if (sensorCheckTimer) {
+      clearTimeout(sensorCheckTimer);
+    }
+    sensorCheckTimer = setTimeout(() => {
+      if (connected && !hasSensorData) {
+        setStatus(waitingForImuStatus(true));
+      }
+    }, 3000);
+
+    const token = Date.now();
+    streamSource.src = `/stream.mjpg?t=${token}`;
+    startRenderLoop();
+    await setPtzMode("vr");
+    setStatus(
+      hasSensorData
+        ? (trigger === "controller"
+            ? "Controller requested VR. Connecting video stream..."
+            : "VR mode active. Connecting video stream...")
+        : waitingForImuStatus()
+    );
+  } catch (err) {
+    await disconnect({
+      releaseMode: true,
+      statusMessage: `Error: ${err.message}`,
+    });
+  } finally {
+    vrSessionStarting = false;
+    connectBtn.disabled = false;
+  }
+}
+
+async function handleVrConnectRequest(requestId) {
+  if (requestId <= lastVrConnectRequestId) {
+    return;
+  }
+  lastVrConnectRequestId = requestId;
+
+  if (!isImuReady()) {
+    setStatus("Controller requested VR. Tap Allow IMU first.");
+    return;
+  }
+
+  if (connected) {
+    try {
+      await setPtzMode("vr");
+      setStatus("Controller requested VR. VR mode active.");
+    } catch (_) {
+      setStatus("Controller VR request failed.");
+    }
+    return;
+  }
+
+  await startVrSession("controller");
+}
+
+function ensureEventStream() {
+  if (eventSource) {
+    return;
+  }
+
+  eventSource = new EventSource("/events");
+  eventSource.addEventListener("vr_connect_request", (evt) => {
+    try {
+      const payload = JSON.parse(evt.data || "{}");
+      handleVrConnectRequest(Number(payload.request_id) || 0).catch(() => {
+        setStatus("Controller VR request failed.");
+      });
+    } catch (_) {
+      setStatus("Controller VR event parse error.");
+    }
+  });
 }
 
 function resizeCanvasToDisplaySize(canvas) {
@@ -703,54 +900,12 @@ async function connect() {
     return;
   }
 
-  connectBtn.disabled = true;
-  setStatus("Requesting sensor permission...");
-
-  try {
-    imuEl.textContent = "IMU: waiting for phone sensor";
-    if (!window.isSecureContext) {
-      setStatus(waitingForImuStatus());
-    }
-    await ensureOrientationPermission();
-
-    hasSensorData = false;
-    orientationEventCount = 0;
-    pendingInitialZero = true;
-    startOrientationFeed();
-    setStatus(waitingForImuStatus());
-
-    const health = await fetch("/health");
-    if (!health.ok) {
-      throw new Error(`Server not ready: ${health.status}`);
-    }
-
-    connected = true;
-    renderConnectButton();
-    startImuAckPolling();
-
-    sensorCheckTimer = setTimeout(() => {
-      if (connected && !hasSensorData) {
-        setStatus(waitingForImuStatus(true));
-      }
-    }, 3000);
-
-    const token = Date.now();
-    streamSource.src = `/stream.mjpg?t=${token}`;
-    startRenderLoop();
-    await setPtzMode("vr");
-    setStatus(
-      hasSensorData
-        ? "VR mode active. Connecting video stream..."
-        : waitingForImuStatus()
-    );
-  } catch (err) {
-    await disconnect({
-      releaseMode: true,
-      statusMessage: `Error: ${err.message}`,
-    });
-  } finally {
-    connectBtn.disabled = false;
+  if (!isImuReady()) {
+    setStatus("Tap Allow IMU first.");
+    return;
   }
+
+  await startVrSession("manual");
 }
 
 async function initializeMode() {
@@ -760,6 +915,7 @@ async function initializeMode() {
     setMode("manual");
   }
   renderConnectButton();
+  renderPermissionButton();
 }
 
 async function initializeMinimap() {
@@ -802,6 +958,7 @@ bindStreamEvents();
 drawMinimap();
 initializeMode();
 initializeMinimap().catch(() => {});
+ensureEventStream();
 window.addEventListener("resize", () => {
   if (connected) {
     resizeCanvasToDisplaySize(leftCanvas);
@@ -814,12 +971,22 @@ connectBtn.addEventListener("click", () => {
     setStatus("Connect error");
   });
 });
+permissionBtn.addEventListener("click", () => {
+  grantImuPermission().catch(() => {
+    setStatus("IMU permission error");
+  });
+});
 centerBtn.addEventListener("click", zeroCalibrate);
 fullscreenBtn.addEventListener("click", toggleFullscreen);
 scrollBtn.addEventListener("click", scrollToVideo);
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 window.addEventListener("beforeunload", () => {
   stopOverlayPolling();
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  stopOrientationFeed();
   if (connected) {
     fetch("/ptz/mode", {
       method: "POST",

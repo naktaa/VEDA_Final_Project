@@ -37,7 +37,7 @@ let pendingInitialZero = false;
 let vrModeRecoveryInFlight = false;
 let vrSessionStarting = false;
 let eventSource = null;
-let lastVrConnectRequestId = 0;
+let lastVrSessionToggleRequestId = 0;
 let overlayStateInterval = null;
 let minimapConfig = null;
 let latestOverlayState = {
@@ -548,11 +548,11 @@ async function startVrSession(trigger = "manual") {
   }
 }
 
-async function handleVrConnectRequest(requestId) {
-  if (requestId <= lastVrConnectRequestId) {
+async function handleVrSessionToggleRequest(requestId) {
+  if (requestId <= lastVrSessionToggleRequestId) {
     return;
   }
-  lastVrConnectRequestId = requestId;
+  lastVrSessionToggleRequestId = requestId;
 
   if (!isImuReady()) {
     setStatus("Controller requested VR. Tap Allow IMU first.");
@@ -561,10 +561,12 @@ async function handleVrConnectRequest(requestId) {
 
   if (connected) {
     try {
-      await setPtzMode("vr");
-      setStatus("Controller requested VR. VR mode active.");
+      await disconnect({
+        releaseMode: true,
+        statusMessage: "Controller requested stop. Manual mode active.",
+      });
     } catch (_) {
-      setStatus("Controller VR request failed.");
+      setStatus("Controller stop request failed.");
     }
     return;
   }
@@ -578,14 +580,14 @@ function ensureEventStream() {
   }
 
   eventSource = new EventSource("/events");
-  eventSource.addEventListener("vr_connect_request", (evt) => {
+  eventSource.addEventListener("vr_session_toggle", (evt) => {
     try {
       const payload = JSON.parse(evt.data || "{}");
-      handleVrConnectRequest(Number(payload.request_id) || 0).catch(() => {
-        setStatus("Controller VR request failed.");
+      handleVrSessionToggleRequest(Number(payload.request_id) || 0).catch(() => {
+        setStatus("Controller toggle request failed.");
       });
     } catch (_) {
-      setStatus("Controller VR event parse error.");
+      setStatus("Controller toggle event parse error.");
     }
   });
 }

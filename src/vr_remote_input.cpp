@@ -292,7 +292,7 @@ private:
                 const bool handled = on_side_button_ && on_side_button_();
                 std::fprintf(stderr,
                              "[VR] side button -> %s\n",
-                             handled ? "ptz vr mode" : "ptz vr unavailable");
+                             handled ? "vr session toggle" : "vr session unavailable");
                 std::fflush(stderr);
             }
             return;

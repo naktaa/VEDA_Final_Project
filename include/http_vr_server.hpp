@@ -44,7 +44,7 @@ public:
                FrameJpegCache& frame_cache,
                PtzController& ptz_controller,
                OverlayStateProvider overlay_state_provider = {});
-    void publish_vr_connect_request();
+    void publish_vr_session_toggle_request();
     void stop();
 
 private:

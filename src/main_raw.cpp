@@ -147,9 +147,8 @@ int main() {
                                                      running,
                                                      std::function<void(const char*)>{},
                                                      [&]() {
-                                                         const bool mode_ok = ptz_controller.set_mode(PtzMode::kVr);
-                                                         http_server.publish_vr_connect_request();
-                                                         return mode_ok || config.http.enable;
+                                                         http_server.publish_vr_session_toggle_request();
+                                                         return config.http.enable;
                                                      },
                                                      [&]() {
                                                          return ptz_controller.zero_vr_reference();

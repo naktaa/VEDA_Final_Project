@@ -49,7 +49,7 @@ struct RouteContext {
 struct EventState {
     std::mutex mutex;
     std::condition_variable cv;
-    uint64_t vr_connect_request_id = 0;
+    uint64_t vr_session_toggle_request_id = 0;
 };
 
 bool parse_ptz_mode(const std::string& mode_text, PtzMode& mode) {
@@ -286,7 +286,7 @@ void register_service_routes(ServerType& server, RouteContext* ctx) {
                 uint64_t last_sent_request = 0;
                 {
                     std::lock_guard<std::mutex> lock(ctx->event_state->mutex);
-                    last_sent_request = ctx->event_state->vr_connect_request_id;
+                    last_sent_request = ctx->event_state->vr_session_toggle_request_id;
                 }
 
                 auto next_heartbeat =
@@ -298,9 +298,9 @@ void register_service_routes(ServerType& server, RouteContext* ctx) {
                         std::unique_lock<std::mutex> lock(ctx->event_state->mutex);
                         ctx->event_state->cv.wait_until(lock, next_heartbeat, [&]() {
                             return !ctx->app_running->load() ||
-                                   ctx->event_state->vr_connect_request_id > last_sent_request;
+                                   ctx->event_state->vr_session_toggle_request_id > last_sent_request;
                         });
-                        pending_request = ctx->event_state->vr_connect_request_id;
+                        pending_request = ctx->event_state->vr_session_toggle_request_id;
                     }
 
                     if (!ctx->app_running->load()) {
@@ -309,7 +309,7 @@ void register_service_routes(ServerType& server, RouteContext* ctx) {
 
                     if (pending_request > last_sent_request) {
                         std::ostringstream event;
-                        event << "event: vr_connect_request\n"
+                        event << "event: vr_session_toggle\n"
                               << "data: {\"request_id\":" << pending_request << "}\n\n";
                         const std::string payload = event.str();
                         if (!sink.write(payload.data(), payload.size())) {
@@ -520,14 +520,14 @@ bool HttpVrServer::start(const HttpVrConfig& cfg,
     return true;
 }
 
-void HttpVrServer::publish_vr_connect_request() {
+void HttpVrServer::publish_vr_session_toggle_request() {
     if (!impl_) {
         return;
     }
 
     {
         std::lock_guard<std::mutex> lock(impl_->event_state.mutex);
-        ++impl_->event_state.vr_connect_request_id;
+        ++impl_->event_state.vr_session_toggle_request_id;
     }
     impl_->event_state.cv.notify_all();
 }

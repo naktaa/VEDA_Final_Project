@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenCV REQUIRED)
+find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MOSQ REQUIRED libmosquitto)
 
@@ -60,4 +61,20 @@ target_include_directories(calib_camera PRIVATE
 
 target_link_libraries(calib_camera PRIVATE
     ${OpenCV_LIBS}
+)
+
+add_executable(rtsp_meta_forward
+    src/rtsp_meta_forward.cpp
+)
+
+target_include_directories(rtsp_meta_forward PRIVATE
+    ${MOSQ_INCLUDE_DIRS}
+)
+
+target_compile_options(rtsp_meta_forward PRIVATE ${MOSQ_CFLAGS_OTHER})
+target_link_directories(rtsp_meta_forward PRIVATE ${MOSQ_LIBRARY_DIRS})
+
+target_link_libraries(rtsp_meta_forward PRIVATE
+    ${MOSQ_LIBRARIES}
+    Threads::Threads
 )

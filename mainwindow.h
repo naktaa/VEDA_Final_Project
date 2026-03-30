@@ -83,6 +83,21 @@ public:
         QDateTime ts;
     };
 
+    struct AutoHumanGoalTrack {
+        QRect bbox;
+        QSize frameSize;
+        int consecutiveDetections = 0;
+        QDateTime lastSeenUtc;
+        QDateTime lastPublishedUtc;
+    };
+
+    enum class GoalPublishResult {
+        Success,
+        PatrolDisabled,
+        PublisherMissing,
+        PublishFailed
+    };
+
 public:
     explicit MainWindow(const QString& userId = "", QWidget *parent = nullptr);
     ~MainWindow() override;
@@ -194,6 +209,19 @@ private:
     void updateHeaderSummary();
     void refreshEventItemWidget(QListWidgetItem* item);
     QWidget* buildEventItemWidget(QListWidgetItem* item) const;
+    bool tryMapImagePointToWorld(const QPointF& imagePos,
+                                 const QSize& sourceFrameSize,
+                                 QPointF& worldPos,
+                                 QString* error = nullptr) const;
+    bool isWorldPointWithinOperationalBounds(const QPointF& worldPos) const;
+    GoalPublishResult publishRcGoalWorld(const QPointF& worldPos);
+    void pruneAutoHumanGoalTracks(const QDateTime& nowUtc);
+    void updateAutoHumanGoalTrack(const QString& key,
+                                  const QRect& bbox,
+                                  const QSize& sourceFrameSize,
+                                  const QDateTime& nowUtc);
+    void clearAutoHumanGoalTrack(const QString& key);
+    void maybePublishAutoHumanGoal(const QDateTime& nowUtc);
 
 private:
     Ui::MainWindow* ui = nullptr;
@@ -256,6 +284,8 @@ private:
     QHash<QString, QDateTime> m_humanBoxSeenUtc;
     QDateTime m_lastHumanBoxRenderUtc;
     QDateTime m_lastHumanEventListUtc;
+    QHash<QString, AutoHumanGoalTrack> m_autoHumanGoalTracks;
+    QDateTime m_lastAutoHumanGoalLogUtc;
     bool m_ruviewPresent = false;
     double m_ruviewConfidence = 0.0;
     int m_ruviewActiveNodes = 0;

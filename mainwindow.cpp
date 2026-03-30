@@ -76,6 +76,10 @@ constexpr double kHumanBoxOffsetXRatio = 0.0;
 constexpr double kHumanBoxOffsetYRatio = 0.035;
 constexpr double kHumanBoxPerspectiveOffsetXRatio = 0.0;
 constexpr double kHumanBoxSmoothingAlpha = 0.35;
+constexpr qint64 kHumanAutoGoalTrackWindowMs = 1000;
+constexpr int kHumanAutoGoalStableCount = 3;
+constexpr qint64 kHumanAutoGoalPublishCooldownMs = 2000;
+constexpr qint64 kHumanAutoGoalLogThrottleMs = 1500;
 
 QString normalizeZoneKey(const QString& value)
 {
@@ -164,6 +168,11 @@ QRect smoothHumanBox(const QRectF& previous, const QRect& current)
     const double w = previous.width() + (cur.width() - previous.width()) * a;
     const double h = previous.height() + (cur.height() - previous.height()) * a;
     return QRectF(x, y, w, h).toAlignedRect();
+}
+
+QPointF humanGoalAnchor(const QRect& bbox)
+{
+    return QPointF((bbox.left() + bbox.right()) * 0.5, bbox.bottom());
 }
 
 QSize chooseDetectionSourceSize(const QSize& minBounds,
@@ -3555,15 +3564,15 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         ev.src.compare("cctv", Qt::CaseInsensitive) == 0 &&
         ev.topic.compare("ObjectDetection", Qt::CaseInsensitive) == 0 &&
         ev.objectType.compare("Human", Qt::CaseInsensitive) == 0;
-    if (isHumanDetectionEvent && !m_humanBoxEnabled) {
-        return;
-    }
+    const QDateTime humanNow = isHumanDetectionEvent ? QDateTime::currentDateTimeUtc() : QDateTime();
+    QString humanTrackKey;
+    QRect acceptedHumanBox;
+    QSize acceptedHumanGoalSourceSize;
 
     if (m_humanBoxOverlay) {
         const bool isHumanBoxEvent = isHumanDetectionEvent;
 
         if (isHumanBoxEvent) {
-            const QDateTime now = QDateTime::currentDateTimeUtc();
             const QString key = !ev.objectId.isEmpty()
                 ? ev.objectId
                 : QString("%1_%2_%3_%4_%5")
@@ -3596,7 +3605,11 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
                     const QRect nextBox = smoothHumanBox(m_humanBoxSmoothed.value(key), ev.bbox);
                     m_humanBoxSmoothed.insert(key, QRectF(nextBox));
                     m_humanBoxes.insert(key, nextBox);
-                    m_humanBoxSeenUtc.insert(key, now);
+                    m_humanBoxSeenUtc.insert(key, humanNow);
+                    humanTrackKey = key;
+                    acceptedHumanBox = nextBox;
+                    acceptedHumanGoalSourceSize =
+                        explicitSourceSize.isValid() ? explicitSourceSize : videoFrameSize;
                 } else {
                     m_humanBoxes.remove(key);
                     m_humanBoxSmoothed.remove(key);
@@ -3610,7 +3623,7 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
 
             QStringList staleKeys;
             for (auto it = m_humanBoxSeenUtc.cbegin(); it != m_humanBoxSeenUtc.cend(); ++it) {
-                if (it.value().msecsTo(now) > kHumanBoxKeepAliveMs) staleKeys.push_back(it.key());
+                if (it.value().msecsTo(humanNow) > kHumanBoxKeepAliveMs) staleKeys.push_back(it.key());
             }
             for (const QString& staleKey : staleKeys) {
                 m_humanBoxSeenUtc.remove(staleKey);
@@ -3636,7 +3649,7 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
 
             const bool shouldRenderNow =
                 !m_lastHumanBoxRenderUtc.isValid() ||
-                m_lastHumanBoxRenderUtc.msecsTo(now) >= kHumanBoxRenderThrottleMs ||
+                m_lastHumanBoxRenderUtc.msecsTo(humanNow) >= kHumanBoxRenderThrottleMs ||
                 !m_humanBoxEnabled ||
                 boxes.isEmpty();
             if (shouldRenderNow) {
@@ -3653,9 +3666,18 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
                     );
                 }
                 m_humanBoxOverlay->setHumanBoxes(boxes, m_humanBoxEnabled && !boxes.isEmpty());
-                m_lastHumanBoxRenderUtc = now;
+                m_lastHumanBoxRenderUtc = humanNow;
             }
         }
+    }
+
+    if (isHumanDetectionEvent) {
+        if (!humanTrackKey.isEmpty() && acceptedHumanBox.isValid()) {
+            updateAutoHumanGoalTrack(humanTrackKey, acceptedHumanBox, acceptedHumanGoalSourceSize, humanNow);
+        } else if (!ev.objectId.isEmpty()) {
+            clearAutoHumanGoalTrack(ev.objectId);
+        }
+        maybePublishAutoHumanGoal(humanNow);
     }
 
     if (ev.messageType.compare(kVisionPoseBridgeStatusType, Qt::CaseInsensitive) == 0 && ev.hasEnabled) {
@@ -3696,7 +3718,7 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
     }
 
     if (isHumanDetectionEvent) {
-        const QDateTime now = QDateTime::currentDateTimeUtc();
+        const QDateTime now = humanNow;
         if (m_lastHumanEventListUtc.isValid() &&
             m_lastHumanEventListUtc.msecsTo(now) < kHumanEventListThrottleMs) {
             return;
@@ -4239,11 +4261,97 @@ void MainWindow::onMiniMapNodeMoved(const QString& id, const QPointF& worldPos)
     }
 }
 
-void MainWindow::onMiniMapWorldClicked(const QPointF& worldPos)
+bool MainWindow::tryMapImagePointToWorld(const QPointF& imagePos,
+                                         const QSize& sourceFrameSize,
+                                         QPointF& worldPos,
+                                         QString* error) const
+{
+    const auto fail = [&](const QString& reason) -> bool {
+        if (error) *error = reason;
+        return false;
+    };
+
+    if (!m_hasHomography) {
+        return fail("homography unavailable");
+    }
+
+    auto* video = ui ? ui->labelCentralView : nullptr;
+    bool ok = false;
+
+    if (m_homographyFromMqttImage) {
+        QPointF normalizedPoint = imagePos;
+        const QSize currentFrameSize = video ? video->currentFrameSize() : QSize();
+        if (sourceFrameSize.isValid() && currentFrameSize.isValid() && sourceFrameSize != currentFrameSize) {
+            normalizedPoint.setX(imagePos.x() * currentFrameSize.width() / static_cast<double>(sourceFrameSize.width()));
+            normalizedPoint.setY(imagePos.y() * currentFrameSize.height() / static_cast<double>(sourceFrameSize.height()));
+        }
+
+        const QTransform hImgToWorld = m_hWorldToImg.inverted(&ok);
+        if (!ok) return fail("H inversion failed");
+        worldPos = hImgToWorld.map(normalizedPoint);
+    } else {
+        if (!video) return fail("video widget unavailable");
+
+        const QSize currentFrameSize = video->currentFrameSize();
+        const QRect drawRect = video->videoDisplayRect();
+        if (!currentFrameSize.isValid() || currentFrameSize.width() <= 0 || currentFrameSize.height() <= 0) {
+            return fail("video frame size unavailable");
+        }
+        if (!drawRect.isValid() || drawRect.width() <= 0 || drawRect.height() <= 0) {
+            return fail("video display rect unavailable");
+        }
+
+        QPointF normalizedPoint = imagePos;
+        if (sourceFrameSize.isValid() && sourceFrameSize != currentFrameSize) {
+            normalizedPoint.setX(imagePos.x() * currentFrameSize.width() / static_cast<double>(sourceFrameSize.width()));
+            normalizedPoint.setY(imagePos.y() * currentFrameSize.height() / static_cast<double>(sourceFrameSize.height()));
+        }
+
+        const QPointF widgetPoint(
+            drawRect.left() + (normalizedPoint.x() * drawRect.width() / static_cast<double>(currentFrameSize.width())),
+            drawRect.top() + (normalizedPoint.y() * drawRect.height() / static_cast<double>(currentFrameSize.height()))
+        );
+
+        const QTransform hImgToWorld = currentOverlayHomography().inverted(&ok);
+        if (!ok) return fail("H inversion failed");
+        worldPos = hImgToWorld.map(widgetPoint);
+    }
+
+    if (!std::isfinite(worldPos.x()) || !std::isfinite(worldPos.y())) {
+        return fail("non-finite world coordinate");
+    }
+
+    return true;
+}
+
+bool MainWindow::isWorldPointWithinOperationalBounds(const QPointF& worldPos) const
+{
+    if (m_calibWorldPts.size() != 4) return true;
+
+    double minX = m_calibWorldPts[0].x();
+    double maxX = m_calibWorldPts[0].x();
+    double minY = m_calibWorldPts[0].y();
+    double maxY = m_calibWorldPts[0].y();
+    for (const auto& p : m_calibWorldPts) {
+        minX = std::min(minX, p.x());
+        maxX = std::max(maxX, p.x());
+        minY = std::min(minY, p.y());
+        maxY = std::max(maxY, p.y());
+    }
+
+    const double mx = (maxX - minX) * 0.25 + 0.2;
+    const double my = (maxY - minY) * 0.25 + 0.2;
+    return !(worldPos.x() < minX - mx || worldPos.x() > maxX + mx ||
+             worldPos.y() < minY - my || worldPos.y() > maxY + my);
+}
+
+MainWindow::GoalPublishResult MainWindow::publishRcGoalWorld(const QPointF& worldPos)
 {
     if (!m_patrolPointsEnabled) {
-        appendLog("RC goal skipped: Patrol points OFF");
-        return;
+        return GoalPublishResult::PatrolDisabled;
+    }
+    if (!m_pub) {
+        return GoalPublishResult::PublisherMissing;
     }
 
     m_targetWorld = worldPos;
@@ -4261,11 +4369,6 @@ void MainWindow::onMiniMapWorldClicked(const QPointF& worldPos)
         updateCentralLayerOrder();
     }
 
-    if (!m_pub) {
-        appendLog("RC goal publish skipped: publisher is null");
-        return;
-    }
-
     QJsonObject o;
     o["x"] = worldPos.x();
     o["y"] = worldPos.y();
@@ -4274,13 +4377,143 @@ void MainWindow::onMiniMapWorldClicked(const QPointF& worldPos)
 
     const QByteArray payload = QJsonDocument(o).toJson(QJsonDocument::Compact);
     const bool ok = m_pub->publishJson("wiserisk/rc/goal", payload, 1, false);
-    if (ok) {
+    if (!ok) {
+        return GoalPublishResult::PublishFailed;
+    }
+
+    if (m_robotStatusWindow) {
+        m_robotStatusWindow->setRobotStatus(m_lastRobotStatusEvent);
+    }
+    return GoalPublishResult::Success;
+}
+
+void MainWindow::pruneAutoHumanGoalTracks(const QDateTime& nowUtc)
+{
+    QStringList staleKeys;
+    for (auto it = m_autoHumanGoalTracks.cbegin(); it != m_autoHumanGoalTracks.cend(); ++it) {
+        if (!it.value().lastSeenUtc.isValid() ||
+            it.value().lastSeenUtc.msecsTo(nowUtc) > kHumanAutoGoalTrackWindowMs) {
+            staleKeys.push_back(it.key());
+        }
+    }
+    for (const QString& key : staleKeys) {
+        m_autoHumanGoalTracks.remove(key);
+    }
+}
+
+void MainWindow::updateAutoHumanGoalTrack(const QString& key,
+                                          const QRect& bbox,
+                                          const QSize& sourceFrameSize,
+                                          const QDateTime& nowUtc)
+{
+    if (key.isEmpty() || !bbox.isValid()) return;
+
+    AutoHumanGoalTrack track = m_autoHumanGoalTracks.value(key);
+    if (track.lastSeenUtc.isValid() &&
+        track.lastSeenUtc.msecsTo(nowUtc) <= kHumanAutoGoalTrackWindowMs) {
+        ++track.consecutiveDetections;
+    } else {
+        track.consecutiveDetections = 1;
+    }
+    track.bbox = bbox;
+    track.frameSize = sourceFrameSize;
+    track.lastSeenUtc = nowUtc;
+    m_autoHumanGoalTracks.insert(key, track);
+}
+
+void MainWindow::clearAutoHumanGoalTrack(const QString& key)
+{
+    if (key.isEmpty()) return;
+    m_autoHumanGoalTracks.remove(key);
+}
+
+void MainWindow::maybePublishAutoHumanGoal(const QDateTime& nowUtc)
+{
+    pruneAutoHumanGoalTracks(nowUtc);
+    if (!m_patrolPointsEnabled) return;
+
+    QStringList readyKeys;
+    for (auto it = m_autoHumanGoalTracks.cbegin(); it != m_autoHumanGoalTracks.cend(); ++it) {
+        const auto& track = it.value();
+        if (!track.bbox.isValid()) continue;
+        if (track.consecutiveDetections < kHumanAutoGoalStableCount) continue;
+        if (!track.lastSeenUtc.isValid() ||
+            track.lastSeenUtc.msecsTo(nowUtc) > kHumanAutoGoalTrackWindowMs) continue;
+        readyKeys.push_back(it.key());
+    }
+
+    if (readyKeys.size() != 1) {
+        if (readyKeys.size() > 1 &&
+            (!m_lastAutoHumanGoalLogUtc.isValid() ||
+             m_lastAutoHumanGoalLogUtc.msecsTo(nowUtc) >= kHumanAutoGoalLogThrottleMs)) {
+            appendLog(QString("Auto human goal skipped: %1 stabilized humans").arg(readyKeys.size()));
+            m_lastAutoHumanGoalLogUtc = nowUtc;
+        }
+        return;
+    }
+
+    AutoHumanGoalTrack track = m_autoHumanGoalTracks.value(readyKeys.front());
+    if (track.lastPublishedUtc.isValid() &&
+        track.lastPublishedUtc.msecsTo(nowUtc) < kHumanAutoGoalPublishCooldownMs) {
+        return;
+    }
+
+    QString error;
+    QPointF worldPos;
+    if (!tryMapImagePointToWorld(humanGoalAnchor(track.bbox), track.frameSize, worldPos, &error)) {
+        if (!m_lastAutoHumanGoalLogUtc.isValid() ||
+            m_lastAutoHumanGoalLogUtc.msecsTo(nowUtc) >= kHumanAutoGoalLogThrottleMs) {
+            appendLog(QString("Auto human goal skipped: %1").arg(error));
+            m_lastAutoHumanGoalLogUtc = nowUtc;
+        }
+        return;
+    }
+    if (!isWorldPointWithinOperationalBounds(worldPos)) {
+        if (!m_lastAutoHumanGoalLogUtc.isValid() ||
+            m_lastAutoHumanGoalLogUtc.msecsTo(nowUtc) >= kHumanAutoGoalLogThrottleMs) {
+            appendLog(QString("Auto human goal skipped: out-of-bounds world=(%1,%2)")
+                          .arg(worldPos.x(), 0, 'f', 3)
+                          .arg(worldPos.y(), 0, 'f', 3));
+            m_lastAutoHumanGoalLogUtc = nowUtc;
+        }
+        return;
+    }
+
+    const GoalPublishResult result = publishRcGoalWorld(worldPos);
+    if (result == GoalPublishResult::Success) {
+        track.lastPublishedUtc = nowUtc;
+        m_autoHumanGoalTracks.insert(readyKeys.front(), track);
+        appendLog(QString("Auto human goal published: id=%1 img=(%2,%3) world=(%4,%5)")
+                      .arg(readyKeys.front())
+                      .arg(humanGoalAnchor(track.bbox).x(), 0, 'f', 1)
+                      .arg(humanGoalAnchor(track.bbox).y(), 0, 'f', 1)
+                      .arg(worldPos.x(), 0, 'f', 3)
+                      .arg(worldPos.y(), 0, 'f', 3));
+        return;
+    }
+
+    if (!m_lastAutoHumanGoalLogUtc.isValid() ||
+        m_lastAutoHumanGoalLogUtc.msecsTo(nowUtc) >= kHumanAutoGoalLogThrottleMs) {
+        const QString reason =
+            (result == GoalPublishResult::PublisherMissing) ? "publisher missing" :
+            (result == GoalPublishResult::PatrolDisabled) ? "patrol disabled" :
+                                                            "publish failed";
+        appendLog(QString("Auto human goal skipped: %1").arg(reason));
+        m_lastAutoHumanGoalLogUtc = nowUtc;
+    }
+}
+
+void MainWindow::onMiniMapWorldClicked(const QPointF& worldPos)
+{
+    const GoalPublishResult result = publishRcGoalWorld(worldPos);
+    if (result == GoalPublishResult::Success) {
         appendLog(QString("RC goal published: x=%1 y=%2")
                       .arg(worldPos.x(), 0, 'f', 3)
                       .arg(worldPos.y(), 0, 'f', 3));
-        if (m_robotStatusWindow) {
-            m_robotStatusWindow->setRobotStatus(m_lastRobotStatusEvent);
-        }
+    } else if (result == GoalPublishResult::PatrolDisabled) {
+        appendLog("RC goal skipped: Patrol points OFF");
+    } else if (result == GoalPublishResult::PublisherMissing) {
+        appendLog("RC goal publish skipped: publisher is null");
     } else {
         appendLog("RC goal publish failed");
     }
@@ -4290,57 +4523,28 @@ void MainWindow::onCentralGoalClicked(const QPointF& widgetPos)
 {
     if (!m_cameraGoalMode) return;
     if (!ui || !ui->centralOverlayHost) return;
-    if (!m_hasHomography) {
-        appendLog("Camera click ignored: homography unavailable");
-        return;
-    }
-    QPointF imgPt = widgetPos;
-    QTransform hImgToWorld;
-    bool ok = false;
-
-    if (m_homographyFromMqttImage && ui->labelCentralView) {
-        if (!ui->labelCentralView->widgetToImagePoint(widgetPos, imgPt)) {
-            appendLog("Camera click ignored: outside video area");
-            return;
-        }
-        hImgToWorld = m_hWorldToImg.inverted(&ok);
-    } else {
-        // Calibration-generated homography is in overlay widget coordinates.
-        const QTransform effectiveWorldToImg = currentOverlayHomography();
-        hImgToWorld = effectiveWorldToImg.inverted(&ok);
-    }
-    if (!ok) {
-        appendLog("Camera click ignored: H inversion failed");
+    if (!ui->labelCentralView) {
+        appendLog("Camera click ignored: video widget unavailable");
         return;
     }
 
-    const QPointF worldPos = hImgToWorld.map(imgPt);
-    if (!std::isfinite(worldPos.x()) || !std::isfinite(worldPos.y())) {
-        appendLog("Camera click ignored: non-finite world coordinate");
+    QPointF imgPt;
+    if (!ui->labelCentralView->widgetToImagePoint(widgetPos, imgPt)) {
+        appendLog("Camera click ignored: outside video area");
         return;
     }
 
-    // Warn on unstable projection results (outside calibrated map bounds by margin),
-    // but keep processing so the user can still see and verify the clicked marker.
-    if (m_calibWorldPts.size() == 4) {
-        double minX = m_calibWorldPts[0].x();
-        double maxX = m_calibWorldPts[0].x();
-        double minY = m_calibWorldPts[0].y();
-        double maxY = m_calibWorldPts[0].y();
-        for (const auto& p : m_calibWorldPts) {
-            minX = std::min(minX, p.x());
-            maxX = std::max(maxX, p.x());
-            minY = std::min(minY, p.y());
-            maxY = std::max(maxY, p.y());
-        }
-        const double mx = (maxX - minX) * 0.25 + 0.2;
-        const double my = (maxY - minY) * 0.25 + 0.2;
-        if (worldPos.x() < minX - mx || worldPos.x() > maxX + mx ||
-            worldPos.y() < minY - my || worldPos.y() > maxY + my) {
-            appendLog(QString("Camera click warning: out-of-bounds world=(%1,%2)")
-                          .arg(worldPos.x(), 0, 'f', 3)
-                          .arg(worldPos.y(), 0, 'f', 3));
-        }
+    QPointF worldPos;
+    QString error;
+    if (!tryMapImagePointToWorld(imgPt, ui->labelCentralView->currentFrameSize(), worldPos, &error)) {
+        appendLog(QString("Camera click ignored: %1").arg(error));
+        return;
+    }
+
+    if (!isWorldPointWithinOperationalBounds(worldPos)) {
+        appendLog(QString("Camera click warning: out-of-bounds world=(%1,%2)")
+                      .arg(worldPos.x(), 0, 'f', 3)
+                      .arg(worldPos.y(), 0, 'f', 3));
     }
 
     appendLog(QString("Camera click img=(%1,%2) -> world=(%3,%4)")

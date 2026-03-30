@@ -288,7 +288,7 @@ int main() {
                                frame_cache,
                                ptz_controller,
                                overlay_state_provider)) {
-            std::fprintf(stderr, "[MAIN] HTTP tiltVR start failed on port %d\n", config.http.port);
+            std::fprintf(stderr, "[MAIN] tiltVR web start failed\n");
             ptz_controller.stop();
             auto_controller.stop();
             shutdown_capture();

@@ -260,6 +260,12 @@ std::string make_default_config_text() {
     append_kv(oss, "enable", cfg.http.enable ? 1 : 0);
     append_kv(oss, "port", cfg.http.port);
     append_kv(oss, "web_root", cfg.http.web_root);
+    oss << "# Optional HTTPS endpoint for mobile IMU permission on modern browsers.\n";
+    append_kv(oss, "https_enable", cfg.http.https_enable ? 1 : 0);
+    append_kv(oss, "https_port", cfg.http.https_port);
+    append_kv(oss, "tls_cert_file", cfg.http.tls_cert_file);
+    append_kv(oss, "tls_key_file", cfg.http.tls_key_file);
+    append_kv(oss, "redirect_http_to_https", cfg.http.redirect_http_to_https ? 1 : 0);
     oss << "\n";
 
     oss << "# [ptz] 팬틸트 SG90 + PCA9685 설정\n";
@@ -447,6 +453,11 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_bool(map, "http.enable", config.http.enable);
         load_int(map, "http.port", config.http.port);
         load_string(map, "http.web_root", config.http.web_root);
+        load_bool(map, "http.https_enable", config.http.https_enable);
+        load_int(map, "http.https_port", config.http.https_port);
+        load_string(map, "http.tls_cert_file", config.http.tls_cert_file);
+        load_string(map, "http.tls_key_file", config.http.tls_key_file);
+        load_bool(map, "http.redirect_http_to_https", config.http.redirect_http_to_https);
 
         load_string(map, "ptz.i2c_device", config.ptz.i2c_device);
         load_int(map, "ptz.i2c_address", config.ptz.i2c_address);
@@ -626,6 +637,11 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "enable", copy.http.enable ? 1 : 0);
         append_kv(oss, "port", copy.http.port);
         append_kv(oss, "web_root", copy.http.web_root);
+        append_kv(oss, "https_enable", copy.http.https_enable ? 1 : 0);
+        append_kv(oss, "https_port", copy.http.https_port);
+        append_kv(oss, "tls_cert_file", copy.http.tls_cert_file);
+        append_kv(oss, "tls_key_file", copy.http.tls_key_file);
+        append_kv(oss, "redirect_http_to_https", copy.http.redirect_http_to_https ? 1 : 0);
         oss << "\n";
 
         append_section(oss, "ptz");

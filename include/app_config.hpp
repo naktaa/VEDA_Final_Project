@@ -139,11 +139,7 @@ struct AppConfig {
     RcMotorParams motor;
     ManualDriveConfig manual_drive;
     ControllerConfig controller;
-    HttpVrConfig http{
-        true,
-        8000,
-        "../web/tilt_vr",
-    };
+    HttpVrConfig http;
     PtzConfig ptz;
     CalibrationConfig calib;
 };

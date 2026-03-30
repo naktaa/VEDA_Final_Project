@@ -20,7 +20,7 @@ struct PtzConfig {
     float tilt_center_deg = 90.0f;
     float tilt_up_deg = 0.0f;
     float tilt_down_deg = 180.0f;
-    int imu_timeout_ms = 300;
+    int imu_timeout_ms = 1000;
 };
 
 struct PtzStatus {

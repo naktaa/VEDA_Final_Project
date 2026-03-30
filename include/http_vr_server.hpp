@@ -10,7 +10,12 @@ class PtzController;
 struct HttpVrConfig {
     bool enable = true;
     int port = 8000;
-    std::string web_root;
+    std::string web_root = "../web/tilt_vr";
+    bool https_enable = false;
+    int https_port = 8443;
+    std::string tls_cert_file = "../certs/tiltvrsvr-cert.pem";
+    std::string tls_key_file = "../certs/tiltvrsvr-key.pem";
+    bool redirect_http_to_https = true;
 };
 
 struct HttpVrOverlayState {

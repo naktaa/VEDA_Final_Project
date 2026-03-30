@@ -274,7 +274,7 @@ int main() {
     HttpVrServer http_server;
     if (config.http.enable) {
         if (!http_server.start(config.http, running, frame_cache, ptz_controller)) {
-            std::fprintf(stderr, "[LKONLY] HTTP tiltVR start failed on port %d\n", config.http.port);
+            std::fprintf(stderr, "[LKONLY] tiltVR web start failed\n");
             ptz_controller.stop();
             auto_controller.stop();
             shutdown_capture();

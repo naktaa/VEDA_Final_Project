@@ -27,6 +27,8 @@
 - `OpenCV`
 - `nlohmann-json3-dev`
 - `cpp-httplib-dev` 또는 `httplib.h`
+- `libssl-dev` (optional, required only when enabling HTTPS tiltVR)
+- See `docs/TILTVR_HTTPS.md` for self-signed certificate setup and HTTPS tiltVR notes.
 
 ## 빌드
 예전처럼 직접 빌드해서 `build` 안의 실행파일을 실행하면 됩니다.

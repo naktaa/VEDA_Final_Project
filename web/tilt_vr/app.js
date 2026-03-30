@@ -30,9 +30,6 @@ let hasSensorData = false;
 let sensorCheckTimer = null;
 let orientationEventCount = 0;
 let imuSendInFlight = false;
-let initialSensorWaitResolve = null;
-let initialSensorWaitReject = null;
-let initialSensorWaitTimer = null;
 let pendingInitialZero = false;
 let vrModeRecoveryInFlight = false;
 let overlayStateInterval = null;
@@ -50,7 +47,6 @@ let latestOverlayState = {
 };
 
 const imuSendIntervalMs = 16;
-const initialSensorWaitMs = 2000;
 const overlayStatePollMs = 100;
 const degToRad = Math.PI / 180;
 const radToDeg = 180 / Math.PI;
@@ -193,46 +189,13 @@ function zeroCalibrate() {
   setStatus("Zero calibrated");
 }
 
-function clearInitialSensorWait() {
-  if (initialSensorWaitTimer) {
-    clearTimeout(initialSensorWaitTimer);
-    initialSensorWaitTimer = null;
+function waitingForImuStatus(delayed = false) {
+  if (!window.isSecureContext) {
+    return delayed
+      ? "Waiting for phone IMU... This HTTP page may block motion sensors. Open the HTTPS tiltVR address."
+      : "Waiting for phone IMU... HTTP may block motion sensors. HTTPS is recommended.";
   }
-  initialSensorWaitResolve = null;
-  initialSensorWaitReject = null;
-}
-
-function resolveInitialSensorWait() {
-  if (!initialSensorWaitResolve) {
-    return;
-  }
-  const resolve = initialSensorWaitResolve;
-  clearInitialSensorWait();
-  resolve();
-}
-
-function rejectInitialSensorWait(message) {
-  if (!initialSensorWaitReject) {
-    return;
-  }
-  const reject = initialSensorWaitReject;
-  clearInitialSensorWait();
-  reject(new Error(message));
-}
-
-function waitForInitialSensorData(timeoutMs = initialSensorWaitMs) {
-  if (hasSensorData) {
-    return Promise.resolve();
-  }
-
-  clearInitialSensorWait();
-  return new Promise((resolve, reject) => {
-    initialSensorWaitResolve = resolve;
-    initialSensorWaitReject = reject;
-    initialSensorWaitTimer = setTimeout(() => {
-      rejectInitialSensorWait("No IMU sensor events detected");
-    }, timeoutMs);
-  });
+  return delayed ? "Still waiting for phone IMU..." : "Waiting for phone IMU...";
 }
 
 async function ensureOrientationPermission() {
@@ -301,7 +264,9 @@ function startOrientationFeed() {
         pendingInitialZero = false;
         latestRaw = getPitchRollYaw(evt);
         zeroCalibrate();
-        resolveInitialSensorWait();
+        if (connected && currentMode !== "vr") {
+          requestVrModeRecovery().catch(() => {});
+        }
       }
     }
 
@@ -359,7 +324,6 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
   } catch (_) {
     setMode("manual");
   } finally {
-    clearInitialSensorWait();
     pendingInitialZero = false;
     imuSendInFlight = false;
     vrModeRecoveryInFlight = false;
@@ -373,6 +337,7 @@ async function disconnect({ releaseMode = true, statusMessage = "Idle" } = {}) {
       reconnectTimer = null;
     }
     imuAckEl.textContent = "Server IMU: -";
+    imuEl.textContent = "IMU: -";
     clearCanvases();
     setStatus(statusMessage);
     connectBtn.disabled = false;
@@ -742,8 +707,9 @@ async function connect() {
   setStatus("Requesting sensor permission...");
 
   try {
+    imuEl.textContent = "IMU: waiting for phone sensor";
     if (!window.isSecureContext) {
-      setStatus("Warning: sensor access may be blocked on insecure HTTP");
+      setStatus(waitingForImuStatus());
     }
     await ensureOrientationPermission();
 
@@ -751,15 +717,12 @@ async function connect() {
     orientationEventCount = 0;
     pendingInitialZero = true;
     startOrientationFeed();
-    setStatus("Waiting for phone IMU...");
-    await waitForInitialSensorData();
+    setStatus(waitingForImuStatus());
 
     const health = await fetch("/health");
     if (!health.ok) {
       throw new Error(`Server not ready: ${health.status}`);
     }
-
-    await setPtzMode("vr");
 
     connected = true;
     renderConnectButton();
@@ -767,14 +730,19 @@ async function connect() {
 
     sensorCheckTimer = setTimeout(() => {
       if (connected && !hasSensorData) {
-        setStatus("No IMU events detected. PTZ will fall back to manual mode.");
+        setStatus(waitingForImuStatus(true));
       }
     }, 3000);
 
     const token = Date.now();
     streamSource.src = `/stream.mjpg?t=${token}`;
     startRenderLoop();
-    setStatus("VR mode active. Connecting video stream...");
+    await setPtzMode("vr");
+    setStatus(
+      hasSensorData
+        ? "VR mode active. Connecting video stream..."
+        : waitingForImuStatus()
+    );
   } catch (err) {
     await disconnect({
       releaseMode: true,

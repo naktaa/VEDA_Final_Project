@@ -9,8 +9,8 @@ add_compile_options(-O3 -DNDEBUG)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc video imgcodecs calib3d)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL QUIET)
 find_package(nlohmann_json QUIET)
-find_package(cpp-httplib QUIET CONFIG)
 
 pkg_check_modules(GST REQUIRED
   gstreamer-1.0
@@ -23,20 +23,12 @@ pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 pkg_check_modules(LIBGPIOD REQUIRED libgpiod)
 pkg_check_modules(HTTPLIB QUIET cpp-httplib)
 
-if(NOT TARGET cpp-httplib::cpp-httplib)
-  find_path(HTTPLIB_INCLUDE_DIR
-    NAMES httplib.h
-    HINTS ${HTTPLIB_INCLUDE_DIRS}
-  )
-
-  if(NOT HTTPLIB_INCLUDE_DIR)
-    message(FATAL_ERROR "httplib.h not found. Install cpp-httplib development headers.")
-  endif()
-
-  find_library(HTTPLIB_LIBRARY
-    NAMES cpp-httplib httplib
-    HINTS ${HTTPLIB_LIBRARY_DIRS}
-  )
+find_path(HTTPLIB_INCLUDE_DIR
+  NAMES httplib.h
+  HINTS ${HTTPLIB_INCLUDE_DIRS}
+)
+if(NOT HTTPLIB_INCLUDE_DIR)
+  message(FATAL_ERROR "httplib.h not found. Install cpp-httplib development headers.")
 endif()
 
 if(NOT nlohmann_json_FOUND)
@@ -74,16 +66,13 @@ set(COMMON_SOURCES
 
 set(COMMON_INCLUDE_DIRS
   ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${HTTPLIB_INCLUDE_DIR}
   ${OpenCV_INCLUDE_DIRS}
   ${GST_INCLUDE_DIRS}
   ${LIBCAMERA_INCLUDE_DIRS}
   ${MOSQUITTO_INCLUDE_DIRS}
   ${LIBGPIOD_INCLUDE_DIRS}
 )
-
-if(NOT TARGET cpp-httplib::cpp-httplib)
-  list(APPEND COMMON_INCLUDE_DIRS ${HTTPLIB_INCLUDE_DIR})
-endif()
 
 if(NOT nlohmann_json_FOUND)
   list(APPEND COMMON_INCLUDE_DIRS ${NLOHMANN_JSON_INCLUDE_DIR})
@@ -110,10 +99,9 @@ set(COMMON_LINK_LIBS
   wiringPi
 )
 
-if(TARGET cpp-httplib::cpp-httplib)
-  list(APPEND COMMON_LINK_LIBS cpp-httplib::cpp-httplib)
-elseif(HTTPLIB_LIBRARY)
-  list(APPEND COMMON_LINK_LIBS ${HTTPLIB_LIBRARY})
+if(OpenSSL_FOUND)
+  add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
+  list(APPEND COMMON_LINK_LIBS OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 if(nlohmann_json_FOUND)

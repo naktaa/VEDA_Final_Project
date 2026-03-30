@@ -25,3 +25,6 @@ config_lk_local.ini
 # Runtime logs
 logs/
 *.log
+
+# Local TLS assets
+certs/*.pem

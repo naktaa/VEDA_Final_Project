@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release)
 add_compile_options(-O3 -DNDEBUG)
 
+option(BUILD_LEGACY_VARIANTS "Build legacy main_raw/lkonly executables" OFF)
+
 find_package(OpenCV REQUIRED COMPONENTS core imgproc video imgcodecs calib3d)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -140,34 +142,36 @@ target_include_directories(main PRIVATE ${COMMON_INCLUDE_DIRS})
 target_compile_options(main PRIVATE ${COMMON_COMPILE_OPTIONS})
 target_link_libraries(main PRIVATE ${COMMON_LINK_LIBS})
 
-add_executable(main_raw
-  src/main_raw.cpp
-  src/app_config.cpp
-  src/frame_jpeg_cache.cpp
-  src/gst_camera_capture.cpp
-  src/http_vr_server.cpp
-  src/image_utils.cpp
-  src/libcamera_capture.cpp
-  src/mqtt_drive.cpp
-  src/ptz_control.cpp
-  src/rtsp_server.cpp
-  src/tank_drive.cpp
-  src/timebase.cpp
-  src/vr_remote_input.cpp
-)
+if(BUILD_LEGACY_VARIANTS)
+  add_executable(main_raw
+    src/main_raw.cpp
+    src/app_config.cpp
+    src/frame_jpeg_cache.cpp
+    src/gst_camera_capture.cpp
+    src/http_vr_server.cpp
+    src/image_utils.cpp
+    src/libcamera_capture.cpp
+    src/mqtt_drive.cpp
+    src/ptz_control.cpp
+    src/rtsp_server.cpp
+    src/tank_drive.cpp
+    src/timebase.cpp
+    src/vr_remote_input.cpp
+  )
 
-target_include_directories(main_raw PRIVATE ${COMMON_INCLUDE_DIRS})
-target_compile_options(main_raw PRIVATE ${COMMON_COMPILE_OPTIONS})
-target_link_libraries(main_raw PRIVATE ${COMMON_LINK_LIBS})
+  target_include_directories(main_raw PRIVATE ${COMMON_INCLUDE_DIRS})
+  target_compile_options(main_raw PRIVATE ${COMMON_COMPILE_OPTIONS})
+  target_link_libraries(main_raw PRIVATE ${COMMON_LINK_LIBS})
 
-add_executable(lkonly
-  src/main_lkonly.cpp
-  ${COMMON_SOURCES}
-)
+  add_executable(lkonly
+    src/main_lkonly.cpp
+    ${COMMON_SOURCES}
+  )
 
-target_include_directories(lkonly PRIVATE ${COMMON_INCLUDE_DIRS})
-target_compile_options(lkonly PRIVATE ${COMMON_COMPILE_OPTIONS})
-target_link_libraries(lkonly PRIVATE ${COMMON_LINK_LIBS})
+  target_include_directories(lkonly PRIVATE ${COMMON_INCLUDE_DIRS})
+  target_compile_options(lkonly PRIVATE ${COMMON_COMPILE_OPTIONS})
+  target_link_libraries(lkonly PRIVATE ${COMMON_LINK_LIBS})
+endif()
 
 add_executable(calib
   src/calib_offset.cpp

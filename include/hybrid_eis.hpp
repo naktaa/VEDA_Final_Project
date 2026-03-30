@@ -114,7 +114,11 @@ private:
     int turn_exit_count_ = 0;
     int recover_frames_left_ = 0;
     int gate_invalid_frames_ = 0;
+    bool gate_yaw_valid_ = false;
+    double gate_yaw_dps_ = 0.0;
+    int suspicious_gate_jump_frames_ = 0;
 
     void update_state(bool gate_valid, double yaw_gate_dps);
     void reset_lk_stabilization();
+    void stabilize_gate_yaw(bool& gate_valid, double& yaw_gate_dps);
 };

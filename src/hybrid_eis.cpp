@@ -16,7 +16,12 @@ constexpr int kReferenceMinAffinePoints = 6;
 constexpr double kGateWindowMs = 12.0;
 constexpr double kGateStaleMs = 30.0;
 constexpr double kGateMaxAbsYawDps = 250.0;
+constexpr int kGateMinSamples = 4;
 constexpr int kGateInvalidFrameLimit = 3;
+constexpr double kGateJumpLowYawDps = 12.0;
+constexpr double kGateJumpHighYawDps = 120.0;
+constexpr double kGateJumpDeltaDps = 100.0;
+constexpr int kGateJumpConfirmFrames = 2;
 
 struct GateYawResult {
     bool valid = false;
@@ -143,7 +148,7 @@ GateYawResult compute_gate_yaw(const GyroBuffer* gyro_buffer, double target_time
     }
 
     result.samples = static_cast<int>(abs_yaw_values.size());
-    if (result.samples <= 0) {
+    if (result.samples < kGateMinSamples) {
         return result;
     }
 
@@ -347,8 +352,42 @@ void HybridEisProcessor::reset() {
     turn_exit_count_ = 0;
     recover_frames_left_ = 0;
     gate_invalid_frames_ = 0;
+    gate_yaw_valid_ = false;
+    gate_yaw_dps_ = 0.0;
+    suspicious_gate_jump_frames_ = 0;
     integrator_.reset();
     reset_lk_stabilization();
+}
+
+void HybridEisProcessor::stabilize_gate_yaw(bool& gate_valid, double& yaw_gate_dps) {
+    if (!gate_valid || !std::isfinite(yaw_gate_dps)) {
+        gate_valid = false;
+        yaw_gate_dps = 0.0;
+        gate_yaw_valid_ = false;
+        gate_yaw_dps_ = 0.0;
+        suspicious_gate_jump_frames_ = 0;
+        return;
+    }
+
+    const bool suspicious_jump =
+        gate_yaw_valid_ &&
+        gate_yaw_dps_ <= kGateJumpLowYawDps &&
+        yaw_gate_dps >= kGateJumpHighYawDps &&
+        (yaw_gate_dps - gate_yaw_dps_) >= kGateJumpDeltaDps;
+
+    if (suspicious_jump) {
+        ++suspicious_gate_jump_frames_;
+        if (suspicious_gate_jump_frames_ < kGateJumpConfirmFrames) {
+            gate_valid = false;
+            yaw_gate_dps = 0.0;
+            return;
+        }
+    } else {
+        suspicious_gate_jump_frames_ = 0;
+    }
+
+    gate_yaw_valid_ = true;
+    gate_yaw_dps_ = yaw_gate_dps;
 }
 
 void HybridEisProcessor::update_state(bool gate_valid, double yaw_gate_dps) {
@@ -438,7 +477,8 @@ bool HybridEisProcessor::process(const CapturedFrame& frame,
     const double raw_yaw_rate_dps = have_latest_imu
         ? latest_imu.gyro_rad_s[2] * 180.0 / CV_PI
         : 0.0;
-    const GateYawResult gate = compute_gate_yaw(gyro_buffer_, target_time_ms);
+    GateYawResult gate = compute_gate_yaw(gyro_buffer_, target_time_ms);
+    stabilize_gate_yaw(gate.valid, gate.yaw_gate_dps);
 
     const HybridState prev_state = state_;
     update_state(gate.valid, gate.yaw_gate_dps);

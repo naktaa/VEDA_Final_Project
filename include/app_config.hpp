@@ -83,6 +83,13 @@ struct EisRuntimeConfig {
     bool debug_log = true;
 };
 
+struct PipelineConfig {
+    double tracking_clahe_clip = 2.0;
+    double display_gain = 1.10;
+    double display_gamma = 1.15;
+    double display_denoise_strength = 0.0;
+};
+
 struct RtspConfig {
     std::string port = "8555";
     std::string path = "/cam";
@@ -123,6 +130,7 @@ struct AppConfig {
     CameraConfig camera;
     ImuConfig imu;
     EisRuntimeConfig eis;
+    PipelineConfig pipeline;
     RtspConfig rtsp;
     MqttConfig mqtt{
         "192.168.100.10",

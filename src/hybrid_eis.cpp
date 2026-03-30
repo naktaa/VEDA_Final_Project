@@ -330,8 +330,9 @@ void HybridEisProcessor::reset_lk_stabilization() {
 }
 
 void HybridEisProcessor::reset() {
-    prev_frame_.release();
-    prev_frame_ok_ = false;
+    prev_tracking_frame_.release();
+    prev_render_frame_.release();
+    prev_frames_ok_ = false;
     prev_frame_time_ms_ = 0.0;
     prev_sensor_ts_ns_ = 0;
     prev_exposure_us_ = 0;
@@ -414,18 +415,22 @@ void HybridEisProcessor::update_state(bool gate_valid, double yaw_gate_dps) {
     }
 }
 
-bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized, HybridEisDebugInfo* debug) {
+bool HybridEisProcessor::process(const CapturedFrame& frame,
+                                 const cv::Mat& tracking_frame,
+                                 cv::Mat& stabilized,
+                                 HybridEisDebugInfo* debug) {
     if (debug) {
         *debug = HybridEisDebugInfo{};
         debug->state = state_;
     }
 
-    if (frame.image.empty()) {
+    if (frame.image.empty() || tracking_frame.empty() || tracking_frame.size() != frame.image.size()) {
         stabilized.release();
         return false;
     }
 
-    const cv::Mat current = frame.image;
+    const cv::Mat current_render = frame.image;
+    const cv::Mat current_tracking = tracking_frame;
     const double target_time_ms = frame.frame_time_ms + config_.calib.imu_offset_ms;
 
     ImuSample latest_imu;
@@ -442,8 +447,8 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     }
 
     LkMotionEstimate lk;
-    if (prev_frame_ok_) {
-        lk = estimate_reference_style_lk(prev_frame_, current, config_.eis);
+    if (prev_frames_ok_) {
+        lk = estimate_reference_style_lk(prev_tracking_frame_, current_tracking, config_.eis);
     }
 
     const bool lk_usable = lk.valid;
@@ -458,7 +463,7 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
     cv::Mat global_h = make_identity_homography();
     bool use_global_lk = false;
 
-    if (prev_frame_ok_ && lk_usable && state_ != HybridState::TURN_FOLLOW) {
+    if (prev_frames_ok_ && lk_usable && state_ != HybridState::TURN_FOLLOW) {
         kf_theta_.update(lk.da);
         kf_tx_.update(lk.dx);
         kf_ty_.update(lk.dy);
@@ -482,17 +487,19 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
             lk.sy * std::sin(out_da), lk.sy *  std::cos(out_da), out_dy);
 
         global_h = to_homography3x3(smoothed);
-        global_required_crop = compute_required_crop_percent(global_h, current.cols, current.rows);
+        global_required_crop = compute_required_crop_percent(global_h,
+                                                             current_render.cols,
+                                                             current_render.rows);
         use_global_lk = true;
-    } else if (prev_frame_ok_ && !lk_usable) {
+    } else if (prev_frames_ok_ && !lk_usable) {
         reset_lk_stabilization();
     }
 
-    const cv::Mat* source_frame = &current;
+    const cv::Mat* source_frame = &current_render;
     double source_time_ms = frame.frame_time_ms;
     int64_t source_sensor_ts_ns = frame.sensor_ts_ns;
     if (use_global_lk) {
-        source_frame = &prev_frame_;
+        source_frame = &prev_render_frame_;
         source_time_ms = prev_frame_time_ms_;
         source_sensor_ts_ns = prev_sensor_ts_ns_;
     }
@@ -518,7 +525,7 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
         cv::warpPerspective(*source_frame,
                             stabilized,
                             global_h,
-                            current.size(),
+                            current_render.size(),
                             cv::INTER_LINEAR,
                             cv::BORDER_REPLICATE);
         required_crop = global_required_crop;
@@ -554,8 +561,9 @@ bool HybridEisProcessor::process(const CapturedFrame& frame, cv::Mat& stabilized
                     cv::LINE_AA);
     }
 
-    prev_frame_ = current.clone();
-    prev_frame_ok_ = true;
+    prev_tracking_frame_ = current_tracking.clone();
+    prev_render_frame_ = current_render.clone();
+    prev_frames_ok_ = true;
     prev_frame_time_ms_ = frame.frame_time_ms;
     prev_sensor_ts_ns_ = frame.sensor_ts_ns;
     prev_exposure_us_ = frame.exposure_us;

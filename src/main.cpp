@@ -79,6 +79,13 @@ void fill_runtime_status(RcStatus& status,
                          const tank_drive::DriveStatusSnapshot& drive,
                          const AutoStatusSnapshot& auto_state,
                          int publish_interval_ms) {
+    const bool auto_mode_active =
+        drive.active_source == tank_drive::DriveSource::kAuto ||
+        auto_state.goal.valid ||
+        auto_state.control_status.robot_state == "TRACKING" ||
+        auto_state.control_status.robot_state == "ROTATE" ||
+        auto_state.control_status.robot_state == "REACHED";
+
     status.data_period = std::to_string(publish_interval_ms) + "ms";
     status.speed = 0.0;
     status.mode = "idle";
@@ -120,10 +127,12 @@ void fill_runtime_status(RcStatus& status,
         return;
     }
 
-    if (auto_state.goal.valid || auto_state.pose.valid) {
-        status.mode = auto_state.goal.valid ? "auto" : "idle";
-        status.mission = auto_state.goal.valid ? "goal_tracking" : "none";
-        status.speed = std::max(0.0, auto_state.command.speed_cmps);
+    if (auto_mode_active || auto_state.pose.valid) {
+        status.mode = auto_mode_active ? "auto" : "idle";
+        status.mission = auto_mode_active ? "goal_tracking" : "none";
+        status.speed = (drive.active_source == tank_drive::DriveSource::kAuto)
+            ? average_pwm(drive)
+            : std::max(0.0, auto_state.command.speed_cmps);
         status.robot_state = auto_state.control_status.robot_state;
     }
 }
@@ -347,11 +356,18 @@ int main() {
         vr_input_config.idle_stop_ms = config.controller.idle_stop_ms;
         vr_input_config.speed_step = config.controller.speed_step;
         vr_input_config.log_only = config.controller.log_only;
+        vr_input_config.side_button_action = SideButtonAction::kModeToggle;
         vr_input_thread = std::thread([&, vr_input_config]() {
             const bool ok = run_vr_remote_input_loop(vr_input_config,
                                                      running,
                                                      [&](const char* reason) {
                                                          auto_controller.cancel_goal(reason);
+                                                     },
+                                                     [&]() {
+                                                         return ptz_controller.set_mode(PtzMode::kVr);
+                                                     },
+                                                     [&]() {
+                                                         return ptz_controller.zero_vr_reference();
                                                      });
             if (!ok && running.load()) {
                 std::fprintf(stderr, "[VR] controller loop unavailable; Qt/auto control remains active\n");

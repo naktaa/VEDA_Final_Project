@@ -248,11 +248,19 @@ struct PtzController::Impl {
     float last_pitch = 0.0f;
     float last_roll = 0.0f;
     float last_yaw = 0.0f;
+    float latest_input_pitch = 0.0f;
+    float latest_input_roll = 0.0f;
+    float latest_input_yaw = 0.0f;
+    bool latest_input_valid = false;
     uint64_t last_client_timestamp_ms = 0;
     float current_pan = 90.0f;
     float current_tilt = 90.0f;
     float imu_target_pan = 90.0f;
     float imu_target_tilt = 90.0f;
+    float zero_pitch = 0.0f;
+    float zero_roll = 0.0f;
+    float zero_yaw = 0.0f;
+    bool zero_reference_valid = false;
     bool pan_left_active = false;
     bool pan_right_active = false;
     bool tilt_up_active = false;
@@ -260,6 +268,22 @@ struct PtzController::Impl {
     PtzMode mode = PtzMode::kManual;
     std::string active_source = "hold";
     std::chrono::steady_clock::time_point last_imu_arrival{};
+
+    void reset_vr_tracking_state(bool hold_current_pose) {
+        filtered_pitch = 0.0f;
+        filtered_roll = 0.0f;
+        filtered_yaw = 0.0f;
+        yaw_unwrapped = 0.0f;
+        last_raw_yaw = 0.0f;
+        yaw_initialized = false;
+        last_raw_pitch = 0.0f;
+        last_raw_roll = 0.0f;
+        pitch_roll_initialized = false;
+        if (hold_current_pose) {
+            imu_target_pan = current_pan;
+            imu_target_tilt = current_tilt;
+        }
+    }
 
     void run() {
         float current_pan_local = config.pan_center_deg;
@@ -411,28 +435,14 @@ bool PtzController::set_mode(PtzMode mode) {
     impl_->tilt_down_active = false;
     if (mode == PtzMode::kManual) {
         impl_->last_imu_arrival = {};
-        impl_->filtered_pitch = 0.0f;
-        impl_->filtered_roll = 0.0f;
-        impl_->filtered_yaw = 0.0f;
-        impl_->yaw_unwrapped = 0.0f;
-        impl_->last_raw_yaw = 0.0f;
-        impl_->yaw_initialized = false;
-        impl_->last_raw_pitch = 0.0f;
-        impl_->last_raw_roll = 0.0f;
-        impl_->pitch_roll_initialized = false;
-        impl_->imu_target_pan = impl_->current_pan;
-        impl_->imu_target_tilt = impl_->current_tilt;
+        impl_->zero_reference_valid = false;
+        impl_->latest_input_valid = false;
+        impl_->reset_vr_tracking_state(true);
     } else {
         impl_->last_imu_arrival = std::chrono::steady_clock::now();
-        impl_->filtered_pitch = 0.0f;
-        impl_->filtered_roll = 0.0f;
-        impl_->filtered_yaw = 0.0f;
-        impl_->yaw_unwrapped = 0.0f;
-        impl_->last_raw_yaw = 0.0f;
-        impl_->yaw_initialized = false;
-        impl_->last_raw_pitch = 0.0f;
-        impl_->last_raw_roll = 0.0f;
-        impl_->pitch_roll_initialized = false;
+        impl_->zero_reference_valid = false;
+        impl_->latest_input_valid = false;
+        impl_->reset_vr_tracking_state(true);
     }
     std::fprintf(stderr, "[PTZ] mode -> %s\n", mode_to_cstr(mode));
     return true;
@@ -445,6 +455,30 @@ PtzMode PtzController::mode() const {
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->mode;
+}
+
+bool PtzController::zero_vr_reference() {
+    if (!impl_) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->mode != PtzMode::kVr || !impl_->latest_input_valid) {
+        return false;
+    }
+
+    impl_->zero_pitch = impl_->latest_input_pitch;
+    impl_->zero_roll = impl_->latest_input_roll;
+    impl_->zero_yaw = impl_->latest_input_yaw;
+    impl_->zero_reference_valid = true;
+    impl_->last_imu_arrival = std::chrono::steady_clock::now();
+    impl_->reset_vr_tracking_state(true);
+    std::fprintf(stderr,
+                 "[PTZ] zero reference pitch=%+.1f roll=%+.1f yaw=%+.1f\n",
+                 impl_->zero_pitch,
+                 impl_->zero_roll,
+                 impl_->zero_yaw);
+    return true;
 }
 
 void PtzController::handle_mqtt_command(const std::string& command, bool active) {
@@ -477,6 +511,16 @@ void PtzController::handle_imu(float pitch, float roll, float yaw, uint64_t clie
         return;
     }
     const auto now = std::chrono::steady_clock::now();
+    impl_->latest_input_pitch = pitch;
+    impl_->latest_input_roll = roll;
+    impl_->latest_input_yaw = yaw;
+    impl_->latest_input_valid = true;
+
+    if (impl_->zero_reference_valid) {
+        pitch = wrap_angle_180(pitch - impl_->zero_pitch);
+        roll = wrap_angle_180(roll - impl_->zero_roll);
+        yaw = wrap_angle_180(yaw - impl_->zero_yaw);
+    }
 
     impl_->last_pitch = pitch;
     impl_->last_roll = roll;

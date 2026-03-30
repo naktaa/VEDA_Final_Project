@@ -49,6 +49,7 @@ public:
 
     bool set_mode(PtzMode mode);
     PtzMode mode() const;
+    bool zero_vr_reference();
     void handle_mqtt_command(const std::string& command, bool active);
     void handle_imu(float pitch, float roll, float yaw, uint64_t client_timestamp_ms);
 

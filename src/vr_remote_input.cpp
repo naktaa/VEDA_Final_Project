@@ -36,7 +36,7 @@ const char* side_button_action_name(SideButtonAction action) {
     case SideButtonAction::kEstop:
         return "estop";
     case SideButtonAction::kModeToggle:
-        return "mode_toggle";
+        return "ptz_vr";
     default:
         return "unknown";
     }
@@ -175,9 +175,13 @@ bool resolve_input_device(const VrRemoteInputConfig& config,
 class VrTankDispatcher {
 public:
     VrTankDispatcher(const VrRemoteInputConfig& config,
-                     std::function<void(const char*)> on_manual_override)
+                     std::function<void(const char*)> on_manual_override,
+                     std::function<bool()> on_side_button,
+                     std::function<bool()> on_left_button)
         : config_(config),
           on_manual_override_(std::move(on_manual_override)),
+          on_side_button_(std::move(on_side_button)),
+          on_left_button_(std::move(on_left_button)),
           last_input_(Clock::now()) {}
 
     void handle_event(const input_event& ev) {
@@ -234,10 +238,13 @@ private:
     void handle_key(const input_event& ev) {
         if (ev.code == BTN_LEFT && ev.value == 1) {
             update_last_input();
-            notify_manual_override();
-            std::fprintf(stderr, "[VR] EV_KEY %s value=%d -> stop\n", key_code_name(ev.code), ev.value);
+            const bool handled = on_left_button_ && on_left_button_();
+            std::fprintf(stderr,
+                         "[VR] EV_KEY %s value=%d -> %s\n",
+                         key_code_name(ev.code),
+                         ev.value,
+                         handled ? "zero_calibrate" : "zero_calibrate unavailable");
             std::fflush(stderr);
-            stop_drive("btn_left");
             return;
         }
 
@@ -282,7 +289,10 @@ private:
             return;
         case SideButtonAction::kModeToggle:
             if (pressed) {
-                std::fprintf(stderr, "[VR] side button mode toggle is not enabled in this build\n");
+                const bool handled = on_side_button_ && on_side_button_();
+                std::fprintf(stderr,
+                             "[VR] side button -> %s\n",
+                             handled ? "ptz vr mode" : "ptz vr unavailable");
                 std::fflush(stderr);
             }
             return;
@@ -361,6 +371,8 @@ private:
 
     VrRemoteInputConfig config_;
     std::function<void(const char*)> on_manual_override_;
+    std::function<bool()> on_side_button_;
+    std::function<bool()> on_left_button_;
     int current_speed_ = kDefaultSpeed;
     int left_cmd_ = 0;
     int right_cmd_ = 0;
@@ -404,7 +416,9 @@ bool read_events(int fd, VrTankDispatcher& dispatcher) {
 
 bool run_vr_remote_input_loop(const VrRemoteInputConfig& config,
                               std::atomic<bool>& running,
-                              const std::function<void(const char*)>& on_manual_override) {
+                              const std::function<void(const char*)>& on_manual_override,
+                              const std::function<bool()>& on_side_button,
+                              const std::function<bool()>& on_left_button) {
     std::string resolved_path;
     std::string resolved_name;
     std::string resolve_error;
@@ -430,7 +444,7 @@ bool run_vr_remote_input_loop(const VrRemoteInputConfig& config,
                  side_button_action_name(config.side_button_action));
     std::fflush(stderr);
 
-    VrTankDispatcher dispatcher(config, on_manual_override);
+    VrTankDispatcher dispatcher(config, on_manual_override, on_side_button, on_left_button);
 
     while (running.load()) {
         pollfd pfd{};

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <thread>
 
@@ -140,8 +141,17 @@ int main() {
         vr_input_config.idle_stop_ms = config.controller.idle_stop_ms;
         vr_input_config.speed_step = config.controller.speed_step;
         vr_input_config.log_only = config.controller.log_only;
+        vr_input_config.side_button_action = SideButtonAction::kModeToggle;
         vr_input_thread = std::thread([&, vr_input_config]() {
-            const bool ok = run_vr_remote_input_loop(vr_input_config, running);
+            const bool ok = run_vr_remote_input_loop(vr_input_config,
+                                                     running,
+                                                     std::function<void(const char*)>{},
+                                                     [&]() {
+                                                         return ptz_controller.set_mode(PtzMode::kVr);
+                                                     },
+                                                     [&]() {
+                                                         return ptz_controller.zero_vr_reference();
+                                                     });
             if (!ok && running.load()) {
                 std::fprintf(stderr, "[VR] controller loop unavailable; Qt control remains active\n");
             }

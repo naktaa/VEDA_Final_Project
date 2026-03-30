@@ -20,4 +20,6 @@ struct VrRemoteInputConfig {
 
 bool run_vr_remote_input_loop(const VrRemoteInputConfig& config,
                               std::atomic<bool>& running,
-                              const std::function<void(const char*)>& on_manual_override = {});
+                              const std::function<void(const char*)>& on_manual_override = {},
+                              const std::function<bool()>& on_side_button = {},
+                              const std::function<bool()>& on_left_button = {});

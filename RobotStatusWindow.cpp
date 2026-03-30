@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -101,6 +102,32 @@ QHBoxLayout* appendMetricRow(QVBoxLayout* layout, const QString& labelText, QLab
     return row;
 }
 
+QFrame* appendUsageSparkline(QVBoxLayout* layout, const QString& labelText, QLabel*& valueLabel, QFrame*& host)
+{
+    auto* section = new QFrame();
+    section->setObjectName("robotUsageSection");
+    section->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto* sectionLayout = new QVBoxLayout(section);
+    sectionLayout->setContentsMargins(0, 0, 0, 0);
+    sectionLayout->setSpacing(6);
+
+    auto* headerRow = new QHBoxLayout();
+    auto* label = new QLabel(labelText, section);
+    label->setProperty("robotMetricLabel", true);
+    valueLabel = new QLabel("- %", section);
+    valueLabel->setProperty("robotMetricValue", true);
+    headerRow->addWidget(label);
+    headerRow->addStretch();
+    headerRow->addWidget(valueLabel);
+
+    host = new QFrame(section);
+    host->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    sectionLayout->addLayout(headerRow);
+    sectionLayout->addWidget(host, 1);
+    layout->addWidget(section, 1);
+    return section;
+}
+
 void addShadow(QWidget* widget)
 {
     if (!widget) return;
@@ -180,10 +207,10 @@ RobotStatusWindow::RobotStatusWindow(QWidget* parent)
     m_speedTrendHost = new QFrame(speedCard);
     speedLayout->addWidget(m_speedTrendHost, 1);
 
-    auto* batteryCard = makeCard("Battery Trend", body);
-    auto* batteryLayout = qobject_cast<QVBoxLayout*>(batteryCard->layout());
-    m_batteryTrendHost = new QFrame(batteryCard);
-    batteryLayout->addWidget(m_batteryTrendHost, 1);
+    auto* systemCard = makeCard("System Usage", body);
+    auto* systemLayout = qobject_cast<QVBoxLayout*>(systemCard->layout());
+    appendUsageSparkline(systemLayout, "CPU", m_cpuUsageValue, m_cpuTrendHost);
+    appendUsageSparkline(systemLayout, "Memory", m_memoryUsageValue, m_memoryTrendHost);
 
     auto* taskCard = makeCard("Task Counters", body);
     auto* taskLayout = qobject_cast<QVBoxLayout*>(taskCard->layout());
@@ -194,7 +221,7 @@ RobotStatusWindow::RobotStatusWindow(QWidget* parent)
     bodyLayout->addWidget(motionCard, 0, 1, 1, 2);
     bodyLayout->addWidget(telemetryCard, 0, 3);
     bodyLayout->addWidget(speedCard, 1, 0, 1, 2);
-    bodyLayout->addWidget(batteryCard, 1, 2);
+    bodyLayout->addWidget(systemCard, 1, 2);
     bodyLayout->addWidget(taskCard, 1, 3);
     bodyLayout->setColumnStretch(0, 2);
     bodyLayout->setColumnStretch(1, 3);
@@ -207,7 +234,7 @@ RobotStatusWindow::RobotStatusWindow(QWidget* parent)
     addShadow(motionCard);
     addShadow(telemetryCard);
     addShadow(speedCard);
-    addShadow(batteryCard);
+    addShadow(systemCard);
     addShadow(taskCard);
 
     connect(m_titleBar, &TitleBarWidget::minimizeRequested, this, &QWidget::showMinimized);
@@ -252,31 +279,50 @@ QFrame#robotMovePanel {
     border: 1px solid #2d435c;
     border-radius: 10px;
 }
+QFrame#robotUsageSection {
+    background-color: #18253a;
+    border: 1px solid #2d435c;
+    border-radius: 8px;
+}
 )");
 
     updateSparkline(m_speedTrendHost, {0, 0}, QColor("#54dbcf"));
-    updateSparkline(m_batteryTrendHost, {0, 0}, QColor("#7ee081"));
+    updateSparkline(m_cpuTrendHost, {0, 0}, QColor("#2ee6a5"));
+    updateSparkline(m_memoryTrendHost, {0, 0}, QColor("#53a7ff"));
     updateSparkline(m_taskTrendHost, {0, 0}, QColor("#f0b54a"));
     syncWindowState();
 }
 
 void RobotStatusWindow::setRobotStatus(const MqttEvent& ev)
 {
-    if (m_connectionValue) {
-        const QString commState = ev.rcCommState.isEmpty()
-            ? (ev.rcConnected ? "CONNECTED" : "DISCONNECTED")
-            : ev.rcCommState.toUpper();
-        m_connectionValue->setText(commState);
+    const QString commState = ev.rcCommState.isEmpty()
+        ? (ev.rcConnected ? "CONNECTED" : "DISCONNECTED")
+        : ev.rcCommState.toUpper();
+    const QString robotState = ev.rcRobotState.isEmpty()
+        ? (ev.rcConnected ? "RUN" : "IDLE")
+        : ev.rcRobotState.toUpper();
+    const QString dataPeriod = ev.rcDataPeriod.isEmpty() ? "-" : ev.rcDataPeriod;
+    const QString mode = ev.rcMode.isEmpty() ? "-" : ev.rcMode.toUpper();
+    const QString mission = ev.rcMission.isEmpty() ? "-" : ev.rcMission;
+    const bool isAutoMode = mode.compare("AUTO", Qt::CaseInsensitive) == 0;
+    const bool isManualMode = mode.compare("MANUAL", Qt::CaseInsensitive) == 0;
+
+    if (m_manualOperationSummaryLocked && !isAutoMode) {
+        applyOperationSummary(
+            m_lockedCommState,
+            m_lockedRobotState,
+            m_lockedDataPeriod,
+            m_lockedMode,
+            m_lockedMission);
+    } else {
+        applyOperationSummary(commState, robotState, dataPeriod, mode, mission);
+        m_lockedCommState = commState;
+        m_lockedRobotState = robotState;
+        m_lockedDataPeriod = dataPeriod;
+        m_lockedMode = mode;
+        m_lockedMission = mission;
+        m_manualOperationSummaryLocked = isManualMode;
     }
-    if (m_robotStateValue) {
-        const QString robotState = ev.rcRobotState.isEmpty()
-            ? (ev.rcConnected ? "RUN" : "IDLE")
-            : ev.rcRobotState.toUpper();
-        m_robotStateValue->setText(robotState);
-    }
-    if (m_dataPeriodValue) m_dataPeriodValue->setText(ev.rcDataPeriod.isEmpty() ? "-" : ev.rcDataPeriod);
-    if (m_modeValue) m_modeValue->setText(ev.rcMode.isEmpty() ? "-" : ev.rcMode.toUpper());
-    if (m_missionValue) m_missionValue->setText(ev.rcMission.isEmpty() ? "-" : ev.rcMission);
 
     if (m_poseXValue) m_poseXValue->setText(QString::number(ev.rcX, 'f', 1));
     if (m_poseYValue) m_poseYValue->setText(QString::number(ev.rcY, 'f', 1));
@@ -288,6 +334,12 @@ void RobotStatusWindow::setRobotStatus(const MqttEvent& ev)
     }
     if (m_speedValue) m_speedValue->setText(QString("%1 m/s").arg(ev.rcSpeed, 0, 'f', 2));
     if (m_batteryValue) m_batteryValue->setText(QString("%1 %").arg(ev.rcBattery, 0, 'f', 0));
+    if (m_cpuUsageValue) {
+        m_cpuUsageValue->setText(ev.rcCpuUsage >= 0.0 ? QString("%1 %").arg(ev.rcCpuUsage, 0, 'f', 0) : "- %");
+    }
+    if (m_memoryUsageValue) {
+        m_memoryUsageValue->setText(ev.rcMemoryUsage >= 0.0 ? QString("%1 %").arg(ev.rcMemoryUsage, 0, 'f', 0) : "- %");
+    }
 
     if (m_runStateValue) {
         const QString runState = ev.state ? "ACTIVE" : "STANDBY";
@@ -301,12 +353,27 @@ void RobotStatusWindow::setRobotStatus(const MqttEvent& ev)
     if (m_motor2Value) m_motor2Value->setText(QString("%1 Nm").arg(torqueAt(1), 0, 'f', 0));
 
     appendHistory(m_speedHistory, (ev.rcSpeed / 250.0) * 100.0);
-    appendHistory(m_batteryHistory, ev.rcBattery);
     appendHistory(m_taskHistory, std::min(static_cast<double>(ev.rcTaskDaily * 4), 100.0));
+    if (ev.rcCpuUsage >= 0.0) appendHistory(m_cpuUsageHistory, ev.rcCpuUsage);
+    if (ev.rcMemoryUsage >= 0.0) appendHistory(m_memoryUsageHistory, ev.rcMemoryUsage);
 
     updateSparkline(m_speedTrendHost, m_speedHistory, QColor("#54dbcf"));
-    updateSparkline(m_batteryTrendHost, m_batteryHistory, QColor("#7ee081"));
+    updateSparkline(m_cpuTrendHost, m_cpuUsageHistory, QColor("#2ee6a5"));
+    updateSparkline(m_memoryTrendHost, m_memoryUsageHistory, QColor("#53a7ff"));
     updateSparkline(m_taskTrendHost, m_taskHistory, QColor("#f0b54a"));
+}
+
+void RobotStatusWindow::applyOperationSummary(const QString& commState,
+                                              const QString& robotState,
+                                              const QString& dataPeriod,
+                                              const QString& mode,
+                                              const QString& mission)
+{
+    if (m_connectionValue) m_connectionValue->setText(commState);
+    if (m_robotStateValue) m_robotStateValue->setText(robotState);
+    if (m_dataPeriodValue) m_dataPeriodValue->setText(dataPeriod);
+    if (m_modeValue) m_modeValue->setText(mode);
+    if (m_missionValue) m_missionValue->setText(mission);
 }
 
 bool RobotStatusWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)

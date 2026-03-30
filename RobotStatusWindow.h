@@ -28,6 +28,11 @@ protected:
 private:
     void updateSparkline(QFrame* host, const QVector<double>& values, const QColor& color);
     void appendHistory(QVector<double>& history, double value, int maxSize = 20);
+    void applyOperationSummary(const QString& commState,
+                               const QString& robotState,
+                               const QString& dataPeriod,
+                               const QString& mode,
+                               const QString& mission);
     void syncWindowState();
 
     TitleBarWidget* m_titleBar = nullptr;
@@ -48,14 +53,25 @@ private:
     QLabel* m_runStateValue = nullptr;
     QLabel* m_motor1Value = nullptr;
     QLabel* m_motor2Value = nullptr;
+    QLabel* m_cpuUsageValue = nullptr;
+    QLabel* m_memoryUsageValue = nullptr;
 
     QFrame* m_speedTrendHost = nullptr;
-    QFrame* m_batteryTrendHost = nullptr;
     QFrame* m_taskTrendHost = nullptr;
+    QFrame* m_cpuTrendHost = nullptr;
+    QFrame* m_memoryTrendHost = nullptr;
 
     QVector<double> m_speedHistory;
-    QVector<double> m_batteryHistory;
     QVector<double> m_taskHistory;
+    QVector<double> m_cpuUsageHistory;
+    QVector<double> m_memoryUsageHistory;
+
+    bool m_manualOperationSummaryLocked = false;
+    QString m_lockedCommState;
+    QString m_lockedRobotState;
+    QString m_lockedDataPeriod;
+    QString m_lockedMode;
+    QString m_lockedMission;
 };
 
 #endif

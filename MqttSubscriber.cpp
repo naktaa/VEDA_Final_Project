@@ -11,6 +11,41 @@
 #include <QUuid>
 
 namespace {
+double parsePercentValue(const QJsonValue& value)
+{
+    if (value.isDouble()) return value.toDouble();
+
+    const QString text = value.toString().trimmed();
+    if (text.isEmpty()) return -1.0;
+
+    QString normalized = text;
+    normalized.remove('%');
+
+    bool ok = false;
+    const double parsed = normalized.toDouble(&ok);
+    return ok ? parsed : -1.0;
+}
+
+double parsePercentCandidate(const QJsonObject& object, std::initializer_list<const char*> keys)
+{
+    for (const char* key : keys) {
+        const QJsonValue value = object.value(QLatin1String(key));
+        if (value.isUndefined() || value.isNull()) continue;
+
+        const double parsed = parsePercentValue(value);
+        if (parsed >= 0.0) return parsed;
+
+        if (value.isObject()) {
+            const double nestedParsed = parsePercentCandidate(
+                value.toObject(),
+                {"usage", "percent", "value", "load", "pct"});
+            if (nestedParsed >= 0.0) return nestedParsed;
+        }
+    }
+
+    return -1.0;
+}
+
 int parseFirstPositiveInt(const QJsonObject& object, std::initializer_list<const char*> keys)
 {
     for (const char* key : keys) {
@@ -581,6 +616,23 @@ void MqttSubscriber::handleMessage(const QString& mqttTopic, const QByteArray& p
         ev.rcTaskDaily = o.value("task_daily").toInt(0);
         ev.rcTaskWeekly = o.value("task_weekly").toInt(0);
         ev.rcTaskMonthly = o.value("task_monthly").toInt(0);
+
+        const QJsonObject systemUsageObject = o.value("system_usage").toObject();
+        const auto parseRcUsage = [&](std::initializer_list<const char*> topLevelKeys,
+                                      std::initializer_list<const char*> nestedKeys) -> double {
+            const double topLevelValue = parsePercentCandidate(o, topLevelKeys);
+            if (topLevelValue >= 0.0) return topLevelValue;
+            if (!systemUsageObject.isEmpty()) {
+                return parsePercentCandidate(systemUsageObject, nestedKeys);
+            }
+            return -1.0;
+        };
+        ev.rcCpuUsage = parseRcUsage(
+            {"cpu", "cpu_usage", "cpu_percent", "cpuUsage", "cpuPercent"},
+            {"cpu", "usage", "percent", "cpu_usage", "cpu_percent"});
+        ev.rcMemoryUsage = parseRcUsage(
+            {"memory", "memory_usage", "memory_percent", "memoryUsage", "memoryPercent", "mem", "mem_usage", "mem_percent"},
+            {"memory", "usage", "percent", "memory_usage", "memory_percent", "mem", "mem_usage", "mem_percent"});
 
         const QJsonObject targetObject = o.value("target").toObject();
         if (!targetObject.isEmpty()) {

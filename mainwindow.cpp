@@ -524,8 +524,8 @@ MainWindow::MainWindow(const QString& userId, QWidget *parent)
     m_nodeOverlayEnabled = false;
 
     // 釉뚮줈占??占쎈쾭 IP占??占쎌냽
-    m_mqtt->start("192.168.100.10", 1883, "wiserisk/#");
-    m_pub->start("192.168.100.10", 1883, "qt-main-goal-pub");
+    m_mqtt->start("192.168.100.7", 1883, "wiserisk/#");
+    m_pub->start("192.168.100.7", 1883, "qt-main-goal-pub");
 
     // UI connect
     connect(ui->btnOpenAllCctv, &QPushButton::clicked,

@@ -40,6 +40,8 @@ struct MqttEvent {
     QString rcMode;
     QString rcMission;
     double  rcBattery = 0.0;
+    double  rcCpuUsage = -1.0;
+    double  rcMemoryUsage = -1.0;
     double  rcSpeed = 0.0;
     double  rcX = 0.0;
     double  rcY = 0.0;

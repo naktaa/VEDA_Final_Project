@@ -63,7 +63,7 @@ ClipPopup::ClipPopup(QWidget* parent) : QWidget(parent)
 
     m_net = new QNetworkAccessManager(this);
     m_pub = new MqttPublisher(this);
-    m_pub->start("192.168.100.10", 1883, "qt-clip-popup-pub");
+    m_pub->start("192.168.100.7", 1883, "qt-clip-popup-pub");
 
     connect(m_btnDownload, &QPushButton::clicked, this, &ClipPopup::onDownload);
     connect(m_btnSend, &QPushButton::clicked, this, &ClipPopup::onSend);

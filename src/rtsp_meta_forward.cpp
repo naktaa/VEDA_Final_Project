@@ -730,9 +730,9 @@ int main(int argc, char** argv)
 
             ParsedEv ev{};
             if (!parse_one_xml(one, ev, cfg)) continue;
-            if (ev.topic == "IvaArea") {
+            if (ev.rule == "LineCrossing" || ev.topic == "LineCrossing") {
                 std::fprintf(stderr,
-                             "\n[RTSP_META][IvaArea XML]\n"
+                             "\n[RTSP_META][LineCrossing XML]\n"
                              "topic_full=%s\n"
                              "utc=%s\n"
                              "rule=%s\n"

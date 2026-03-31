@@ -68,7 +68,6 @@ add_executable(rtsp_meta_forward
 )
 
 target_include_directories(rtsp_meta_forward PRIVATE
-    ${OpenCV_INCLUDE_DIRS}
     ${MOSQ_INCLUDE_DIRS}
 )
 
@@ -76,7 +75,6 @@ target_compile_options(rtsp_meta_forward PRIVATE ${MOSQ_CFLAGS_OTHER})
 target_link_directories(rtsp_meta_forward PRIVATE ${MOSQ_LIBRARY_DIRS})
 
 target_link_libraries(rtsp_meta_forward PRIVATE
-    ${OpenCV_LIBS}
     ${MOSQ_LIBRARIES}
     Threads::Threads
 )

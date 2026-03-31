@@ -1,5 +1,4 @@
 #include <mosquitto.h>
-#include <opencv2/core.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -29,14 +28,13 @@ constexpr int kDefaultHttpPort = 1885;
 constexpr int kDefaultClipSec = 5;
 constexpr int kDefaultClipTtlSec = 86400;
 constexpr int kDefaultGcIntervalMs = 5000;
-constexpr int kDefaultTargetFrameW = 1280;
-constexpr int kDefaultTargetFrameH = 960;
+constexpr int kDefaultTargetFrameW = 1920;
+constexpr int kDefaultTargetFrameH = 1080;
 constexpr double kSyntheticIdQuantPx = 48.0;
 
 struct RuntimeConfig {
     std::string root_dir = "/home/pi/final_veda_test";
     std::string clip_dir = root_dir + "/clips";
-    std::string homography_path = "config/H_img2world.yaml";
     std::string mqtt_host = kDefaultMqttHost;
     int mqtt_port = kDefaultMqttPort;
     int http_port = kDefaultHttpPort;
@@ -83,14 +81,6 @@ struct ParsedEv {
     bool has_bbox = false;
     int frame_w = 0;
     int frame_h = 0;
-    double world_x = 0.0;
-    double world_y = 0.0;
-    bool has_world = false;
-};
-
-struct HomographyContext {
-    cv::Mat H_img2world;
-    bool loaded = false;
 };
 
 std::tm localtime_safe(std::time_t t)
@@ -119,25 +109,6 @@ bool ensure_dir(const std::string& path)
     std::error_code ec;
     if (fs::exists(path, ec)) return fs::is_directory(path, ec);
     return fs::create_directories(path, ec);
-}
-
-bool load_homography(const std::string& path, cv::Mat& H_img2world)
-{
-    cv::FileStorage fs(path, cv::FileStorage::READ);
-    if (!fs.isOpened()) {
-        return false;
-    }
-
-    fs["H_img2world"] >> H_img2world;
-    fs.release();
-
-    if (H_img2world.empty() || H_img2world.rows != 3 || H_img2world.cols != 3) {
-        return false;
-    }
-    if (H_img2world.type() != CV_64F) {
-        H_img2world.convertTo(H_img2world, CV_64F);
-    }
-    return true;
 }
 
 std::optional<long long> file_mtime_epoch_sec(const std::string& path)
@@ -488,24 +459,6 @@ void scale_bbox_if_needed(BoundingBox& bbox,
     out_frame_h = std::max(1, static_cast<int>(std::ceil(bbox.bottom + 1.0)));
 }
 
-bool image_to_world(const cv::Mat& H_img2world,
-                    double img_x,
-                    double img_y,
-                    double& world_x,
-                    double& world_y)
-{
-    if (H_img2world.empty()) return false;
-
-    const cv::Mat pt_img = (cv::Mat_<double>(3, 1) << img_x, img_y, 1.0);
-    const cv::Mat pt_world = H_img2world * pt_img;
-    const double w = pt_world.at<double>(2);
-    if (!std::isfinite(w) || std::fabs(w) < 1e-9) return false;
-
-    world_x = pt_world.at<double>(0) / w;
-    world_y = pt_world.at<double>(1) / w;
-    return std::isfinite(world_x) && std::isfinite(world_y);
-}
-
 std::string make_synthetic_object_id(const std::string& cam_id, const BoundingBox& bbox)
 {
     const double cx = (bbox.left + bbox.right) * 0.5;
@@ -554,17 +507,6 @@ bool parse_one_xml(const std::string& xml, ParsedEv& out, const RuntimeConfig& c
     }
 
     return true;
-}
-
-void maybe_attach_world_coordinate(ParsedEv& ev, const HomographyContext& homography)
-{
-    if (!ev.has_bbox || !ev.bbox.valid() || !homography.loaded) {
-        return;
-    }
-
-    const double img_x = (ev.bbox.left + ev.bbox.right) * 0.5;
-    const double img_y = ev.bbox.bottom;
-    ev.has_world = image_to_world(homography.H_img2world, img_x, img_y, ev.world_x, ev.world_y);
 }
 
 bool should_publish_event(const ParsedEv& ev)
@@ -728,7 +670,6 @@ RuntimeConfig parse_args(int argc, char** argv)
     if (argc > 4) cfg.cam_id = argv[4];
     if (argc > 5) cfg.target_frame_w = std::max(1, std::atoi(argv[5]));
     if (argc > 6) cfg.target_frame_h = std::max(1, std::atoi(argv[6]));
-    if (argc > 7) cfg.homography_path = argv[7];
     cfg.clip_dir = cfg.root_dir + "/clips";
     return cfg;
 }
@@ -737,12 +678,6 @@ RuntimeConfig parse_args(int argc, char** argv)
 int main(int argc, char** argv)
 {
     const RuntimeConfig cfg = parse_args(argc, argv);
-    HomographyContext homography;
-    homography.loaded = load_homography(cfg.homography_path, homography.H_img2world);
-    if (!homography.loaded) {
-        std::cerr << "[WARN] homography load failed: " << cfg.homography_path
-                  << " (world coordinates will be omitted)\n";
-    }
     ensure_dir(cfg.root_dir);
     ensure_dir(cfg.clip_dir);
 
@@ -795,8 +730,24 @@ int main(int argc, char** argv)
 
             ParsedEv ev{};
             if (!parse_one_xml(one, ev, cfg)) continue;
+            if (ev.topic == "IvaArea") {
+                std::fprintf(stderr,
+                             "\n[RTSP_META][IvaArea XML]\n"
+                             "topic_full=%s\n"
+                             "utc=%s\n"
+                             "rule=%s\n"
+                             "object_id=%s\n"
+                             "state=%s\n"
+                             "%s\n",
+                             ev.topic_full.c_str(),
+                             ev.utc.c_str(),
+                             ev.rule.c_str(),
+                             ev.object_id.c_str(),
+                             ev.state_str.c_str(),
+                             one.c_str());
+                std::fflush(stderr);
+            }
             if (!should_publish_event(ev)) continue;
-            maybe_attach_world_coordinate(ev, homography);
 
             const bool state = (ev.state_str == "true");
             std::string clip_url;
@@ -846,11 +797,6 @@ int main(int argc, char** argv)
                   << ",\"frame_h\":" << ev.frame_h
                   << ",\"center_x\":" << center_x
                   << ",\"center_y\":" << center_y;
-                if (ev.has_world) {
-                    j << ",\"world_x\":" << ev.world_x
-                      << ",\"world_y\":" << ev.world_y
-                      << ",\"world_ref\":\"bbox_bottom_center\"";
-                }
             }
 
             if (ev.topic != "ObjectDetection") {

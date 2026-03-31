@@ -191,7 +191,7 @@ bool find_attr_value(const std::string& src,
 
 std::vector<SimpleItem> extract_simple_items(const std::string& xml)
 {
-    static const std::regex re(R"(Name="([^"]+)"\s+Value="([^"]*)")");
+    static const std::regex re("Name=\"([^\"]+)\"\\s+Value=\"([^\"]*)\"");
     std::vector<SimpleItem> out;
     for (std::sregex_iterator it(xml.begin(), xml.end(), re), end; it != end; ++it) {
         out.push_back({(*it)[1].str(), (*it)[2].str()});
@@ -337,7 +337,7 @@ void assign_corner_value(const std::string& normalized_name,
 
 bool try_extract_bbox_from_attr_fragment(const std::string& fragment, BoundingBox& bbox)
 {
-    static const std::regex re(R"(([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)")");
+    static const std::regex re("([A-Za-z_:][-A-Za-z0-9_:.]*)=\"([^\"]*)\"");
     std::optional<double> left, top, right, bottom, x, y, width, height;
     for (std::sregex_iterator it(fragment.begin(), fragment.end(), re), end; it != end; ++it) {
         const std::string name = normalize_key((*it)[1].str());
@@ -357,11 +357,11 @@ bool try_extract_bbox_from_attr_fragment(const std::string& fragment, BoundingBo
     }
 
     if (left && top && right && bottom) {
-        bbox = {*left, *top, *right, *bottom};
+        bbox = BoundingBox{*left, *top, *right, *bottom};
         return bbox.valid();
     }
     if (x && y && width && height) {
-        bbox = {*x, *y, *x + *width, *y + *height};
+        bbox = BoundingBox{*x, *y, *x + *width, *y + *height};
         return bbox.valid();
     }
     return false;
@@ -378,12 +378,12 @@ bool try_extract_bbox(const std::string& xml, const std::vector<SimpleItem>& ite
     }
 
     if (left && top && right && bottom) {
-        bbox = {*left, *top, *right, *bottom};
+        bbox = BoundingBox{*left, *top, *right, *bottom};
         if (bbox.valid()) return true;
     }
 
     if (x && y && width && height) {
-        bbox = {*x, *y, *x + *width, *y + *height};
+        bbox = BoundingBox{*x, *y, *x + *width, *y + *height};
         if (bbox.valid()) return true;
     }
 

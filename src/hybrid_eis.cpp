@@ -108,16 +108,6 @@ GateYawResult compute_gate_yaw(const GyroBuffer* gyro_buffer, double target_time
         return result;
     }
 
-    ImuSample latest_sample;
-    if (!gyro_buffer->latest(latest_sample)) {
-        return result;
-    }
-    result.latest_sample_time_ms = latest_sample.sample_time_ms;
-    result.latest_lag_ms = target_time_ms - latest_sample.sample_time_ms;
-    if (!std::isfinite(result.latest_lag_ms) || result.latest_lag_ms > kGateStaleMs) {
-        return result;
-    }
-
     std::vector<ImuSample> range_samples;
     GyroRangeInfo range_info;
     const double window_start_ms = target_time_ms - kGateWindowMs;
@@ -132,6 +122,8 @@ GateYawResult compute_gate_yaw(const GyroBuffer* gyro_buffer, double target_time
 
     std::vector<double> abs_yaw_values;
     abs_yaw_values.reserve(range_samples.size());
+    double latest_used_sample_ms = 0.0;
+    bool have_used_sample = false;
     for (const ImuSample& sample : range_samples) {
         if (sample.sample_time_ms < window_start_ms || sample.sample_time_ms > target_time_ms) {
             continue;
@@ -145,10 +137,24 @@ GateYawResult compute_gate_yaw(const GyroBuffer* gyro_buffer, double target_time
             continue;
         }
         abs_yaw_values.push_back(abs_yaw);
+        if (!have_used_sample || sample.sample_time_ms > latest_used_sample_ms) {
+            latest_used_sample_ms = sample.sample_time_ms;
+            have_used_sample = true;
+        }
     }
 
     result.samples = static_cast<int>(abs_yaw_values.size());
     if (result.samples < kGateMinSamples) {
+        return result;
+    }
+
+    if (!have_used_sample) {
+        return result;
+    }
+
+    result.latest_sample_time_ms = latest_used_sample_ms;
+    result.latest_lag_ms = target_time_ms - latest_used_sample_ms;
+    if (!std::isfinite(result.latest_lag_ms) || result.latest_lag_ms > kGateStaleMs) {
         return result;
     }
 

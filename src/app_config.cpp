@@ -212,6 +212,7 @@ std::string make_default_config_text() {
     append_section(oss, "rtsp");
     append_kv(oss, "port", cfg.rtsp.port);
     append_kv(oss, "path", cfg.rtsp.path);
+    append_kv(oss, "raw_enable", cfg.rtsp.raw_enable ? 1 : 0);
     append_kv(oss, "raw_path", cfg.rtsp.raw_path);
     append_kv(oss, "bitrate", cfg.rtsp.bitrate);
     append_kv(oss, "iframe_period", cfg.rtsp.iframe_period);
@@ -420,6 +421,7 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
 
         load_string(map, "rtsp.port", config.rtsp.port);
         load_string(map, "rtsp.path", config.rtsp.path);
+        load_bool(map, "rtsp.raw_enable", config.rtsp.raw_enable);
         load_string(map, "rtsp.raw_path", config.rtsp.raw_path);
         load_int(map, "rtsp.bitrate", config.rtsp.bitrate);
         load_int(map, "rtsp.iframe_period", config.rtsp.iframe_period);
@@ -607,6 +609,7 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_section(oss, "rtsp");
         append_kv(oss, "port", copy.rtsp.port);
         append_kv(oss, "path", copy.rtsp.path);
+        append_kv(oss, "raw_enable", copy.rtsp.raw_enable ? 1 : 0);
         append_kv(oss, "raw_path", copy.rtsp.raw_path);
         append_kv(oss, "bitrate", copy.rtsp.bitrate);
         append_kv(oss, "iframe_period", copy.rtsp.iframe_period);

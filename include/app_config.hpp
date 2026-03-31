@@ -93,6 +93,7 @@ struct PipelineConfig {
 struct RtspConfig {
     std::string port = "8555";
     std::string path = "/cam";
+    bool raw_enable = true;
     std::string raw_path = "/raw";
     int bitrate = 2500000;
     int iframe_period = 20;

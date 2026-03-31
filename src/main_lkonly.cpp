@@ -204,6 +204,7 @@ int main() {
     runtime_log << "# type=main_lkonly_runtime\n";
     runtime_log << "# started_at=" << log_utils::human_timestamp() << "\n";
     runtime_log << "# rtsp_stab_path=" << config.rtsp.port << config.rtsp.path << "\n";
+    runtime_log << "# rtsp_raw_enable=" << (config.rtsp.raw_enable ? 1 : 0) << "\n";
     runtime_log << "# rtsp_raw_path=" << config.rtsp.port << config.rtsp.raw_path << "\n";
     runtime_log << "# camera_fps=" << config.camera.fps << "\n";
     runtime_log << "# lk_mode=reference_tae\n";
@@ -228,7 +229,7 @@ int main() {
     tank_drive::set_idle_autostop(false);
 
     RtspServer rtsp_server;
-    if (!rtsp_server.start(config.camera, config.rtsp, true, &error)) {
+    if (!rtsp_server.start(config.camera, config.rtsp, config.rtsp.raw_enable, &error)) {
         std::fprintf(stderr, "[LKONLY] RTSP start failed: %s\n", error.c_str());
         tank_drive::shutdown();
         mosquitto_lib_cleanup();
@@ -570,7 +571,9 @@ int main() {
                                              true);
             }
 
-            rtsp_server.push_raw(frame, frame.image);
+            if (config.rtsp.raw_enable) {
+                rtsp_server.push_raw(frame, frame.image);
+            }
             if (!rtsp_server.push_stabilized(frame, stabilized)) {
                 // No client attached is normal.
             }
@@ -578,15 +581,25 @@ int main() {
         runtime_log.flush();
     });
 
-    std::fprintf(stderr,
-                 "[LKONLY] runtime ready: RTSP %s%s (stab), %s%s (raw), MQTT %s:%d topic=%s\n",
-                 config.rtsp.port.c_str(),
-                 config.rtsp.path.c_str(),
-                 config.rtsp.port.c_str(),
-                 config.rtsp.raw_path.c_str(),
-                 config.mqtt.host.c_str(),
-                 config.mqtt.port,
-                 config.mqtt.control_topic.c_str());
+    if (config.rtsp.raw_enable) {
+        std::fprintf(stderr,
+                     "[LKONLY] runtime ready: RTSP %s%s (stab), %s%s (raw), MQTT %s:%d topic=%s\n",
+                     config.rtsp.port.c_str(),
+                     config.rtsp.path.c_str(),
+                     config.rtsp.port.c_str(),
+                     config.rtsp.raw_path.c_str(),
+                     config.mqtt.host.c_str(),
+                     config.mqtt.port,
+                     config.mqtt.control_topic.c_str());
+    } else {
+        std::fprintf(stderr,
+                     "[LKONLY] runtime ready: RTSP %s%s (stab), raw disabled, MQTT %s:%d topic=%s\n",
+                     config.rtsp.port.c_str(),
+                     config.rtsp.path.c_str(),
+                     config.mqtt.host.c_str(),
+                     config.mqtt.port,
+                     config.mqtt.control_topic.c_str());
+    }
 
     const bool mqtt_ok = run_mqtt_drive_loop(config.mqtt,
                                              running,

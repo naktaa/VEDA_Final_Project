@@ -269,6 +269,7 @@ std::string last_token(const std::string& topic_full)
 bool is_interesting_event(const std::string& event_name)
 {
     return event_name == "IvaArea" ||
+           event_name == "LineCrossing" ||
            event_name == "MaskDetection" ||
            event_name == "SlipAndFallDetection" ||
            event_name == "ObjectCounterAlarm" ||
@@ -513,6 +514,7 @@ bool should_publish_event(const ParsedEv& ev)
 {
     if (!is_interesting_event(ev.topic)) return false;
     if (ev.property_operation == "Initialized" && ev.state_str != "true") return false;
+    if (ev.topic == "LineCrossing") return ev.state_str == "true";
     if (ev.topic != "ObjectDetection") return true;
     return ev.state_str == "true" && ev.has_bbox && ev.bbox.valid() &&
            is_human_like_class(ev.object_type);
@@ -730,7 +732,7 @@ int main(int argc, char** argv)
 
             ParsedEv ev{};
             if (!parse_one_xml(one, ev, cfg)) continue;
-            if (ev.rule == "LineCrossing" || ev.topic == "LineCrossing") {
+            if (ev.topic == "LineCrossing" && ev.state_str == "true") {
                 std::fprintf(stderr,
                              "\n[RTSP_META][LineCrossing XML]\n"
                              "topic_full=%s\n"

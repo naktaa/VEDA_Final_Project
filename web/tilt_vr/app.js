@@ -10,11 +10,9 @@ const permissionBtn = document.getElementById("permissionBtn");
 const vrStage = document.querySelector(".vr-stage");
 
 const streamSource = document.getElementById("streamSource");
-const leftCanvas = document.getElementById("leftCanvas");
-const rightCanvas = document.getElementById("rightCanvas");
+const videoCanvas = document.getElementById("videoCanvas");
 const minimapCanvas = document.getElementById("minimapCanvas");
-const leftCtx = leftCanvas.getContext("2d", { alpha: false });
-const rightCtx = rightCanvas.getContext("2d", { alpha: false });
+const videoCtx = videoCanvas.getContext("2d", { alpha: false });
 const minimapCtx = minimapCanvas.getContext("2d");
 
 let orientationHandler = null;
@@ -865,23 +863,21 @@ function drawCover(ctx, canvas, img) {
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
 }
 
-function renderStereo() {
+function renderVideoFrame() {
   if (!connected) {
     renderRaf = 0;
     return;
   }
 
-  resizeCanvasToDisplaySize(leftCanvas);
-  resizeCanvasToDisplaySize(rightCanvas);
-  drawCover(leftCtx, leftCanvas, streamSource);
-  drawCover(rightCtx, rightCanvas, streamSource);
+  resizeCanvasToDisplaySize(videoCanvas);
+  drawCover(videoCtx, videoCanvas, streamSource);
 
-  renderRaf = requestAnimationFrame(renderStereo);
+  renderRaf = requestAnimationFrame(renderVideoFrame);
 }
 
 function startRenderLoop() {
   if (!renderRaf) {
-    renderRaf = requestAnimationFrame(renderStereo);
+    renderRaf = requestAnimationFrame(renderVideoFrame);
   }
 }
 
@@ -893,10 +889,8 @@ function stopRenderLoop() {
 }
 
 function clearCanvases() {
-  leftCtx.fillStyle = "#000";
-  rightCtx.fillStyle = "#000";
-  leftCtx.fillRect(0, 0, leftCanvas.width || 1, leftCanvas.height || 1);
-  rightCtx.fillRect(0, 0, rightCanvas.width || 1, rightCanvas.height || 1);
+  videoCtx.fillStyle = "#000";
+  videoCtx.fillRect(0, 0, videoCanvas.width || 1, videoCanvas.height || 1);
 }
 
 function bindStreamEvents() {
@@ -991,8 +985,7 @@ ensureEventStream();
 ensureEventStatePolling();
 window.addEventListener("resize", () => {
   if (connected) {
-    resizeCanvasToDisplaySize(leftCanvas);
-    resizeCanvasToDisplaySize(rightCanvas);
+    resizeCanvasToDisplaySize(videoCanvas);
   }
   drawMinimap();
 });

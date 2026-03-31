@@ -70,7 +70,7 @@ button {
 .vr-stage {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
   min-height: 60dvh;
   height: 100%;
@@ -103,7 +103,7 @@ button {
   width: 100vw;
   height: 100dvh;
   min-height: 100dvh;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .minimap-overlay {

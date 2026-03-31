@@ -9,26 +9,268 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <regex>
+#include <sstream>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace veda_server {
     namespace {
 
         std::atomic<bool> g_run{true};
+        constexpr const char* kRcGoalTopic = "wiserisk/rc/goal";
+        constexpr double kLineCrossingGoalX = 44.253;
+        constexpr double kLineCrossingGoalY = 522.607;
 
         void OnSignal(int) {
             g_run = false;
         }
+
+        struct MetadataEvent {
+            std::string topic_full;
+            std::string topic;
+            std::string utc;
+            std::string rule;
+            std::string action;
+            std::string object_id;
+            std::string state_str;
+        };
+
+        struct SimpleItem {
+            std::string name;
+            std::string value;
+        };
+
+        std::string trim(const std::string& s) {
+            const size_t begin = s.find_first_not_of(" \t\r\n");
+            const size_t end = s.find_last_not_of(" \t\r\n");
+            if (begin == std::string::npos) return "";
+            return s.substr(begin, end - begin + 1);
+        }
+
+        bool find_between(const std::string& src,
+                          const std::string& left,
+                          const std::string& right,
+                          std::string& out,
+                          size_t start_pos = 0) {
+            size_t p1 = src.find(left, start_pos);
+            if (p1 == std::string::npos) return false;
+            p1 += left.size();
+            const size_t p2 = src.find(right, p1);
+            if (p2 == std::string::npos) return false;
+            out = src.substr(p1, p2 - p1);
+            return true;
+        }
+
+        bool find_attr_value(const std::string& src,
+                             const std::string& key,
+                             std::string& out,
+                             size_t start_pos = 0) {
+            size_t p = src.find(key, start_pos);
+            if (p == std::string::npos) return false;
+            p += key.size();
+            const size_t q = src.find('"', p);
+            if (q == std::string::npos) return false;
+            out = src.substr(p, q - p);
+            return true;
+        }
+
+        std::vector<SimpleItem> extract_simple_items(const std::string& xml) {
+            static const std::regex re("Name=\"([^\"]+)\"\\s+Value=\"([^\"]*)\"");
+            std::vector<SimpleItem> out;
+            for (std::sregex_iterator it(xml.begin(), xml.end(), re), end; it != end; ++it) {
+                out.push_back({(*it)[1].str(), (*it)[2].str()});
+            }
+            return out;
+        }
+
+        std::string normalize_key(const std::string& value) {
+            std::string out;
+            out.reserve(value.size());
+            for (unsigned char ch : value) {
+                if (std::isalnum(ch)) out.push_back(static_cast<char>(std::tolower(ch)));
+            }
+            return out;
+        }
+
+        std::string extract_simpleitem_value(const std::vector<SimpleItem>& items,
+                                             const std::string& wanted_name) {
+            const std::string wanted = normalize_key(wanted_name);
+            for (const auto& item : items) {
+                if (normalize_key(item.name) == wanted) return item.value;
+            }
+            return "";
+        }
+
+        std::string extract_topic_full(const std::string& xml) {
+            std::string out;
+            if (!find_between(xml, "<wsnt:Topic", "</wsnt:Topic>", out)) return "";
+            const size_t gt = out.find('>');
+            if (gt == std::string::npos) return "";
+            return trim(out.substr(gt + 1));
+        }
+
+        std::string last_token(const std::string& topic_full) {
+            const size_t slash = topic_full.find_last_of('/');
+            std::string tail = (slash == std::string::npos) ? topic_full : topic_full.substr(slash + 1);
+            const size_t colon = tail.find_last_of(':');
+            if (colon != std::string::npos) tail = tail.substr(colon + 1);
+            return tail;
+        }
+
+        bool parse_metadata_xml(const std::string& xml, MetadataEvent& out) {
+            out.topic_full = extract_topic_full(xml);
+            if (out.topic_full.empty()) return false;
+
+            const std::vector<SimpleItem> items = extract_simple_items(xml);
+            find_attr_value(xml, "UtcTime=\"", out.utc);
+            out.rule = extract_simpleitem_value(items, "RuleName");
+            out.state_str = extract_simpleitem_value(items, "State");
+            out.object_id = extract_simpleitem_value(items, "ObjectId");
+            out.action = extract_simpleitem_value(items, "Action");
+            out.topic = last_token(out.topic_full);
+            return true;
+        }
+
+        bool is_line_crossing_event(const MetadataEvent& ev) {
+            return ev.topic == "LineCrossing" || ev.rule == "LineCrossing";
+        }
+
+        std::string build_rc_goal_payload() {
+            std::ostringstream j;
+            j << "{"
+              << "\"x\":" << kLineCrossingGoalX << ","
+              << "\"y\":" << kLineCrossingGoalY << ","
+              << "\"frame\":\"world\","
+              << "\"ts_ms\":" << std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count()
+              << "}";
+            return j.str();
+        }
+
+        class MetadataGoalMonitor {
+        public:
+            explicit MetadataGoalMonitor(const ServerConfig& config)
+                : config_(config) {}
+
+            ~MetadataGoalMonitor() {
+                Stop();
+            }
+
+            void Start() {
+                if (thread_.joinable()) return;
+                running_ = true;
+                thread_ = std::thread([this] { Run(); });
+            }
+
+            void Stop() {
+                running_ = false;
+                if (thread_.joinable()) thread_.join();
+            }
+
+        private:
+            void Run() {
+                mosquitto* mosq = mosquitto_new("server_linecrossing", true, nullptr);
+                if (!mosq) {
+                    std::cerr << "[WARN] metadata monitor mosquitto_new failed\n";
+                    return;
+                }
+
+                const int connect_rc = mosquitto_connect(mosq, config_.mqtt_host.c_str(), config_.mqtt_port, 60);
+                if (connect_rc != MOSQ_ERR_SUCCESS) {
+                    std::cerr << "[WARN] metadata monitor mosquitto_connect failed rc=" << connect_rc
+                              << " (" << mosquitto_strerror(connect_rc) << ")\n";
+                    mosquitto_destroy(mosq);
+                    return;
+                }
+
+                const std::string cmd =
+                    "ffmpeg -loglevel error -rtsp_transport tcp "
+                    "-i \"" + config_.rtsp_url + "\" "
+                    "-map 0:1 -c copy -f data -";
+
+                FILE* fp = popen(cmd.c_str(), "r");
+                if (!fp) {
+                    std::cerr << "[WARN] metadata monitor popen(ffmpeg) failed\n";
+                    mosquitto_disconnect(mosq);
+                    mosquitto_destroy(mosq);
+                    return;
+                }
+
+                std::string buf;
+                buf.reserve(1024 * 1024);
+                char readbuf[8192];
+                while (running_.load() && g_run.load()) {
+                    const size_t n = std::fread(readbuf, 1, sizeof(readbuf), fp);
+                    if (n == 0) break;
+                    buf.append(readbuf, n);
+
+                    while (running_.load() && g_run.load()) {
+                        const size_t p1 = buf.find("<?xml");
+                        if (p1 == std::string::npos) break;
+                        const size_t p2 = buf.find("<?xml", p1 + 5);
+                        if (p2 == std::string::npos) break;
+
+                        const std::string one = buf.substr(p1, p2 - p1);
+                        buf.erase(0, p2);
+
+                        MetadataEvent ev{};
+                        if (!parse_metadata_xml(one, ev)) continue;
+                        if (!is_line_crossing_event(ev)) continue;
+                        if (ev.state_str != "true") continue;
+
+                        const auto now = std::chrono::steady_clock::now();
+                        if (last_publish_at_.time_since_epoch().count() != 0 &&
+                            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_publish_at_).count() < 2000) {
+                            continue;
+                        }
+
+                        const std::string payload = build_rc_goal_payload();
+                        const int pub_rc = mosquitto_publish(
+                            mosq, nullptr, kRcGoalTopic,
+                            static_cast<int>(payload.size()), payload.c_str(),
+                            1, false);
+                        mosquitto_loop(mosq, 0, 1);
+                        if (pub_rc == MOSQ_ERR_SUCCESS) {
+                            last_publish_at_ = now;
+                            std::cerr << "[LINECROSS] rc goal published objectId=" << ev.object_id
+                                      << " action=" << ev.action
+                                      << " utc=" << ev.utc
+                                      << " payload=" << payload << "\n";
+                        } else {
+                            std::cerr << "[WARN] linecross rc goal publish failed rc=" << pub_rc
+                                      << " (" << mosquitto_strerror(pub_rc) << ")\n";
+                        }
+                    }
+
+                    if (buf.size() > 8 * 1024 * 1024) {
+                        buf.erase(0, buf.size() - 1024 * 1024);
+                    }
+                }
+
+                pclose(fp);
+                mosquitto_disconnect(mosq);
+                mosquitto_destroy(mosq);
+            }
+
+            ServerConfig config_;
+            std::atomic<bool> running_{false};
+            std::thread thread_;
+            std::chrono::steady_clock::time_point last_publish_at_{};
+        };
 
         class ServerApp {
         public:
             explicit ServerApp(const ServerConfig& config)
                 : config_(config),
                   homography_publisher_(config_, camera_model_, shared_),
-                  pose_tracker_(config_, camera_model_, shared_) {}
+                  pose_tracker_(config_, camera_model_, shared_),
+                  metadata_goal_monitor_(config_) {}
 
             int Run() {
                 if (!LoadCameraModel(config_.camera_yaml.string(), camera_model_)) {
@@ -71,6 +313,7 @@ namespace veda_server {
                 std::cout << "[INFO] pose_topic=" << config_.pose_topic
                           << " homography_topic=" << config_.homography_topic
                           << " map_topic=" << config_.map_topic << "\n";
+                metadata_goal_monitor_.Start();
 
                 while (g_run.load()) {
                     const auto now = std::chrono::steady_clock::now();
@@ -108,6 +351,7 @@ namespace veda_server {
             }
 
             ~ServerApp() {
+                metadata_goal_monitor_.Stop();
                 if (mosq_) {
                     mosquitto_disconnect(mosq_);
                     mosquitto_destroy(mosq_);
@@ -142,6 +386,7 @@ namespace veda_server {
             SharedHomography shared_;
             HomographyPublisher homography_publisher_;
             PoseTracker pose_tracker_;
+            MetadataGoalMonitor metadata_goal_monitor_;
             cv::VideoCapture cap_;
             mosquitto* mosq_ = nullptr;
 
@@ -154,14 +399,14 @@ namespace veda_server {
     } // namespace
 
     void PrintServerUsage(const char* exe) {
-        std::cout << "사용법: " << exe << "\n";
-        std::cout << "빌드 후 build 디렉터리에서 ./main 으로 실행합니다.\n";
+        std::cout << "?ъ슜踰? " << exe << "\n";
+        std::cout << "鍮뚮뱶 ??build ?붾젆?곕━?먯꽌 ./main ?쇰줈 ?ㅽ뻾?⑸땲??\n";
     }
 
     bool ParseServerConfig(int argc, char** argv, ServerConfig& config, std::string& error) {
         if (argc > 1) {
             (void)config;
-            error = "CLI 인자는 사용하지 않습니다. 기본값과 config yaml 경로를 사용합니다.";
+            error = "CLI ?몄옄???ъ슜?섏? ?딆뒿?덈떎. 湲곕낯媛믨낵 config yaml 寃쎈줈瑜??ъ슜?⑸땲??";
             return false;
         }
         return true;

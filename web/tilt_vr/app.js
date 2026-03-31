@@ -847,20 +847,22 @@ function stopOverlayPolling() {
   }
 }
 
-function drawCover(ctx, canvas, img) {
+function drawContain(ctx, canvas, img) {
   const cw = canvas.width;
   const ch = canvas.height;
   if (!cw || !ch || !img.naturalWidth || !img.naturalHeight) {
     return;
   }
 
-  const scale = Math.max(cw / img.naturalWidth, ch / img.naturalHeight);
-  const sw = Math.floor(cw / scale);
-  const sh = Math.floor(ch / scale);
-  const sx = Math.floor((img.naturalWidth - sw) / 2);
-  const sy = Math.floor((img.naturalHeight - sh) / 2);
+  const scale = Math.min(cw / img.naturalWidth, ch / img.naturalHeight);
+  const dw = Math.max(1, Math.floor(img.naturalWidth * scale));
+  const dh = Math.max(1, Math.floor(img.naturalHeight * scale));
+  const dx = Math.floor((cw - dw) / 2);
+  const dy = Math.floor((ch - dh) / 2);
 
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, cw, ch);
+  ctx.drawImage(img, dx, dy, dw, dh);
 }
 
 function renderVideoFrame() {
@@ -870,7 +872,7 @@ function renderVideoFrame() {
   }
 
   resizeCanvasToDisplaySize(videoCanvas);
-  drawCover(videoCtx, videoCanvas, streamSource);
+  drawContain(videoCtx, videoCanvas, streamSource);
 
   renderRaf = requestAnimationFrame(renderVideoFrame);
 }

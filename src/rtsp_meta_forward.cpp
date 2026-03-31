@@ -29,8 +29,8 @@ constexpr int kDefaultHttpPort = 1885;
 constexpr int kDefaultClipSec = 5;
 constexpr int kDefaultClipTtlSec = 86400;
 constexpr int kDefaultGcIntervalMs = 5000;
-constexpr int kDefaultTargetFrameW = 1280;
-constexpr int kDefaultTargetFrameH = 960;
+constexpr int kDefaultTargetFrameW = 1920;
+constexpr int kDefaultTargetFrameH = 1080;
 constexpr double kSyntheticIdQuantPx = 48.0;
 
 struct RuntimeConfig {

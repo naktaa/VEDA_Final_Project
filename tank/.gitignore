@@ -1,0 +1,30 @@
+# Build
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Object files
+*.o
+*.a
+*.so
+
+# Executables
+*.exe
+*.out
+
+# VSCode
+.vscode/
+
+# Local config (do not commit)
+config_local.ini
+config_lk_local.ini
+*.local.ini
+
+# Runtime logs
+logs/
+*.log
+
+# Local TLS assets
+certs/*.pem

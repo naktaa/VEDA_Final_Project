@@ -293,7 +293,7 @@ private:
     QLabel* m_robotMissionLabel = nullptr;
     QLabel* m_robotPoseLabel = nullptr;
     QLabel* m_robotSpeedLabel = nullptr;
-    QLabel* m_robotBatteryValueLabel = nullptr;
+    QLabel* m_robotCpuValueLabel = nullptr;
     QLabel* m_robotLastSeenLabel = nullptr;
     RobotStatusWindow* m_robotStatusWindow = nullptr;
     MqttEvent m_lastRobotStatusEvent;

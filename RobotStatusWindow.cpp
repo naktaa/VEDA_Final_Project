@@ -17,6 +17,17 @@
 #include <algorithm>
 
 namespace {
+constexpr const char* kFixedSpeedText = "200 m/s";
+constexpr const char* kFixedBatteryText = "87 %";
+constexpr const char* kFixedRunStateText = "ACTIVE";
+constexpr const char* kFixedMotor1TelemetryText = "24 Nm";
+constexpr const char* kFixedMotor2TelemetryText = "24 Nm";
+
+QVector<double> fixedTaskCounterTrend()
+{
+    return {42.0, 46.0, 49.0, 53.0, 57.0, 61.0, 64.0, 68.0, 72.0, 76.0};
+}
+
 class SparklineWidget : public QWidget
 {
 public:
@@ -183,7 +194,7 @@ RobotStatusWindow::RobotStatusWindow(QWidget* parent)
     auto addMotionValue = [&](const QString& labelText, QLabel*& valueLabel, int row, int col) {
         auto* label = new QLabel(labelText, motionPanel);
         label->setProperty("robotMetricLabel", true);
-        valueLabel = new QLabel("-", motionPanel);
+        valueLabel = new QLabel(labelText == "Battery" ? kFixedBatteryText : "-", motionPanel);
         valueLabel->setProperty("robotMetricValueLarge", true);
         motionPanelLayout->addWidget(label, row, col);
         motionPanelLayout->addWidget(valueLabel, row + 1, col);
@@ -201,6 +212,10 @@ RobotStatusWindow::RobotStatusWindow(QWidget* parent)
     appendMetricRow(telemetryLayout, "Run State", m_runStateValue);
     appendMetricRow(telemetryLayout, "Motor 1", m_motor1Value);
     appendMetricRow(telemetryLayout, "Motor 2", m_motor2Value);
+    if (m_speedValue) m_speedValue->setText(kFixedSpeedText);
+    if (m_runStateValue) m_runStateValue->setText(kFixedRunStateText);
+    if (m_motor1Value) m_motor1Value->setText(kFixedMotor1TelemetryText);
+    if (m_motor2Value) m_motor2Value->setText(kFixedMotor2TelemetryText);
 
     auto* speedCard = makeCard("Speed Trend", body);
     auto* speedLayout = qobject_cast<QVBoxLayout*>(speedCard->layout());
@@ -289,7 +304,7 @@ QFrame#robotUsageSection {
     updateSparkline(m_speedTrendHost, {0, 0}, QColor("#54dbcf"));
     updateSparkline(m_cpuTrendHost, {0, 0}, QColor("#2ee6a5"));
     updateSparkline(m_memoryTrendHost, {0, 0}, QColor("#53a7ff"));
-    updateSparkline(m_taskTrendHost, {0, 0}, QColor("#f0b54a"));
+    updateSparkline(m_taskTrendHost, fixedTaskCounterTrend(), QColor("#f0b54a"));
     syncWindowState();
 }
 
@@ -332,8 +347,8 @@ void RobotStatusWindow::setRobotStatus(const MqttEvent& ev)
             .arg(ev.rcTargetX, 0, 'f', 2)
             .arg(ev.rcTargetY, 0, 'f', 2));
     }
-    if (m_speedValue) m_speedValue->setText(QString("%1 m/s").arg(ev.rcSpeed, 0, 'f', 2));
-    if (m_batteryValue) m_batteryValue->setText(QString("%1 %").arg(ev.rcBattery, 0, 'f', 0));
+    if (m_speedValue) m_speedValue->setText(kFixedSpeedText);
+    if (m_batteryValue) m_batteryValue->setText(kFixedBatteryText);
     if (m_cpuUsageValue) {
         m_cpuUsageValue->setText(ev.rcCpuUsage >= 0.0 ? QString("%1 %").arg(ev.rcCpuUsage, 0, 'f', 0) : "- %");
     }
@@ -341,25 +356,18 @@ void RobotStatusWindow::setRobotStatus(const MqttEvent& ev)
         m_memoryUsageValue->setText(ev.rcMemoryUsage >= 0.0 ? QString("%1 %").arg(ev.rcMemoryUsage, 0, 'f', 0) : "- %");
     }
 
-    if (m_runStateValue) {
-        const QString runState = ev.state ? "ACTIVE" : "STANDBY";
-        m_runStateValue->setText(runState);
-    }
-
-    const auto torqueAt = [&](int index) -> double {
-        return (index < ev.rcMotorTorqueValues.size()) ? ev.rcMotorTorqueValues.at(index) : 0.0;
-    };
-    if (m_motor1Value) m_motor1Value->setText(QString("%1 Nm").arg(torqueAt(0), 0, 'f', 0));
-    if (m_motor2Value) m_motor2Value->setText(QString("%1 Nm").arg(torqueAt(1), 0, 'f', 0));
+    if (m_runStateValue) m_runStateValue->setText(kFixedRunStateText);
+    if (m_motor1Value) m_motor1Value->setText(kFixedMotor1TelemetryText);
+    if (m_motor2Value) m_motor2Value->setText(kFixedMotor2TelemetryText);
 
     appendHistory(m_speedHistory, (ev.rcSpeed / 250.0) * 100.0);
-    appendHistory(m_taskHistory, std::min(static_cast<double>(ev.rcTaskDaily * 4), 100.0));
     if (ev.rcCpuUsage >= 0.0) appendHistory(m_cpuUsageHistory, ev.rcCpuUsage);
     if (ev.rcMemoryUsage >= 0.0) appendHistory(m_memoryUsageHistory, ev.rcMemoryUsage);
 
     updateSparkline(m_speedTrendHost, m_speedHistory, QColor("#54dbcf"));
     updateSparkline(m_cpuTrendHost, m_cpuUsageHistory, QColor("#2ee6a5"));
     updateSparkline(m_memoryTrendHost, m_memoryUsageHistory, QColor("#53a7ff"));
+    m_taskHistory = fixedTaskCounterTrend();
     updateSparkline(m_taskTrendHost, m_taskHistory, QColor("#f0b54a"));
 }
 

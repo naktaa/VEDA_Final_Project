@@ -1692,17 +1692,17 @@ void MainWindow::buildResponsiveLayout()
     speedRow->addStretch();
     speedRow->addWidget(m_robotSpeedLabel);
     robotLayout->addLayout(speedRow);
-    auto* batteryRow = new QHBoxLayout();
-    auto* batteryLabel = new QLabel("Battery", m_robotStatusCard);
-    batteryLabel->setProperty("robotLabel", true);
-    batteryLabel->setFixedWidth(66);
-    m_robotBatteryValueLabel = new QLabel("0%", m_robotStatusCard);
-    m_robotBatteryValueLabel->setProperty("robotValue", true);
-    m_robotBatteryValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    batteryRow->addWidget(batteryLabel);
-    batteryRow->addStretch();
-    batteryRow->addWidget(m_robotBatteryValueLabel);
-    robotLayout->addLayout(batteryRow);
+    auto* cpuRow = new QHBoxLayout();
+    auto* cpuLabel = new QLabel("CPU", m_robotStatusCard);
+    cpuLabel->setProperty("robotLabel", true);
+    cpuLabel->setFixedWidth(66);
+    m_robotCpuValueLabel = new QLabel("- %", m_robotStatusCard);
+    m_robotCpuValueLabel->setProperty("robotValue", true);
+    m_robotCpuValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    cpuRow->addWidget(cpuLabel);
+    cpuRow->addStretch();
+    cpuRow->addWidget(m_robotCpuValueLabel);
+    robotLayout->addLayout(cpuRow);
     auto* lastSeenRow = new QHBoxLayout();
     auto* lastSeenLabel = new QLabel("Last Seen", m_robotStatusCard);
     lastSeenLabel->setProperty("robotLabel", true);
@@ -3516,15 +3516,20 @@ void MainWindow::onMqttEvent(const MqttEvent& ev)
         if (m_robotSpeedLabel) {
             m_robotSpeedLabel->setText(QString("%1 m/s").arg(ev.rcSpeed, 0, 'f', 2));
         }
-        const int battery = static_cast<int>(std::clamp(ev.rcBattery, 0.0, 100.0));
-        if (m_robotBatteryValueLabel) {
-            m_robotBatteryValueLabel->setText(QString("%1%").arg(battery));
-            QString level;
-            if (battery <= 20) level = "danger";
-            else if (battery <= 45) level = "warn";
-            m_robotBatteryValueLabel->setProperty("level", level);
-            m_robotBatteryValueLabel->style()->unpolish(m_robotBatteryValueLabel);
-            m_robotBatteryValueLabel->style()->polish(m_robotBatteryValueLabel);
+        if (m_robotCpuValueLabel) {
+            if (ev.rcCpuUsage >= 0.0) {
+                const double cpu = std::clamp(ev.rcCpuUsage, 0.0, 100.0);
+                m_robotCpuValueLabel->setText(QString("%1%").arg(cpu, 0, 'f', 0));
+                QString level;
+                if (cpu >= 85.0) level = "danger";
+                else if (cpu >= 65.0) level = "warn";
+                m_robotCpuValueLabel->setProperty("level", level);
+            } else {
+                m_robotCpuValueLabel->setText("- %");
+                m_robotCpuValueLabel->setProperty("level", QString());
+            }
+            m_robotCpuValueLabel->style()->unpolish(m_robotCpuValueLabel);
+            m_robotCpuValueLabel->style()->polish(m_robotCpuValueLabel);
         }
         if (m_robotLastSeenLabel) {
             m_robotLastSeenLabel->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));

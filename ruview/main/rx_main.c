@@ -64,22 +64,9 @@
 /* ---------------------------------------------------------
  * User config
  * --------------------------------------------------------- */
-#ifndef CSI_UDP_TARGET_IP
-#define CSI_UDP_TARGET_IP      "192.168.100.29"
-#endif
-
-#ifndef CSI_UDP_TARGET_PORT
-#define CSI_UDP_TARGET_PORT    5005
-#endif
-
-/* 보드마다 다르게 바꿔서 사용
- * 예: "esp32-rx1", "esp32-rx2", "esp32-rx3"
- */
-#ifndef APP_NODE_ID
-#define APP_NODE_ID            "esp32-rx1"
-#endif
-
-#define NODE_ID                APP_NODE_ID
+#define CSI_UDP_TARGET_IP      CONFIG_RUVIEW_RX_UDP_TARGET_IP
+#define CSI_UDP_TARGET_PORT    CONFIG_RUVIEW_RX_UDP_TARGET_PORT
+#define NODE_ID                CONFIG_RUVIEW_RX_NODE_ID
 
 /* 너무 큰 payload 방지용 */
 #define CSI_MAX_LEN            256

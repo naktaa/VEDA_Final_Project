@@ -1,15 +1,29 @@
-cmake_minimum_required(VERSION 3.10)
-project(tank_hybrid_eis)
+cmake_minimum_required(VERSION 3.16)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Release)
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+  project(tank_hybrid_eis LANGUAGES CXX)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../cmake/ProjectOptions.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/../cmake/ProjectOptions.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/../cmake/Dependencies.cmake")
+  veda_set_default_project_options()
+  veda_require_pkgconfig()
+else()
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
+  if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release)
+  endif()
+  find_package(PkgConfig REQUIRED)
+endif()
+
 add_compile_options(-O3 -DNDEBUG)
 
 option(BUILD_LEGACY_VARIANTS "Build legacy main_raw/lkonly executables" OFF)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc video imgcodecs calib3d)
-find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 find_package(OpenSSL QUIET)
 find_package(nlohmann_json QUIET)
@@ -133,6 +147,16 @@ if(LIBGPIOD_VERSION VERSION_GREATER_EQUAL 2.0.0)
   add_compile_definitions(USE_LIBGPIOD_V2)
 endif()
 
+set(TANK_RUNTIME_DIR "${CMAKE_BINARY_DIR}/tank")
+file(MAKE_DIRECTORY "${TANK_RUNTIME_DIR}")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/config/config_template.ini"
+  "${TANK_RUNTIME_DIR}/config_template.ini"
+  COPYONLY
+)
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/web" DESTINATION "${TANK_RUNTIME_DIR}")
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/certs" DESTINATION "${TANK_RUNTIME_DIR}")
+
 add_executable(main
   src/main.cpp
   ${COMMON_SOURCES}
@@ -141,6 +165,9 @@ add_executable(main
 target_include_directories(main PRIVATE ${COMMON_INCLUDE_DIRS})
 target_compile_options(main PRIVATE ${COMMON_COMPILE_OPTIONS})
 target_link_libraries(main PRIVATE ${COMMON_LINK_LIBS})
+if(COMMAND veda_set_runtime_output_dir)
+  veda_set_runtime_output_dir(main "${TANK_RUNTIME_DIR}")
+endif()
 
 if(BUILD_LEGACY_VARIANTS)
   add_executable(main_raw
@@ -162,6 +189,9 @@ if(BUILD_LEGACY_VARIANTS)
   target_include_directories(main_raw PRIVATE ${COMMON_INCLUDE_DIRS})
   target_compile_options(main_raw PRIVATE ${COMMON_COMPILE_OPTIONS})
   target_link_libraries(main_raw PRIVATE ${COMMON_LINK_LIBS})
+  if(COMMAND veda_set_runtime_output_dir)
+    veda_set_runtime_output_dir(main_raw "${TANK_RUNTIME_DIR}")
+  endif()
 
   add_executable(lkonly
     src/main_lkonly.cpp
@@ -171,6 +201,9 @@ if(BUILD_LEGACY_VARIANTS)
   target_include_directories(lkonly PRIVATE ${COMMON_INCLUDE_DIRS})
   target_compile_options(lkonly PRIVATE ${COMMON_COMPILE_OPTIONS})
   target_link_libraries(lkonly PRIVATE ${COMMON_LINK_LIBS})
+  if(COMMAND veda_set_runtime_output_dir)
+    veda_set_runtime_output_dir(lkonly "${TANK_RUNTIME_DIR}")
+  endif()
 endif()
 
 add_executable(calib
@@ -196,7 +229,6 @@ target_link_libraries(calib PRIVATE
   Threads::Threads
   wiringPi
 )
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config_template.ini")
-  configure_file(config_template.ini config_template.ini COPYONLY)
+if(COMMAND veda_set_runtime_output_dir)
+  veda_set_runtime_output_dir(calib "${TANK_RUNTIME_DIR}")
 endif()

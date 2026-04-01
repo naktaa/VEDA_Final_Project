@@ -20,7 +20,9 @@ struct ServerConfig {
     std::string homography_topic = std::string(defaults::kHomographyTopic);
     std::string map_topic = std::string(defaults::kMapTopic);
 
+    std::filesystem::path runtime_dir = ".";
     std::filesystem::path config_dir = "config";
+    std::filesystem::path settings_yaml = "config/server.yaml";
     std::filesystem::path homography_yaml = defaults::kHomographyYaml;
     std::filesystem::path camera_yaml = defaults::kCameraYaml;
 

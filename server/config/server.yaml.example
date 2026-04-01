@@ -1,0 +1,13 @@
+%YAML:1.0
+---
+rtsp_url: "rtsp://camera-host/profile2/media.smp"
+mqtt_host: "mqtt-broker.local"
+mqtt_port: 1883
+pose_topic: "wiserisk/p1/pose"
+homography_topic: "wiserisk/map/H_img2world"
+map_topic: "wiserisk/map/graph"
+camera_yaml: "camera.yaml"
+homography_yaml: "H_img2world.yaml"
+marker_size: 0.17
+cube_size: 0.17
+publish_interval_ms: 1000

@@ -64,19 +64,9 @@
 /* ---------------------------------------------------------
  * User config
  * --------------------------------------------------------- */
-#ifndef TX_UDP_TARGET_IP
-#define TX_UDP_TARGET_IP        "192.168.100.29"
-#endif
-
-#ifndef TX_UDP_TARGET_PORT
-#define TX_UDP_TARGET_PORT      5006
-#endif
-
-#ifndef APP_NODE_ID
-#define APP_NODE_ID             "esp32-tx"
-#endif
-
-#define NODE_ID                 APP_NODE_ID
+#define TX_UDP_TARGET_IP        CONFIG_RUVIEW_TX_UDP_TARGET_IP
+#define TX_UDP_TARGET_PORT      CONFIG_RUVIEW_TX_UDP_TARGET_PORT
+#define NODE_ID                 CONFIG_RUVIEW_TX_NODE_ID
 #define TX_INTERVAL_MS          10
 #define TX_PAYLOAD_SIZE         128
 

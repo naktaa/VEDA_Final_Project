@@ -4,7 +4,7 @@
 
 namespace rc_defaults {
 
-inline constexpr std::string_view kBrokerHost = "192.168.100.7";
+inline constexpr std::string_view kBrokerHost = "mqtt-broker.local";
 inline constexpr int kBrokerPort = 1883;
 
 inline constexpr std::string_view kGoalTopic = "wiserisk/rc/goal";

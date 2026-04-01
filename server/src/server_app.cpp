@@ -31,6 +31,77 @@ namespace veda_server {
             g_run = false;
         }
 
+        std::filesystem::path resolve_config_path(const std::filesystem::path& config_dir,
+                                                  const std::string& raw_value,
+                                                  const std::filesystem::path& fallback) {
+            if (raw_value.empty()) {
+                return fallback;
+            }
+
+            const std::filesystem::path candidate(raw_value);
+            if (candidate.is_absolute()) {
+                return candidate;
+            }
+
+            return (config_dir / candidate).lexically_normal();
+        }
+
+        template <typename T>
+        void read_if_present(const cv::FileStorage& fs, const char* key, T& value) {
+            const cv::FileNode node = fs[key];
+            if (!node.empty()) {
+                node >> value;
+            }
+        }
+
+        bool LoadServerSettings(ServerConfig& config, std::string& error) {
+            namespace fs = std::filesystem;
+
+            fs::path settings_path;
+            for (const fs::path& candidate : {config.settings_yaml, config.config_dir / "server.yaml.example"}) {
+                if (fs::exists(candidate)) {
+                    settings_path = candidate;
+                    break;
+                }
+            }
+
+            const fs::path default_camera_yaml =
+                config.config_dir / fs::path(defaults::kCameraYaml).filename();
+            const fs::path default_homography_yaml =
+                config.config_dir / fs::path(defaults::kHomographyYaml).filename();
+
+            if (settings_path.empty()) {
+                config.camera_yaml = default_camera_yaml;
+                config.homography_yaml = default_homography_yaml;
+                return true;
+            }
+
+            cv::FileStorage fs_settings(settings_path.string(), cv::FileStorage::READ);
+            if (!fs_settings.isOpened()) {
+                error = "failed to open server settings: " + settings_path.string();
+                return false;
+            }
+
+            read_if_present(fs_settings, "rtsp_url", config.rtsp_url);
+            read_if_present(fs_settings, "mqtt_host", config.mqtt_host);
+            read_if_present(fs_settings, "mqtt_port", config.mqtt_port);
+            read_if_present(fs_settings, "pose_topic", config.pose_topic);
+            read_if_present(fs_settings, "homography_topic", config.homography_topic);
+            read_if_present(fs_settings, "map_topic", config.map_topic);
+            read_if_present(fs_settings, "marker_size", config.marker_size);
+            read_if_present(fs_settings, "cube_size", config.cube_size);
+            read_if_present(fs_settings, "publish_interval_ms", config.publish_interval_ms);
+
+            std::string camera_yaml = default_camera_yaml.filename().string();
+            std::string homography_yaml = default_homography_yaml.filename().string();
+            read_if_present(fs_settings, "camera_yaml", camera_yaml);
+            read_if_present(fs_settings, "homography_yaml", homography_yaml);
+
+            config.camera_yaml = resolve_config_path(config.config_dir, camera_yaml, default_camera_yaml);
+            config.homography_yaml = resolve_config_path(config.config_dir, homography_yaml, default_homography_yaml);
+            return true;
+        }
+
         struct MetadataEvent {
             std::string topic_full;
             std::string topic;
@@ -399,17 +470,17 @@ namespace veda_server {
     } // namespace
 
     void PrintServerUsage(const char* exe) {
-        std::cout << "?ъ슜踰? " << exe << "\n";
-        std::cout << "鍮뚮뱶 ??build ?붾젆?곕━?먯꽌 ./main ?쇰줈 ?ㅽ뻾?⑸땲??\n";
+        std::cout << "사용법: " << exe << "\n";
+        std::cout << "통합 빌드에서는 build/server/main 에서 실행합니다.\n";
     }
 
     bool ParseServerConfig(int argc, char** argv, ServerConfig& config, std::string& error) {
         if (argc > 1) {
-            (void)config;
-            error = "CLI ?몄옄???ъ슜?섏? ?딆뒿?덈떎. 湲곕낯媛믨낵 config yaml 寃쎈줈瑜??ъ슜?⑸땲??";
+            error = "CLI 인자는 지원하지 않습니다. config/server.yaml 기준으로 설정을 읽습니다.";
             return false;
         }
-        return true;
+
+        return LoadServerSettings(config, error);
     }
 
     void ResolveServerPaths(const char* exe, ServerConfig& config) {
@@ -420,12 +491,11 @@ namespace veda_server {
             exe_path = fs::current_path() / exe_path;
         }
 
-        const fs::path build_dir = exe_path.parent_path();
-        const fs::path repo_dir = build_dir.parent_path();
-
-        config.config_dir = repo_dir / "config";
-        config.homography_yaml = config.config_dir / "H_img2world.yaml";
-        config.camera_yaml = config.config_dir / "camera.yaml";
+        config.runtime_dir = exe_path.parent_path();
+        config.config_dir = config.runtime_dir / "config";
+        config.settings_yaml = config.config_dir / "server.yaml";
+        config.homography_yaml = config.config_dir / fs::path(defaults::kHomographyYaml).filename();
+        config.camera_yaml = config.config_dir / fs::path(defaults::kCameraYaml).filename();
     }
 
     int RunServerApp(const ServerConfig& config) {

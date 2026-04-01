@@ -10,15 +10,15 @@ Add or keep the following keys in `[http]`:
 ```ini
 https_enable=1
 https_port=8443
-tls_cert_file=../certs/tiltvrsvr-cert.pem
-tls_key_file=../certs/tiltvrsvr-key.pem
+tls_cert_file=certs/tiltvrsvr-cert.pem
+tls_key_file=certs/tiltvrsvr-key.pem
 redirect_http_to_https=1
 ```
 
 The cert/key paths are resolved from the executable working directory, so the default runtime layout is:
 
 ```text
-build/
+build/tank/
 certs/tiltvrsvr-cert.pem
 certs/tiltvrsvr-key.pem
 ```
@@ -26,10 +26,10 @@ certs/tiltvrsvr-key.pem
 ## Self-signed certificate example
 
 ```bash
-mkdir -p ../certs
+mkdir -p ./build/tank/certs
 openssl req -x509 -nodes -newkey rsa:2048 \
-  -keyout ../certs/tiltvrsvr-key.pem \
-  -out ../certs/tiltvrsvr-cert.pem \
+  -keyout ./build/tank/certs/tiltvrsvr-key.pem \
+  -out ./build/tank/certs/tiltvrsvr-cert.pem \
   -days 365 \
   -subj "/CN=<PI_IP>"
 ```

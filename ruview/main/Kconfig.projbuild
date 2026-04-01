@@ -2,13 +2,13 @@ menu "Example Configuration"
 
     config ESP_WIFI_SSID
         string "WiFi SSID"
-        default "myssid"
+        default "veda-ssid"
         help
             SSID (network name) for the example to connect to.
 
     config ESP_WIFI_PASSWORD
         string "WiFi Password"
-        default "mypassword"
+        default "veda-password"
         help
             WiFi password (WPA or WPA2) for the example to use.
 
@@ -39,6 +39,32 @@ menu "Example Configuration"
         default 5
         help
             Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
+
+    config RUVIEW_RX_UDP_TARGET_IP
+        string "RX UDP target IP"
+        default "192.0.2.10"
+
+    config RUVIEW_RX_UDP_TARGET_PORT
+        int "RX UDP target port"
+        default 5005
+        range 1 65535
+
+    config RUVIEW_RX_NODE_ID
+        string "RX node ID"
+        default "esp32-rx1"
+
+    config RUVIEW_TX_UDP_TARGET_IP
+        string "TX UDP target IP"
+        default "192.0.2.10"
+
+    config RUVIEW_TX_UDP_TARGET_PORT
+        int "TX UDP target port"
+        default 5006
+        range 1 65535
+
+    config RUVIEW_TX_NODE_ID
+        string "TX node ID"
+        default "esp32-tx"
 
     choice ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD
         prompt "WiFi Scan auth mode threshold"

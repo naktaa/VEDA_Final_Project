@@ -1,14 +1,27 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(VEDA_Server LANGUAGES CXX)
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    project(VEDA_Server LANGUAGES CXX)
+endif()
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../cmake/ProjectOptions.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/../cmake/ProjectOptions.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/../cmake/Dependencies.cmake")
+    veda_set_default_project_options()
+    veda_require_pkgconfig()
+else()
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_CXX_EXTENSIONS OFF)
+    find_package(PkgConfig REQUIRED)
+endif()
 
 find_package(OpenCV REQUIRED)
-find_package(PkgConfig REQUIRED)
 pkg_check_modules(MOSQ REQUIRED libmosquitto)
+
+set(SERVER_RUNTIME_DIR "${CMAKE_BINARY_DIR}/server")
+file(MAKE_DIRECTORY "${SERVER_RUNTIME_DIR}")
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/config" DESTINATION "${SERVER_RUNTIME_DIR}")
 
 add_library(server_core
     src/server_app.cpp
@@ -25,39 +38,25 @@ target_include_directories(server_core PUBLIC
 
 target_compile_options(server_core PRIVATE ${MOSQ_CFLAGS_OTHER})
 target_link_directories(server_core PRIVATE ${MOSQ_LIBRARY_DIRS})
-
 target_link_libraries(server_core PUBLIC
     ${OpenCV_LIBS}
     ${MOSQ_LIBRARIES}
 )
 
-add_executable(server_main
-    server_main.cpp
-)
-
+add_executable(server_main server_main.cpp)
 target_link_libraries(server_main PRIVATE server_core)
 set_target_properties(server_main PROPERTIES OUTPUT_NAME main)
 
-add_executable(calib_aruco_homography
-    calib_file/calib_aruco_homography.cpp
-)
+add_executable(calib_aruco_homography tools/calib_aruco_homography.cpp)
+target_include_directories(calib_aruco_homography PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(calib_aruco_homography PRIVATE ${OpenCV_LIBS})
 
-target_include_directories(calib_aruco_homography PRIVATE
-    ${OpenCV_INCLUDE_DIRS}
-)
+add_executable(calib_camera tools/calib_camera.cpp)
+target_include_directories(calib_camera PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(calib_camera PRIVATE ${OpenCV_LIBS})
 
-target_link_libraries(calib_aruco_homography PRIVATE
-    ${OpenCV_LIBS}
-)
-
-add_executable(calib_camera
-    calib_file/calib_camera.cpp
-)
-
-target_include_directories(calib_camera PRIVATE
-    ${OpenCV_INCLUDE_DIRS}
-)
-
-target_link_libraries(calib_camera PRIVATE
-    ${OpenCV_LIBS}
-)
+if(COMMAND veda_set_runtime_output_dir)
+    veda_set_runtime_output_dir(server_main "${SERVER_RUNTIME_DIR}")
+    veda_set_runtime_output_dir(calib_aruco_homography "${SERVER_RUNTIME_DIR}")
+    veda_set_runtime_output_dir(calib_camera "${SERVER_RUNTIME_DIR}")
+endif()

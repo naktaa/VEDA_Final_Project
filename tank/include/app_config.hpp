@@ -135,7 +135,7 @@ struct AppConfig {
     PipelineConfig pipeline;
     RtspConfig rtsp;
     MqttConfig mqtt{
-        "192.168.100.10",
+        "mqtt-broker.local",
         1883,
         30,
         "wiserisk/rc/control",

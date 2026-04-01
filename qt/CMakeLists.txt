@@ -1,214 +1,151 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(main_window VERSION 0.1 LANGUAGES CXX)
+project(VEDA_QtClient VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ===== OpenCV =====
-set(OpenCV_DIR "C:/opencv/build/x64/vc16/lib")
+set(OpenCV_DIR "" CACHE PATH "OpenCV CMake package directory")
 find_package(OpenCV REQUIRED)
 
-# ===== Qt (Widgets + Multimedia + Network) =====
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Network)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Network)
 
-# ===== GStreamer (MSVC x86_64) =====
-set(GST_ROOT "C:/Program Files/gstreamer/1.0/msvc_x86_64")
-
-set(GST_INCLUDE_DIRS
-    "${GST_ROOT}/include/gstreamer-1.0"
-    "${GST_ROOT}/include/glib-2.0"
-    "${GST_ROOT}/lib/glib-2.0/include"
+file(GLOB QT_PROJECT_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/*.ui"
 )
 
-set(GST_LIB_DIR "${GST_ROOT}/lib")
-
-set(GST_LIBS
-    "${GST_LIB_DIR}/gstreamer-1.0.lib"
-    "${GST_LIB_DIR}/gstvideo-1.0.lib"
-    "${GST_LIB_DIR}/gstapp-1.0.lib"
-    "${GST_LIB_DIR}/gstbase-1.0.lib"
-    "${GST_LIB_DIR}/gobject-2.0.lib"
-    "${GST_LIB_DIR}/glib-2.0.lib"
+set(QT_RESOURCE_FILES
+    resources/app_resources.qrc
 )
 
-# ============================================================
-# ===== MQTT (vcpkg mosquitto) =====
-# ============================================================
+set(QT_GST_INCLUDE_DIRS "")
+set(QT_GST_LINK_LIBS "")
+set(QT_MOSQ_INCLUDE_DIRS "")
+set(QT_MOSQ_LINK_LIBS "")
+set(QT_MOSQ_COMPILE_OPTIONS "")
+
 if(WIN32)
-    set(VCPKG_ROOT "C:/vcpkg" CACHE PATH "vcpkg root")
+    set(GSTREAMER_ROOT "" CACHE PATH "GStreamer root directory")
+    set(VCPKG_ROOT "" CACHE PATH "vcpkg root directory")
     set(VCPKG_TRIPLET "x64-windows" CACHE STRING "vcpkg triplet")
-    set(VCPKG_INSTALLED_DIR "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}")
 
-    # toolchain ?�이??find_package가 ?�게 prefix 강제
-    list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}")
-endif()
+    if(NOT GSTREAMER_ROOT)
+        message(FATAL_ERROR "Set -DGSTREAMER_ROOT=<path> to the GStreamer installation root.")
+    endif()
 
-# unofficial-mosquitto ?�선
-find_package(unofficial-mosquitto CONFIG QUIET)
-if(unofficial-mosquitto_FOUND)
-    set(MOSQ_TARGET unofficial::mosquitto::mosquitto)
+    if(VCPKG_ROOT)
+        set(VCPKG_INSTALLED_DIR "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}")
+        list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}")
+    endif()
+
+    set(QT_GST_INCLUDE_DIRS
+        "${GSTREAMER_ROOT}/include/gstreamer-1.0"
+        "${GSTREAMER_ROOT}/include/glib-2.0"
+        "${GSTREAMER_ROOT}/lib/glib-2.0/include"
+    )
+
+    set(QT_GST_LIB_DIR "${GSTREAMER_ROOT}/lib")
+    set(QT_GST_LINK_LIBS
+        "${QT_GST_LIB_DIR}/gstreamer-1.0.lib"
+        "${QT_GST_LIB_DIR}/gstvideo-1.0.lib"
+        "${QT_GST_LIB_DIR}/gstapp-1.0.lib"
+        "${QT_GST_LIB_DIR}/gstbase-1.0.lib"
+        "${QT_GST_LIB_DIR}/gobject-2.0.lib"
+        "${QT_GST_LIB_DIR}/glib-2.0.lib"
+    )
+
+    find_package(unofficial-mosquitto CONFIG QUIET)
+    if(unofficial-mosquitto_FOUND)
+        set(QT_MOSQ_LINK_LIBS unofficial::mosquitto::mosquitto)
+    else()
+        find_package(mosquitto CONFIG QUIET)
+        if(VCPKG_ROOT)
+            set(QT_MOSQ_INCLUDE_DIRS "${VCPKG_INSTALLED_DIR}/include")
+            link_directories("${VCPKG_INSTALLED_DIR}/lib")
+            list(APPEND QT_MOSQ_LINK_LIBS mosquitto)
+        endif()
+    endif()
 else()
-    # fallback (?�경???�라 ?��??�공???�을 ???�어 include/lib 직접 링크??준�?
-    find_package(mosquitto CONFIG QUIET)
-    set(MOSQ_TARGET "")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(QT_GST REQUIRED
+        gstreamer-1.0
+        gstreamer-app-1.0
+        gstreamer-video-1.0
+    )
+    pkg_check_modules(QT_MOSQ REQUIRED libmosquitto)
+
+    set(QT_GST_INCLUDE_DIRS ${QT_GST_INCLUDE_DIRS})
+    set(QT_GST_LINK_LIBS ${QT_GST_LIBRARIES})
+    set(QT_MOSQ_INCLUDE_DIRS ${QT_MOSQ_INCLUDE_DIRS})
+    set(QT_MOSQ_LINK_LIBS ${QT_MOSQ_LIBRARIES})
+    set(QT_MOSQ_COMPILE_OPTIONS ${QT_MOSQ_CFLAGS_OTHER})
 endif()
 
-# ===== Sources =====
-set(PROJECT_SOURCES
-    main.cpp
-    mainwindow.cpp
-    mainwindow.h
-    mainwindow.ui
-
-    login_dialog.cpp
-    login_dialog.h
-    login_dialog.ui
-
-    video_clip.cpp
-    video_clip.h
-
-    AllCctvWindow.ui
-    AllCctvWindow.h
-    AllCctvWindow.cpp
-
-    CctvZoomWindow.h
-    CctvZoomWindow.cpp
-
-    GstVideoWidget.cpp
-    GstVideoWidget.h
-
-    PoseTypes.h
-    PoseOverlayWidget.cpp
-    PoseOverlayWidget.h
-    RobotStatusWindow.cpp
-    RobotStatusWindow.h
-    SystemUsageWindow.cpp
-    SystemUsageWindow.h
-
-    FullscreenViewer.cpp
-    FullscreenViewer.h
-    CaptureCalibOverlay.cpp
-    CaptureCalibOverlay.h
-
-    TitleBarWidget.cpp
-    TitleBarWidget.h
-    FramelessHelper.cpp
-    FramelessHelper.h
-
-    # MQTT 붙인 ?�일??(?��? ??��?�고 ?�던 것들)
-    MqttEvent.h
-    MqttSubscriber.h
-    MqttSubscriber.cpp
-)
-
-# ===== Target =====
-if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
+if(QT_VERSION_MAJOR GREATER_EQUAL 6)
     qt_add_executable(main_window
         MANUAL_FINALIZATION
-        ${PROJECT_SOURCES}
-        ClipPopup.h
-        ClipPopup.cpp
-        CctvOverlayWidget.h
-        HomographyCalib.h
-        MapData.h
-        MiniMapWidget.h
-        CctvOverlayWidget.cpp
-        HomographyCalib.cpp
-        MiniMapWidget.cpp
-        MqttPublisher.h
-        MqttPublisher.cpp
-
-        image/ui_background.jpg
-        image/next10.png image/play.png
-        image/back10.png
-        image/stop.png
+        ${QT_PROJECT_FILES}
+        ${QT_RESOURCE_FILES}
     )
 else()
-    add_executable(main_window ${PROJECT_SOURCES})
+    add_executable(main_window
+        ${QT_PROJECT_FILES}
+        ${QT_RESOURCE_FILES}
+    )
 endif()
 
-# ===== Include =====
 target_include_directories(main_window PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${OpenCV_INCLUDE_DIRS}
-    ${GST_INCLUDE_DIRS}
+    ${QT_GST_INCLUDE_DIRS}
+    ${QT_MOSQ_INCLUDE_DIRS}
 )
 
-# ===== Link =====
+target_compile_options(main_window PRIVATE ${QT_MOSQ_COMPILE_OPTIONS})
+
 target_link_libraries(main_window PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Multimedia
     Qt${QT_VERSION_MAJOR}::MultimediaWidgets
     Qt${QT_VERSION_MAJOR}::Network
     ${OpenCV_LIBS}
-    ${GST_LIBS}
+    ${QT_GST_LINK_LIBS}
+    ${QT_MOSQ_LINK_LIBS}
 )
 
-# ===== mosquitto link =====
-if(MOSQ_TARGET)
-    target_link_libraries(main_window PRIVATE ${MOSQ_TARGET})
-else()
-    # ?�겟이 ???�히??경우 직접 링크
-    if(WIN32)
-        target_include_directories(main_window PRIVATE "${VCPKG_INSTALLED_DIR}/include")
-        target_link_directories(main_window PRIVATE "${VCPKG_INSTALLED_DIR}/lib")
-        target_link_libraries(main_window PRIVATE mosquitto)
-    endif()
-endif()
+add_custom_command(TARGET main_window POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:main_window>/config"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/runtime.ini.example"
+        "$<TARGET_FILE_DIR:main_window>/config/runtime.ini.example"
+    COMMENT "Copy Qt runtime configuration template"
+)
 
-# ===== MQTT runtime DLL copy (mosquitto + pthread + openssl) =====
-if(WIN32)
-    add_custom_command(TARGET main_window POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${GST_ROOT}/bin/gstapp-1.0-0.dll"
-            "$<TARGET_FILE_DIR:main_window>/gstapp-1.0-0.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${VCPKG_INSTALLED_DIR}/bin/mosquitto.dll"
-            "$<TARGET_FILE_DIR:main_window>/mosquitto.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${VCPKG_INSTALLED_DIR}/bin/pthreadVC3.dll"
-            "$<TARGET_FILE_DIR:main_window>/pthreadVC3.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${VCPKG_INSTALLED_DIR}/bin/libssl-3-x64.dll"
-            "$<TARGET_FILE_DIR:main_window>/libssl-3-x64.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${VCPKG_INSTALLED_DIR}/bin/libcrypto-3-x64.dll"
-            "$<TARGET_FILE_DIR:main_window>/libcrypto-3-x64.dll"
-        COMMENT "Copy MQTT runtime DLLs"
+if(WIN32 AND VCPKG_ROOT)
+    foreach(runtime_dll
+        "${GSTREAMER_ROOT}/bin/gstapp-1.0-0.dll"
+        "${VCPKG_INSTALLED_DIR}/bin/mosquitto.dll"
+        "${VCPKG_INSTALLED_DIR}/bin/pthreadVC3.dll"
+        "${VCPKG_INSTALLED_DIR}/bin/libssl-3-x64.dll"
+        "${VCPKG_INSTALLED_DIR}/bin/libcrypto-3-x64.dll"
     )
+        if(EXISTS "${runtime_dll}")
+            add_custom_command(TARGET main_window POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${runtime_dll}"
+                    "$<TARGET_FILE_DIR:main_window>/"
+            )
+        endif()
+    endforeach()
 endif()
-
-# ===== Bundle/Win32 options =====
-if(${QT_VERSION} VERSION_LESS 6.1.0)
-    set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.main_window)
-endif()
-
-set_target_properties(main_window PROPERTIES
-    ${BUNDLE_ID_OPTION}
-    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
-    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
-    MACOSX_BUNDLE TRUE
-    WIN32_EXECUTABLE TRUE
-)
-
-include(GNUInstallDirs)
-install(TARGETS main_window
-    BUNDLE DESTINATION .
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
 
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(main_window)
 endif()
-
-
-target_sources(main_window PRIVATE
-    HumanBoxOverlayWidget.cpp
-    HumanBoxOverlayWidget.h
-)

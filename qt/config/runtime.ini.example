@@ -1,0 +1,13 @@
+[mqtt]
+host=localhost
+port=1883
+topic_filter=wiserisk/#
+main_publisher_client_id=qt-main-goal-pub
+clip_publisher_client_id=qt-clip-popup-pub
+
+[streams]
+central_rtsp=
+tank_rtsp=
+
+[paths]
+ruview_zone_config=

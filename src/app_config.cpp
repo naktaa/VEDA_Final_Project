@@ -206,6 +206,7 @@ std::string make_default_config_text() {
     append_kv(oss, "display_gain", cfg.pipeline.display_gain);
     append_kv(oss, "display_gamma", cfg.pipeline.display_gamma);
     append_kv(oss, "display_denoise_strength", cfg.pipeline.display_denoise_strength);
+    append_kv(oss, "display_sharpen_enable", cfg.pipeline.display_sharpen_enable ? 1 : 0);
     oss << "\n";
 
     oss << "# [rtsp] stream paths and encoder tuning\n";
@@ -418,6 +419,7 @@ bool load_app_config(const std::string& path, AppConfig& config, std::string* er
         load_double(map, "pipeline.display_gain", config.pipeline.display_gain);
         load_double(map, "pipeline.display_gamma", config.pipeline.display_gamma);
         load_double(map, "pipeline.display_denoise_strength", config.pipeline.display_denoise_strength);
+        load_bool(map, "pipeline.display_sharpen_enable", config.pipeline.display_sharpen_enable);
 
         load_string(map, "rtsp.port", config.rtsp.port);
         load_string(map, "rtsp.path", config.rtsp.path);
@@ -604,6 +606,7 @@ bool write_app_config(const std::string& path, const AppConfig& config, std::str
         append_kv(oss, "display_gain", copy.pipeline.display_gain);
         append_kv(oss, "display_gamma", copy.pipeline.display_gamma);
         append_kv(oss, "display_denoise_strength", copy.pipeline.display_denoise_strength);
+        append_kv(oss, "display_sharpen_enable", copy.pipeline.display_sharpen_enable ? 1 : 0);
         oss << "\n";
 
         append_section(oss, "rtsp");

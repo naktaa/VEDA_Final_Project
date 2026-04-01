@@ -44,6 +44,7 @@ constexpr const char* kTemplateConfigPath = "config_template.ini";
 constexpr const char* kLocalConfigPath = "config_local.ini";
 constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
 constexpr double kTrackingSharpenStrength = 0.20;
+constexpr double kDisplaySharpenStrength = 0.30;
 
 cv::Mat make_tracking_frame(const cv::Mat& raw_bgr, const PipelineConfig& config) {
     if (raw_bgr.empty()) {
@@ -106,6 +107,17 @@ cv::Mat apply_display_pipeline(const cv::Mat& stabilized, const PipelineConfig& 
         cv::Mat blurred;
         cv::GaussianBlur(output, blurred, cv::Size(3, 3), 0.0, 0.0);
         cv::addWeighted(output, 1.0 - denoise_strength, blurred, denoise_strength, 0.0, output);
+    }
+
+    if (config.display_sharpen_enable) {
+        cv::Mat blurred;
+        cv::GaussianBlur(output, blurred, cv::Size(0, 0), 1.0, 1.0);
+        cv::addWeighted(output,
+                        1.0 + kDisplaySharpenStrength,
+                        blurred,
+                        -kDisplaySharpenStrength,
+                        0.0,
+                        output);
     }
 
     return output;

@@ -88,6 +88,7 @@ struct PipelineConfig {
     double display_gain = 1.10;
     double display_gamma = 1.15;
     double display_denoise_strength = 0.0;
+    bool display_sharpen_enable = false;
 };
 
 struct RtspConfig {
